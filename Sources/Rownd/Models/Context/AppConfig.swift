@@ -258,6 +258,49 @@ struct AppConfigResponse: Decodable {
 }
 
 class AppConfig {
+    static var testingProtocolClasses: [AnyClass]?
+
+    static func appConfigPath(apiBasePath: String) -> String {
+        let normalizedBasePath = apiBasePath == "/" ? "" : apiBasePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+
+        if normalizedBasePath.isEmpty {
+            return "/plugin/rownd/app-config"
+        }
+
+        return "/\(normalizedBasePath)/plugin/rownd/app-config"
+    }
+
+    static func appConfigURL() throws -> URL {
+        guard let supertokens = Rownd.config.supertokens else {
+            throw RowndError("SuperTokens configuration is required before fetching app config")
+        }
+
+        guard let apiDomain = URL(string: supertokens.apiDomain) else {
+            throw RowndError("Invalid SuperTokens apiDomain: \(supertokens.apiDomain)")
+        }
+
+        guard let url = URL(string: appConfigPath(apiBasePath: supertokens.apiBasePath), relativeTo: apiDomain)?.absoluteURL else {
+            throw RowndError("Failed to build app config URL from SuperTokens configuration")
+        }
+
+        return url
+    }
+
+    static func makeAppConfigClient() throws -> APIClient {
+        guard let supertokens = Rownd.config.supertokens,
+            let apiDomain = URL(string: supertokens.apiDomain)
+        else {
+            throw RowndError("SuperTokens configuration is required before fetching app config")
+        }
+
+        return APIClient(baseURL: apiDomain) {
+            $0.delegate = AppConfigApiClientDelegate()
+            if let testingProtocolClasses = testingProtocolClasses {
+                $0.sessionConfiguration.protocolClasses = testingProtocolClasses
+            }
+        }
+    }
+
     static func validateSuperTokensConfig(_ appConfig: AppConfigResponse) throws {
         guard let configured = Rownd.config.supertokens,
             let serverConfig = appConfig.app.config?.supertokens?.appInfo
@@ -301,7 +344,9 @@ class AppConfig {
 
     static func fetch() async -> AppConfigResponse? {
         do {
-            let appConfig: AppConfigResponse = try await Rownd.apiClient.send(Get.Request(url: URL(string: "/hub/app-config")!, method: "get")).value
+            let requestURL = try appConfigURL()
+            let client = try makeAppConfigClient()
+            let appConfig: AppConfigResponse = try await client.send(Get.Request(url: requestURL, method: "get")).value
             try validateSuperTokensConfig(appConfig)
 
             return appConfig
@@ -309,5 +354,17 @@ class AppConfig {
             logger.error("Failed to fetch app config: \(String(describing: error), privacy: .auto)")
             return nil
         }
+    }
+}
+
+private final class AppConfigApiClientDelegate: APIClientDelegate {
+    func client(_ client: APIClient, willSendRequest request: inout URLRequest) async throws {
+        request.setValue(Constants.TIME_META_HEADER, forHTTPHeaderField: Constants.TIME_META_HEADER_NAME)
+        request.setValue(Constants.DEFAULT_API_USER_AGENT, forHTTPHeaderField: "User-Agent")
+
+        let localRequest = request
+        logger.debug(
+            "Making request to: \(String(describing: localRequest.httpMethod?.uppercased())) \(String(describing: localRequest.url))"
+        )
     }
 }

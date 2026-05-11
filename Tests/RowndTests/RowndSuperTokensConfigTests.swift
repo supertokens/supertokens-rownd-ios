@@ -43,6 +43,7 @@ import Testing
         defer {
             Rownd.apiClient = originalApiClient
             Rownd.config = originalConfig
+            AppConfig.testingProtocolClasses = nil
             AppConfigRequestURLProtocol.reset()
         }
 
@@ -70,7 +71,8 @@ import Testing
 
         Rownd.config = RowndConfig()
         AppConfigRequestURLProtocol.responseData = responseData
-        Rownd.apiClient = APIClient(baseURL: URL(string: "https://api.rownd.io")!) {
+        AppConfig.testingProtocolClasses = [AppConfigRequestURLProtocol.self]
+        Rownd.apiClient = APIClient(baseURL: URL(string: "https://ignored.example.com")!) {
             $0.sessionConfiguration.protocolClasses = [AppConfigRequestURLProtocol.self]
             $0.sessionConfiguration.urlCache = nil
         }
@@ -78,6 +80,8 @@ import Testing
         _ = await Rownd.configure(appKey: "app_test", supertokens: expectedConfig)
 
         #expect(AppConfigRequestURLProtocol.observedConfigDuringFetch == expectedConfig)
+        #expect(AppConfigRequestURLProtocol.requestedURL == "https://api.example.com/auth/plugin/rownd/app-config")
+        #expect(AppConfigRequestURLProtocol.requestedAppKeyHeader == nil)
         #expect(Rownd.config.supertokens == expectedConfig)
     }
 
@@ -99,9 +103,11 @@ import Testing
 private final class AppConfigRequestURLProtocol: URLProtocol {
     static var observedConfigDuringFetch: RowndSuperTokensConfig?
     static var responseData = Data()
+    static var requestedURL: String?
+    static var requestedAppKeyHeader: String?
 
     override class func canInit(with request: URLRequest) -> Bool {
-        request.url?.absoluteString == "https://api.rownd.io/hub/app-config"
+        request.url?.path == "/auth/plugin/rownd/app-config"
     }
 
     override class func canonicalRequest(for request: URLRequest) -> URLRequest {
@@ -110,6 +116,8 @@ private final class AppConfigRequestURLProtocol: URLProtocol {
 
     override func startLoading() {
         Self.observedConfigDuringFetch = Rownd.config.supertokens
+        Self.requestedURL = request.url?.absoluteString
+        Self.requestedAppKeyHeader = request.value(forHTTPHeaderField: "X-Rownd-App-Key")
 
         let response = HTTPURLResponse(
             url: request.url!,
@@ -128,5 +136,7 @@ private final class AppConfigRequestURLProtocol: URLProtocol {
     static func reset() {
         observedConfigDuringFetch = nil
         responseData = Data()
+        requestedURL = nil
+        requestedAppKeyHeader = nil
     }
 }
