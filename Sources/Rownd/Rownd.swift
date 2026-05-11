@@ -237,7 +237,7 @@ public class Rownd: NSObject {
             let store = Context.currentContext.store
             store.dispatch(SetAuthState(payload: AuthState()))
 
-            Task {
+            Task { @MainActor in
                 RowndEventEmitter.emit(
                     RowndEvent(
                         event: .signOut

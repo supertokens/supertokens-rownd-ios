@@ -34,11 +34,21 @@ public struct AppConfigConfig: Hashable {
     public var hub: AppHubConfigState?
     public var customizations: AppCustomizationsConfigState?
     public var subdomain: String?
+    var supertokens: SuperTokensConfig?
+}
+
+struct SuperTokensConfig: Hashable, Codable {
+    var appInfo: SuperTokensAppInfo
+}
+
+struct SuperTokensAppInfo: Hashable, Codable {
+    var apiDomain: String
+    var apiBasePath: String?
 }
 
 extension AppConfigConfig: Codable {
     enum CodingKeys: String, CodingKey {
-        case hub, customizations, subdomain, automations
+        case hub, customizations, subdomain, automations, supertokens
     }
 
     public init(from decoder: Decoder) throws {
@@ -64,6 +74,7 @@ extension AppConfigConfig: Codable {
         self.hub = try? container.decode(AppHubConfigState.self, forKey: .hub)
         self.customizations = try? container.decode(AppCustomizationsConfigState.self, forKey: .customizations)
         self.subdomain = try? container.decode(String.self, forKey: .subdomain)
+        self.supertokens = try? container.decode(SuperTokensConfig.self, forKey: .supertokens)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -84,6 +95,7 @@ extension AppConfigConfig: Codable {
         try container.encodeIfPresent(hub, forKey: .hub)
         try container.encodeIfPresent(customizations, forKey: .customizations)
         try container.encodeIfPresent(subdomain, forKey: .subdomain)
+        try container.encodeIfPresent(supertokens, forKey: .supertokens)
     }
 
     public func toDictionary() throws -> [String: Any?] {
@@ -246,6 +258,28 @@ struct AppConfigResponse: Decodable {
 }
 
 class AppConfig {
+    static func validateSuperTokensConfig(_ appConfig: AppConfigResponse) throws {
+        guard let configured = Rownd.config.supertokens,
+            let serverConfig = appConfig.app.config?.supertokens?.appInfo
+        else {
+            return
+        }
+
+        if serverConfig.apiDomain != configured.apiDomain {
+            throw RowndError(
+                "App config SuperTokens apiDomain \(serverConfig.apiDomain) does not match configured value \(configured.apiDomain)"
+            )
+        }
+
+        if let serverBasePath = serverConfig.apiBasePath,
+            serverBasePath != configured.apiBasePath
+        {
+            throw RowndError(
+                "App config SuperTokens apiBasePath \(serverBasePath) does not match configured value \(configured.apiBasePath)"
+            )
+        }
+    }
+
     static func requestAppState() -> Thunk<RowndState> {
         return Thunk<RowndState> { dispatch, getState in
             guard let state = getState() else { return }
@@ -268,6 +302,7 @@ class AppConfig {
     static func fetch() async -> AppConfigResponse? {
         do {
             let appConfig: AppConfigResponse = try await Rownd.apiClient.send(Get.Request(url: URL(string: "/hub/app-config")!, method: "get")).value
+            try validateSuperTokensConfig(appConfig)
 
             return appConfig
         } catch {

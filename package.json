@@ -1,5 +1,12 @@
 {
   "scripts": {
+    "build:example": "xcodebuild -workspace rownd.xcworkspace -scheme rownd_ios_example -destination 'platform=iOS Simulator,name=iPhone 17' build",
+    "test:example": "xcodebuild -workspace rownd.xcworkspace -scheme rownd_ios_example -destination 'platform=iOS Simulator,name=iPhone 17' test",
+    "test:package:auth": "xcodebuild -workspace .swiftpm/xcode/package.xcworkspace -scheme Rownd -destination 'platform=iOS Simulator,name=iPhone 17' -only-testing:RowndTests/AuthTests test",
+    "test:package:rownd": "xcodebuild -workspace .swiftpm/xcode/package.xcworkspace -scheme Rownd -destination 'platform=iOS Simulator,name=iPhone 17' -only-testing:RowndTests/RowndTests test",
+    "test:package:shared": "xcodebuild -workspace .swiftpm/xcode/package.xcworkspace -scheme Rownd -destination 'platform=iOS Simulator,name=iPhone 17' -skip-testing:RowndTests/AuthTests -skip-testing:RowndTests/RowndTests test",
+    "test:package": "npm run test:package:auth && npm run test:package:rownd && npm run test:package:shared",
+    "test:all": "npm run test:package && npm run test:example",
     "release": "release-it"
   },
   "devDependencies": {

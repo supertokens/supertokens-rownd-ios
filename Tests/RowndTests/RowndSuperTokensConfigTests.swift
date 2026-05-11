@@ -5,15 +5,12 @@
 
 import Foundation
 import Get
-import Mocker
 import Testing
 
 @testable import Rownd
 
 @Suite(.serialized) struct RowndSuperTokensConfigTests {
-    init() async throws {
-        Mocker.removeAll()
-    }
+    init() async throws {}
 
     @Test func validateSuperTokensConfigRequiresNonEmptyFields() throws {
         let validConfig = RowndSuperTokensConfig(
@@ -46,7 +43,7 @@ import Testing
         defer {
             Rownd.apiClient = originalApiClient
             Rownd.config = originalConfig
-            Mocker.removeAll()
+            AppConfigRequestURLProtocol.reset()
         }
 
         let store = Context.currentContext.store
@@ -55,9 +52,6 @@ import Testing
             store.dispatch(SetAuthState(payload: AuthState()))
             store.dispatch(SetClockSync(clockSyncState: .synced))
         }
-
-        Rownd.config = RowndConfig()
-        Rownd.apiClient = APIClient.mock()
 
         let expectedConfig = RowndSuperTokensConfig(
             appName: "Example App",
@@ -74,24 +68,16 @@ import Testing
         }
         """.data(using: .utf8)!
 
-        var observedConfigDuringFetch: RowndSuperTokensConfig?
-        var mock = Mock(
-            url: URL(string: "https://api.rownd.io/hub/app-config")!,
-            ignoreQuery: true,
-            contentType: .json,
-            statusCode: 200,
-            data: [.get: responseData]
-        )
-
-        mock.onRequestHandler = OnRequestHandler(requestCallback: { _ in
-            observedConfigDuringFetch = Rownd.config.supertokens
-        })
-
-        mock.register()
+        Rownd.config = RowndConfig()
+        AppConfigRequestURLProtocol.responseData = responseData
+        Rownd.apiClient = APIClient(baseURL: URL(string: "https://api.rownd.io")!) {
+            $0.sessionConfiguration.protocolClasses = [AppConfigRequestURLProtocol.self]
+            $0.sessionConfiguration.urlCache = nil
+        }
 
         _ = await Rownd.configure(appKey: "app_test", supertokens: expectedConfig)
 
-        #expect(observedConfigDuringFetch == expectedConfig)
+        #expect(AppConfigRequestURLProtocol.observedConfigDuringFetch == expectedConfig)
         #expect(Rownd.config.supertokens == expectedConfig)
     }
 
@@ -107,5 +93,40 @@ import Testing
         } catch {
             Issue.record("Unexpected validation error: \(error)")
         }
+    }
+}
+
+private final class AppConfigRequestURLProtocol: URLProtocol {
+    static var observedConfigDuringFetch: RowndSuperTokensConfig?
+    static var responseData = Data()
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.absoluteString == "https://api.rownd.io/hub/app-config"
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        Self.observedConfigDuringFetch = Rownd.config.supertokens
+
+        let response = HTTPURLResponse(
+            url: request.url!,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: ["Content-Type": "application/json"]
+        )!
+
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Self.responseData)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+
+    static func reset() {
+        observedConfigDuringFetch = nil
+        responseData = Data()
     }
 }
