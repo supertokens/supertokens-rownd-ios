@@ -35,7 +35,14 @@ class AppDelegate: NSObject, UIApplicationDelegate {
         Rownd.addEventHandler(RowndEventHandler())
 
         Task {
-            await Rownd.configure(launchOptions: launchOptions, appKey: "key_pko8eul59xz33hr21jgxvx6s")
+            await Rownd.configure(
+                launchOptions: launchOptions,
+                appKey: "key_pko8eul59xz33hr21jgxvx6s",
+                supertokens: RowndSuperTokensConfig(
+                    appName: "Example App",
+                    apiDomain: "https://api.example.com"
+                )
+            )
             _ = try? await Rownd.getAccessToken()
             WidgetCenter.shared.reloadAllTimelines()
         }

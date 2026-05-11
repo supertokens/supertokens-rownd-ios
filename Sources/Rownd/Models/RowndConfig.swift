@@ -7,6 +7,18 @@
 
 import Foundation
 
+public struct RowndSuperTokensConfig: Encodable, Hashable {
+    public var appName: String
+    public var apiDomain: String
+    public var apiBasePath: String
+
+    public init(appName: String, apiDomain: String, apiBasePath: String = "/auth") {
+        self.appName = appName
+        self.apiDomain = apiDomain
+        self.apiBasePath = apiBasePath
+    }
+}
+
 public struct RowndConfig: Encodable {
     internal init() {}
 
@@ -26,6 +38,7 @@ public struct RowndConfig: Encodable {
     public var signInLinkPattern: String = ".*\\.rownd\\.link$"
     public var deepLinkHandler: RowndDeepLinkHandlerDelegate?
     public var forceInstantUserConversion: Bool = false
+    public var supertokens: RowndSuperTokensConfig?
 
     private enum CodingKeys: String, CodingKey {
         case apiUrl,

@@ -18,7 +18,7 @@
                BlueprintIdentifier = "B374E52528542AEF00955719"
                BuildableName = "Landmarks.app"
                BlueprintName = "rownd_ios_example"
-               ReferencedContainer = "container:rownd_ios_example.xcodeproj">
+               ReferencedContainer = "container:landmarks.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
       </BuildActionEntries>
@@ -27,8 +27,29 @@
       buildConfiguration = "Debug"
       selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB"
       selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
-      shouldUseLaunchSchemeArgsEnv = "YES"
-      shouldAutocreateTestPlan = "YES">
+      shouldUseLaunchSchemeArgsEnv = "YES">
+      <MacroExpansion>
+         <BuildableReference
+            BuildableIdentifier = "primary"
+            BlueprintIdentifier = "B374E52528542AEF00955719"
+            BuildableName = "Landmarks.app"
+            BlueprintName = "rownd_ios_example"
+            ReferencedContainer = "container:landmarks.xcodeproj">
+         </BuildableReference>
+      </MacroExpansion>
+      <Testables>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "B30010082E00200000A10001"
+               BuildableName = "rownd_ios_exampleTests.xctest"
+               BlueprintName = "rownd_ios_exampleTests"
+               ReferencedContainer = "container:landmarks.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
+      </Testables>
    </TestAction>
    <LaunchAction
       buildConfiguration = "Debug"
@@ -47,7 +68,7 @@
             BlueprintIdentifier = "B374E52528542AEF00955719"
             BuildableName = "Landmarks.app"
             BlueprintName = "rownd_ios_example"
-            ReferencedContainer = "container:rownd_ios_example.xcodeproj">
+            ReferencedContainer = "container:landmarks.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </LaunchAction>
@@ -64,7 +85,7 @@
             BlueprintIdentifier = "B374E52528542AEF00955719"
             BuildableName = "Landmarks.app"
             BlueprintName = "rownd_ios_example"
-            ReferencedContainer = "container:rownd_ios_example.xcodeproj">
+            ReferencedContainer = "container:landmarks.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </ProfileAction>

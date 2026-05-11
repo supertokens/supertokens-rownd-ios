@@ -42,8 +42,16 @@ public class Rownd: NSObject {
 
     @discardableResult
     public static func configure(
-        launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil, appKey: String?
+        launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil,
+        appKey: String?,
+        supertokens: RowndSuperTokensConfig
     ) async -> RowndState {
+        do {
+            config.supertokens = try validateSuperTokensConfig(supertokens)
+        } catch {
+            fatalError("Invalid Rownd SuperTokens configuration: \(error)")
+        }
+
         if let _appKey = appKey {
             config.appKey = _appKey
         }
@@ -354,6 +362,24 @@ public class Rownd: NSObject {
         }
 
         return signInOptions
+    }
+
+    internal static func validateSuperTokensConfig(_ config: RowndSuperTokensConfig) throws
+        -> RowndSuperTokensConfig
+    {
+        if config.appName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw RowndError("SuperTokens appName must not be empty")
+        }
+
+        if config.apiDomain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw RowndError("SuperTokens apiDomain must not be empty")
+        }
+
+        if config.apiBasePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw RowndError("SuperTokens apiBasePath must not be empty")
+        }
+
+        return config
     }
 
     // MARK: Internal methods

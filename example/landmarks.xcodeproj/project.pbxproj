@@ -9,6 +9,8 @@
 /* Begin PBXBuildFile section */
 		B302E27A2858EEA2005FD927 /* SheetViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B302E2792858EEA2005FD927 /* SheetViewController.swift */; };
 		B302E2C42864D3BC005FD927 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = B302E2C32864D3BB005FD927 /* AppDelegate.swift */; };
+		B30010012E00200000A10001 /* RowndExampleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B30010002E00200000A10001 /* RowndExampleTests.swift */; };
+		B30010032E00200000A10001 /* Rownd in Frameworks */ = {isa = PBXBuildFile; productRef = B30010022E00200000A10001 /* Rownd */; };
 		B317F2792BEBE11F0094A927 /* Rownd in Frameworks */ = {isa = PBXBuildFile; productRef = B317F2782BEBE11F0094A927 /* Rownd */; };
 		B32C8A482BD6AD3F0082668F /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B32C8A472BD6AD3F0082668F /* WidgetKit.framework */; };
 		B32C8A4A2BD6AD3F0082668F /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B32C8A492BD6AD3F0082668F /* SwiftUI.framework */; };
@@ -49,6 +51,13 @@
 			proxyType = 2;
 			remoteGlobalIDString = B374E55828545A1C00955719;
 			remoteInfo = framework;
+		};
+		B30010052E00200000A10001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = B374E51E28542AEF00955719 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = B374E52528542AEF00955719;
+			remoteInfo = landmarks;
 		};
 		B32C8A532BD6AD420082668F /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -105,6 +114,8 @@
 		B302E2792858EEA2005FD927 /* SheetViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SheetViewController.swift; sourceTree = "<group>"; };
 		B302E2982863AAD3005FD927 /* framework.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; name = framework.xcodeproj; path = ../../../framework/framework.xcodeproj; sourceTree = "<group>"; };
 		B302E2C32864D3BB005FD927 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		B30010002E00200000A10001 /* RowndExampleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RowndExampleTests.swift; sourceTree = "<group>"; };
+		B30010042E00200000A10001 /* rownd_ios_exampleTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = rownd_ios_exampleTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		B32C8A462BD6AD3F0082668F /* rownd_widget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = rownd_widget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		B32C8A472BD6AD3F0082668F /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WidgetKit.framework; path = System/Library/Frameworks/WidgetKit.framework; sourceTree = SDKROOT; };
 		B32C8A492BD6AD3F0082668F /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftUI.framework; path = System/Library/Frameworks/SwiftUI.framework; sourceTree = SDKROOT; };
@@ -156,6 +167,14 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		B30010072E00200000A10001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B30010032E00200000A10001 /* Rownd in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		B32C8A432BD6AD3F0082668F /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -186,6 +205,14 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		B30010062E00200000A10001 /* rownd_ios_exampleTests */ = {
+			isa = PBXGroup;
+			children = (
+				B30010002E00200000A10001 /* RowndExampleTests.swift */,
+			);
+			path = rownd_ios_exampleTests;
+			sourceTree = "<group>";
+		};
 		B302E2992863AAD3005FD927 /* Products */ = {
 			isa = PBXGroup;
 			children = (
@@ -222,6 +249,7 @@
 				B3725D272A1D32B600A1E837 /* LandmarksApp.swift */,
 				B3D5601429E0772100DA0F51 /* Packages */,
 				B374E52828542AEF00955719 /* ios native */,
+				B30010062E00200000A10001 /* rownd_ios_exampleTests */,
 				B32C8A4B2BD6AD3F0082668F /* widget */,
 				B3704C4B2D93BBC1001FFEBB /* LandmarksAppClip */,
 				B374E52728542AEF00955719 /* Products */,
@@ -233,6 +261,7 @@
 			isa = PBXGroup;
 			children = (
 				B374E52628542AEF00955719 /* Landmarks.app */,
+				B30010042E00200000A10001 /* rownd_ios_exampleTests.xctest */,
 				B32C8A462BD6AD3F0082668F /* rownd_widget.appex */,
 				B3704C4A2D93BBC1001FFEBB /* LandmarksAppClip.app */,
 			);
@@ -329,6 +358,27 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		B30010082E00200000A10001 /* rownd_ios_exampleTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B300100D2E00200000A10001 /* Build configuration list for PBXNativeTarget "rownd_ios_exampleTests" */;
+			buildPhases = (
+				B30010092E00200000A10001 /* Sources */,
+				B300100A2E00200000A10001 /* Frameworks */,
+				B300100B2E00200000A10001 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				B300100C2E00200000A10001 /* PBXTargetDependency */,
+			);
+			name = rownd_ios_exampleTests;
+			packageProductDependencies = (
+				B30010022E00200000A10001 /* Rownd */,
+			);
+			productName = rownd_ios_exampleTests;
+			productReference = B30010042E00200000A10001 /* rownd_ios_exampleTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 		B32C8A452BD6AD3F0082668F /* rownd_widget */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = B32C8A592BD6AD420082668F /* Build configuration list for PBXNativeTarget "rownd_widget" */;
@@ -407,6 +457,10 @@
 				LastSwiftUpdateCheck = 1620;
 				LastUpgradeCheck = 1530;
 				TargetAttributes = {
+					B30010082E00200000A10001 = {
+						CreatedOnToolsVersion = 16.0;
+						TestTargetID = B374E52528542AEF00955719;
+					};
 					B32C8A452BD6AD3F0082668F = {
 						CreatedOnToolsVersion = 15.3;
 					};
@@ -428,7 +482,7 @@
 			);
 			mainGroup = B374E51D28542AEF00955719;
 			packageReferences = (
-				B33B218E2A042C97006B592E /* XCRemoteSwiftPackageReference "ios" */,
+				B33B218E2A042C97006B592E /* XCLocalSwiftPackageReference ".." */,
 			);
 			productRefGroup = B374E52728542AEF00955719 /* Products */;
 			projectDirPath = "";
@@ -441,6 +495,7 @@
 			projectRoot = "";
 			targets = (
 				B374E52528542AEF00955719 /* landmarks */,
+				B30010082E00200000A10001 /* rownd_ios_exampleTests */,
 				B32C8A452BD6AD3F0082668F /* rownd_widget */,
 				B3704C492D93BBC1001FFEBB /* LandmarksAppClip */,
 			);
@@ -458,6 +513,13 @@
 /* End PBXReferenceProxy section */
 
 /* Begin PBXResourcesBuildPhase section */
+		B300100B2E00200000A10001 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		B32C8A442BD6AD3F0082668F /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -488,6 +550,14 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		B30010092E00200000A10001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B30010012E00200000A10001 /* RowndExampleTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		B32C8A422BD6AD3F0082668F /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -531,6 +601,11 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		B300100C2E00200000A10001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = B374E52528542AEF00955719 /* landmarks */;
+			targetProxy = B30010052E00200000A10001 /* PBXContainerItemProxy */;
+		};
 		B32C8A542BD6AD420082668F /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = B32C8A452BD6AD3F0082668F /* rownd_widget */;
@@ -544,6 +619,57 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+		B300100E2E00200000A10001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 34CNMPW6U9;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.5;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "io.rownd.ios-native.tests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Landmarks.app/Landmarks";
+			};
+			name = Debug;
+		};
+		B300100F2E00200000A10001 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 34CNMPW6U9;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.5;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "io.rownd.ios-native.tests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Landmarks.app/Landmarks";
+			};
+			name = Release;
+		};
 		B32C8A572BD6AD420082668F /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -881,6 +1007,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		B300100D2E00200000A10001 /* Build configuration list for PBXNativeTarget "rownd_ios_exampleTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B300100E2E00200000A10001 /* Debug */,
+				B300100F2E00200000A10001 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		B32C8A592BD6AD420082668F /* Build configuration list for PBXNativeTarget "rownd_widget" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -919,31 +1054,32 @@
 		};
 /* End XCConfigurationList section */
 
-/* Begin XCRemoteSwiftPackageReference section */
-		B33B218E2A042C97006B592E /* XCRemoteSwiftPackageReference "ios" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/rownd/ios";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 3.2.0;
-			};
+	/* Begin XCLocalSwiftPackageReference section */
+		B33B218E2A042C97006B592E /* XCLocalSwiftPackageReference ".." */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ..;
 		};
-/* End XCRemoteSwiftPackageReference section */
+	/* End XCLocalSwiftPackageReference section */
 
-/* Begin XCSwiftPackageProductDependency section */
+	/* Begin XCSwiftPackageProductDependency section */
 		B317F2782BEBE11F0094A927 /* Rownd */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = B33B218E2A042C97006B592E /* XCRemoteSwiftPackageReference "ios" */;
+			package = B33B218E2A042C97006B592E /* XCLocalSwiftPackageReference ".." */;
 			productName = Rownd;
 		};
 		B33B218F2A042C97006B592E /* Rownd */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = B33B218E2A042C97006B592E /* XCRemoteSwiftPackageReference "ios" */;
+			package = B33B218E2A042C97006B592E /* XCLocalSwiftPackageReference ".." */;
 			productName = Rownd;
 		};
 		B3704C612D93BDDB001FFEBB /* Rownd */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = B33B218E2A042C97006B592E /* XCRemoteSwiftPackageReference "ios" */;
+			package = B33B218E2A042C97006B592E /* XCLocalSwiftPackageReference ".." */;
+			productName = Rownd;
+		};
+		B30010022E00200000A10001 /* Rownd */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B33B218E2A042C97006B592E /* XCLocalSwiftPackageReference ".." */;
 			productName = Rownd;
 		};
 /* End XCSwiftPackageProductDependency section */

@@ -15,7 +15,13 @@ struct Provider: TimelineProvider {
         Rownd.config.apiUrl = "https://api.us-east-2.dev.rownd.io"
         Rownd.config.baseUrl = "https://hub.us-east-2.dev.rownd.io"
         Rownd.config.appGroupPrefix = "group.rowndexample"
-        return await Rownd.configure(appKey: "key_pko8eul59xz33hr21jgxvx6s")
+        return await Rownd.configure(
+            appKey: "key_pko8eul59xz33hr21jgxvx6s",
+            supertokens: RowndSuperTokensConfig(
+                appName: "Example App",
+                apiDomain: "https://api.example.com"
+            )
+        )
     }
 
     func placeholder(in context: Context) -> SimpleEntry {

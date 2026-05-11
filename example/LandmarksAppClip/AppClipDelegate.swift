@@ -11,7 +11,14 @@ class AppDelegate: NSObject, UIApplicationDelegate {
         Rownd.config.appGroupPrefix = "group.rowndexample"
 
         Task {
-            await Rownd.configure(launchOptions: launchOptions, appKey: "key_pko8eul59xz33hr21jgxvx6s")
+            await Rownd.configure(
+                launchOptions: launchOptions,
+                appKey: "key_pko8eul59xz33hr21jgxvx6s",
+                supertokens: RowndSuperTokensConfig(
+                    appName: "Example App",
+                    apiDomain: "https://api.example.com"
+                )
+            )
         }
 
         return true
