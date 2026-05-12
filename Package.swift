@@ -75,6 +75,11 @@ let package = Package(
             url: "https://github.com/birdrides/mockingbird.git",
             .upToNextMinor(from: "0.20.0")
         ),
+        .package(
+            name: "SuperTokensIOS",
+            url: "https://github.com/supertokens/supertokens-ios",
+            .upToNextMajor(from: "0.4.3")
+        ),
     ],
 
     targets: [
@@ -115,6 +120,7 @@ let package = Package(
                 "GoogleSignIn",
                 "Lottie",
                 "Factory",
+                "SuperTokensIOS",
             ]
         ),
         .testTarget(
