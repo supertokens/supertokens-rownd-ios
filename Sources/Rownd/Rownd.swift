@@ -14,6 +14,7 @@ import LBBottomSheet
 import LocalAuthentication
 import ReSwift
 import SwiftUI
+import SuperTokensIOS
 import UIKit
 import WebKit
 
@@ -34,6 +35,7 @@ public class Rownd: NSObject {
     internal static var connectionAction = ConnectionAction()
     internal static var customerWebViews = CustomerWebViewManager()
     @MainActor private static var instantUsers: InstantUsers?
+    internal static var isSuperTokensInitialized = false
 
     // Run processAutomations() every second to support time-based automations
     internal var automationTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
@@ -54,6 +56,12 @@ public class Rownd: NSObject {
 
         if let _appKey = appKey {
             config.appKey = _appKey
+        }
+
+        do {
+            try initializeSuperTokensIfNeeded()
+        } catch {
+            fatalError("Failed to initialize SuperTokens: \(error)")
         }
 
         let state = await inst.inflateStoreCache()
@@ -380,6 +388,27 @@ public class Rownd: NSObject {
         }
 
         return config
+    }
+
+    @discardableResult
+    internal static func initializeSuperTokensIfNeeded() throws -> Bool {
+        guard !isSuperTokensInitialized else {
+            return false
+        }
+
+        guard let supertokens = config.supertokens else {
+            throw RowndError("SuperTokens configuration is required before initialization")
+        }
+
+        try SuperTokens.initialize(
+            apiDomain: supertokens.apiDomain,
+            apiBasePath: supertokens.apiBasePath,
+            tokenTransferMethod: .header
+        )
+
+        URLProtocol.registerClass(SuperTokensURLProtocol.self)
+        isSuperTokensInitialized = true
+        return true
     }
 
     // MARK: Internal methods

@@ -5,6 +5,7 @@
 
 import Foundation
 import Get
+import SuperTokensIOS
 import Testing
 
 @testable import Rownd
@@ -40,9 +41,11 @@ import Testing
     @Test func configureStoresSuperTokensConfigBeforeAppConfigFetch() async throws {
         let originalApiClient = Rownd.apiClient
         let originalConfig = Rownd.config
+        let originalSuperTokensInitialized = Rownd.isSuperTokensInitialized
         defer {
             Rownd.apiClient = originalApiClient
             Rownd.config = originalConfig
+            Rownd.isSuperTokensInitialized = originalSuperTokensInitialized
             AppConfig.testingProtocolClasses = nil
             AppConfigRequestURLProtocol.reset()
         }
@@ -83,6 +86,49 @@ import Testing
         #expect(AppConfigRequestURLProtocol.requestedURL == "https://api.example.com/auth/plugin/rownd/app-config")
         #expect(AppConfigRequestURLProtocol.requestedAppKeyHeader == nil)
         #expect(Rownd.config.supertokens == expectedConfig)
+    }
+
+    @Test func initializeSuperTokensUsesConfiguredBootstrapValues() throws {
+        let originalConfig = Rownd.config
+        let originalSuperTokensInitialized = Rownd.isSuperTokensInitialized
+        defer {
+            Rownd.config = originalConfig
+            Rownd.isSuperTokensInitialized = originalSuperTokensInitialized
+        }
+
+        Rownd.config.supertokens = RowndSuperTokensConfig(
+            appName: "Example App",
+            apiDomain: "https://api.example.com",
+            apiBasePath: "/auth"
+        )
+        Rownd.isSuperTokensInitialized = false
+
+        #expect(try Rownd.initializeSuperTokensIfNeeded())
+
+        var request = URLRequest(url: URL(string: "https://api.example.com/auth/me")!)
+        request.setValue("anti-csrf", forHTTPHeaderField: "rid")
+
+        #expect(SuperTokensURLProtocol.canInit(with: request))
+        #expect(!SuperTokensURLProtocol.canInit(with: URLRequest(url: URL(string: "https://api.other.com/auth/me")!)))
+    }
+
+    @Test func initializeSuperTokensOnlyRunsOncePerProcess() throws {
+        let originalConfig = Rownd.config
+        let originalSuperTokensInitialized = Rownd.isSuperTokensInitialized
+        defer {
+            Rownd.config = originalConfig
+            Rownd.isSuperTokensInitialized = originalSuperTokensInitialized
+        }
+
+        Rownd.config.supertokens = RowndSuperTokensConfig(
+            appName: "Example App",
+            apiDomain: "https://api.example.com",
+            apiBasePath: "/auth"
+        )
+        Rownd.isSuperTokensInitialized = false
+
+        #expect(try Rownd.initializeSuperTokensIfNeeded())
+        #expect(try !Rownd.initializeSuperTokensIfNeeded())
     }
 
     private func expectValidationError(
