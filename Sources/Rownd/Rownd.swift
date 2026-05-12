@@ -27,8 +27,7 @@ public class Rownd: NSObject {
     private static var appleSignUpCoordinator: AppleSignUpCoordinator = AppleSignUpCoordinator(inst)
     internal static var googleSignInCoordinator: GoogleSignInCoordinator = GoogleSignInCoordinator(
         inst)
-    @MainActor internal var bottomSheetController: BottomSheetViewController =
-        BottomSheetViewController()
+    @MainActor private var _bottomSheetController: BottomSheetViewController?
     internal static var passkeyCoordinator: PasskeyCoordinator = PasskeyCoordinator()
     internal static var apiClient = RowndApi().client
     internal static let automationsCoordinator = AutomationsCoordinator()
@@ -409,6 +408,16 @@ public class Rownd: NSObject {
         URLProtocol.registerClass(SuperTokensURLProtocol.self)
         isSuperTokensInitialized = true
         return true
+    }
+
+    @MainActor internal var bottomSheetController: BottomSheetViewController {
+        if let controller = _bottomSheetController {
+            return controller
+        }
+
+        let controller = BottomSheetViewController()
+        _bottomSheetController = controller
+        return controller
     }
 
     // MARK: Internal methods

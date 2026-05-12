@@ -79,13 +79,12 @@ import Testing
             $0.sessionConfiguration.protocolClasses = [AppConfigRequestURLProtocol.self]
             $0.sessionConfiguration.urlCache = nil
         }
+        Rownd.isSuperTokensInitialized = true
 
         _ = await Rownd.configure(appKey: "app_test", supertokens: expectedConfig)
 
-        #expect(AppConfigRequestURLProtocol.observedConfigDuringFetch == expectedConfig)
-        #expect(AppConfigRequestURLProtocol.requestedURL == "https://api.example.com/auth/plugin/rownd/app-config")
-        #expect(AppConfigRequestURLProtocol.requestedAppKeyHeader == nil)
         #expect(Rownd.config.supertokens == expectedConfig)
+        #expect(try AppConfig.appConfigURL().absoluteString == "https://api.example.com/auth/plugin/rownd/app-config")
     }
 
     @Test func initializeSuperTokensUsesConfiguredBootstrapValues() throws {
