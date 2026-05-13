@@ -121,8 +121,6 @@ class SmartLinks {
 
                     Context.currentContext.store.dispatch(UserData.fetch())
 
-                    Context.currentContext.store.dispatch(PasskeyData.fetchPasskeyRegistration())
-
                     if Rownd.isDisplayingHub() {
                         Rownd.requestSignIn(jsFnOptions: RowndSignInJsOptions(
                             loginStep: .success

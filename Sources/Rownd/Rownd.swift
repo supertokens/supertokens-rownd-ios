@@ -109,7 +109,6 @@ public class Rownd: NSObject {
             if store.state.auth.isAuthenticated && UIApplication.shared.applicationState == .active
             {
                 store.dispatch(UserData.fetch())
-                store.dispatch(PasskeyData.fetchPasskeyRegistration())
             }
 
             instantUsers = InstantUsers(context: Context.currentContext)

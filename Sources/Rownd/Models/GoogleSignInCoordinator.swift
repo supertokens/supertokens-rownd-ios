@@ -14,6 +14,7 @@ import JWTDecode
 class GoogleSignInCoordinator: NSObject {
     var parent: Rownd
     var intent: RowndSignInIntent?
+    var signInClient = SuperTokensThirdPartySignInClient()
 
     init(_ parent: Rownd) {
         self.parent = parent
@@ -64,11 +65,10 @@ class GoogleSignInCoordinator: NSObject {
                 do {
                     Rownd.customerWebViews.evaluateJavaScript(webViewId: webViewId, code: "window.rownd.requestSignIn({ 'login_step': 'completing' });")
                     
-                    let tokenResponse = try await Auth.fetchToken(idToken: idToken.tokenString, userData: nil, intent: intent)
-                    
-                    guard let tokenResponse = tokenResponse,
-                          let accessToken = tokenResponse.accessToken,
-                          let refreshToken = tokenResponse.refreshToken else {
+                    _ = try await signInClient.signInWithGoogle(idToken: idToken.tokenString)
+                    await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens()
+
+                    guard let accessToken = await SuperTokensSessionBridge.getAccessToken() else {
                         logger.error("Token response is empty")
                         return
                     }
@@ -84,8 +84,8 @@ class GoogleSignInCoordinator: NSObject {
                         
                         let rphInit = RphInit(
                             accessToken: accessToken,
-                            refreshToken: refreshToken,
-                            appId: appId,
+                            refreshToken: nil,
+                            appId: appId ?? Context.currentContext.store.state.appConfig.id,
                             appUserId: appUserId.string
                         )
                         
@@ -171,19 +171,10 @@ class GoogleSignInCoordinator: NSObject {
 
                 logger.debug("Sign-in handshake with Google completed successfully.")
                 do {
-                    let tokenResponse = try await Auth.fetchToken(
-                        idToken: idToken.tokenString,
-                        userData: nil,
-                        intent: intent
-                    )
+                    let signInResponse = try await signInClient.signInWithGoogle(idToken: idToken.tokenString)
+                    await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens()
 
                     Task { @MainActor in
-                        Context.currentContext.store.dispatch(SetAuthState(
-                            payload: AuthState(
-                                accessToken: tokenResponse?.accessToken,
-                                refreshToken: tokenResponse?.refreshToken
-                            )
-                        ))
                         Context.currentContext.store.dispatch(UserData.fetch())
                         Context.currentContext.store.dispatch(SetLastSignInMethod(payload: SignInMethodTypes.google))
 
@@ -191,8 +182,8 @@ class GoogleSignInCoordinator: NSObject {
                             jsFnOptions: RowndSignInJsOptions(
                                 loginStep: .success,
                                 intent: intent,
-                                userType: tokenResponse?.userType,
-                                appVariantUserType: tokenResponse?.appVariantUserType
+                                userType: signInResponse.userType,
+                                appVariantUserType: signInResponse.userType
                             )
                         )
                         
@@ -200,8 +191,8 @@ class GoogleSignInCoordinator: NSObject {
                             event: .signInCompleted,
                             data: [
                                 "method": AnyCodable(SignInType.google.rawValue),
-                                "user_type": AnyCodable(tokenResponse?.userType?.rawValue),
-                                "app_variant_user_type": AnyCodable(tokenResponse?.appVariantUserType?.rawValue)
+                                "user_type": AnyCodable(signInResponse.userType.rawValue),
+                                "app_variant_user_type": AnyCodable(signInResponse.userType.rawValue)
                             ]
                         ))
                     }

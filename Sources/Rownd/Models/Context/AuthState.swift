@@ -120,7 +120,6 @@ func onReceiveAuthTokens(_ newAuthState: AuthState) -> Thunk<RowndState> {
                 DispatchQueue.main.async {
                     dispatch(SetAuthState(payload: newAuthState))
                     dispatch(UserData.fetch())
-                    dispatch(PasskeyData.fetchPasskeyRegistration())
                 }
             }
 
@@ -138,7 +137,6 @@ func onReceiveAuthTokens(_ newAuthState: AuthState) -> Thunk<RowndState> {
 
                 DispatchQueue.main.async {
                     dispatch(SetAuthState(payload: newAuthState))
-                    dispatch(PasskeyData.fetchPasskeyRegistration())
                 }
             }
 
