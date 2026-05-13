@@ -13,121 +13,185 @@ import Testing
 @Suite(.serialized) struct RowndSuperTokensConfigTests {
     init() async throws {}
 
-    @Test func validateSuperTokensConfigRequiresNonEmptyFields() throws {
-        let validConfig = RowndSuperTokensConfig(
-            appName: "Example App",
-            apiDomain: "https://api.example.com"
-        )
-
-        #expect(try Rownd.validateSuperTokensConfig(validConfig) == validConfig)
-        try expectValidationError(
-            RowndSuperTokensConfig(appName: "", apiDomain: "https://api.example.com"),
-            expectedMessage: "SuperTokens appName must not be empty"
-        )
-        try expectValidationError(
-            RowndSuperTokensConfig(appName: "Example App", apiDomain: ""),
-            expectedMessage: "SuperTokens apiDomain must not be empty"
-        )
-        try expectValidationError(
-            RowndSuperTokensConfig(
+    @Test func validateSuperTokensConfigRequiresNonEmptyFields() async throws {
+        try await withGlobalTestLock {
+            let validConfig = RowndSuperTokensConfig(
                 appName: "Example App",
-                apiDomain: "https://api.example.com",
-                apiBasePath: ""
-            ),
-            expectedMessage: "SuperTokens apiBasePath must not be empty"
-        )
+                apiDomain: "https://api.example.com"
+            )
+
+            #expect(try Rownd.validateSuperTokensConfig(validConfig) == validConfig)
+            try expectValidationError(
+                RowndSuperTokensConfig(appName: "", apiDomain: "https://api.example.com"),
+                expectedMessage: "SuperTokens appName must not be empty"
+            )
+            try expectValidationError(
+                RowndSuperTokensConfig(appName: "Example App", apiDomain: ""),
+                expectedMessage: "SuperTokens apiDomain must not be empty"
+            )
+            try expectValidationError(
+                RowndSuperTokensConfig(
+                    appName: "Example App",
+                    apiDomain: "https://api.example.com",
+                    apiBasePath: ""
+                ),
+                expectedMessage: "SuperTokens apiBasePath must not be empty"
+            )
+        }
     }
 
     @Test func configureStoresSuperTokensConfigBeforeAppConfigFetch() async throws {
-        let originalApiClient = Rownd.apiClient
-        let originalConfig = Rownd.config
-        let originalSuperTokensInitialized = Rownd.isSuperTokensInitialized
-        defer {
-            Rownd.apiClient = originalApiClient
-            Rownd.config = originalConfig
-            Rownd.isSuperTokensInitialized = originalSuperTokensInitialized
-            AppConfig.testingProtocolClasses = nil
-            AppConfigRequestURLProtocol.reset()
+        try await withGlobalTestLock {
+            let originalApiClient = Rownd.apiClient
+            let originalConfig = Rownd.config
+            let originalSuperTokensInitialized = Rownd.isSuperTokensInitialized
+            defer {
+                Rownd.apiClient = originalApiClient
+                Rownd.config = originalConfig
+                Rownd.isSuperTokensInitialized = originalSuperTokensInitialized
+                AppConfig.testingProtocolClasses = nil
+                AppConfigRequestURLProtocol.reset()
+            }
+
+            let store = Context.currentContext.store
+            await MainActor.run {
+                store.dispatch(SetAppConfig(payload: AppConfigState()))
+                store.dispatch(SetAuthState(payload: AuthState()))
+                store.dispatch(SetClockSync(clockSyncState: .synced))
+            }
+
+            let expectedConfig = RowndSuperTokensConfig(
+                appName: "Example App",
+                apiDomain: "https://api.example.com",
+                apiBasePath: "/auth"
+            )
+
+            let responseData = """
+            {
+              "app": {
+                "id": "app_test",
+                "name": "Example App"
+              }
+            }
+            """.data(using: .utf8)!
+
+            Rownd.config = RowndConfig()
+            AppConfigRequestURLProtocol.responseData = responseData
+            AppConfig.testingProtocolClasses = [AppConfigRequestURLProtocol.self]
+            Rownd.apiClient = APIClient(baseURL: URL(string: "https://ignored.example.com")!) {
+                $0.sessionConfiguration.protocolClasses = [AppConfigRequestURLProtocol.self]
+                $0.sessionConfiguration.urlCache = nil
+            }
+            Rownd.isSuperTokensInitialized = true
+
+            _ = await Rownd.configure(appKey: "app_test", supertokens: expectedConfig)
+
+            let appConfigURL = try AppConfig.appConfigURL().absoluteString
+            #expect(Rownd.config.supertokens == expectedConfig)
+            #expect(appConfigURL == "https://api.example.com/auth/plugin/rownd/app-config")
         }
-
-        let store = Context.currentContext.store
-        await MainActor.run {
-            store.dispatch(SetAppConfig(payload: AppConfigState()))
-            store.dispatch(SetAuthState(payload: AuthState()))
-            store.dispatch(SetClockSync(clockSyncState: .synced))
-        }
-
-        let expectedConfig = RowndSuperTokensConfig(
-            appName: "Example App",
-            apiDomain: "https://api.example.com",
-            apiBasePath: "/auth"
-        )
-
-        let responseData = """
-        {
-          "app": {
-            "id": "app_test",
-            "name": "Example App"
-          }
-        }
-        """.data(using: .utf8)!
-
-        Rownd.config = RowndConfig()
-        AppConfigRequestURLProtocol.responseData = responseData
-        AppConfig.testingProtocolClasses = [AppConfigRequestURLProtocol.self]
-        Rownd.apiClient = APIClient(baseURL: URL(string: "https://ignored.example.com")!) {
-            $0.sessionConfiguration.protocolClasses = [AppConfigRequestURLProtocol.self]
-            $0.sessionConfiguration.urlCache = nil
-        }
-        Rownd.isSuperTokensInitialized = true
-
-        _ = await Rownd.configure(appKey: "app_test", supertokens: expectedConfig)
-
-        #expect(Rownd.config.supertokens == expectedConfig)
-        #expect(try AppConfig.appConfigURL().absoluteString == "https://api.example.com/auth/plugin/rownd/app-config")
     }
 
-    @Test func initializeSuperTokensUsesConfiguredBootstrapValues() throws {
-        let originalConfig = Rownd.config
-        let originalSuperTokensInitialized = Rownd.isSuperTokensInitialized
-        defer {
-            Rownd.config = originalConfig
-            Rownd.isSuperTokensInitialized = originalSuperTokensInitialized
+    @Test func initializeSuperTokensUsesConfiguredBootstrapValues() async throws {
+        try await withGlobalTestLock {
+            let originalConfig = Rownd.config
+            let originalSuperTokensInitialized = Rownd.isSuperTokensInitialized
+            defer {
+                Rownd.config = originalConfig
+                Rownd.isSuperTokensInitialized = originalSuperTokensInitialized
+            }
+
+            Rownd.config.supertokens = RowndSuperTokensConfig(
+                appName: "Example App",
+                apiDomain: "https://api.example.com",
+                apiBasePath: "/auth"
+            )
+            Rownd.isSuperTokensInitialized = false
+
+            let didInitialize = try Rownd.initializeSuperTokensIfNeeded()
+            #expect(didInitialize)
+
+            var request = URLRequest(url: URL(string: "https://api.example.com/auth/me")!)
+            request.setValue("anti-csrf", forHTTPHeaderField: "rid")
+
+            #expect(SuperTokensURLProtocol.canInit(with: request))
+            #expect(!SuperTokensURLProtocol.canInit(with: URLRequest(url: URL(string: "https://api.other.com/auth/me")!)))
         }
-
-        Rownd.config.supertokens = RowndSuperTokensConfig(
-            appName: "Example App",
-            apiDomain: "https://api.example.com",
-            apiBasePath: "/auth"
-        )
-        Rownd.isSuperTokensInitialized = false
-
-        #expect(try Rownd.initializeSuperTokensIfNeeded())
-
-        var request = URLRequest(url: URL(string: "https://api.example.com/auth/me")!)
-        request.setValue("anti-csrf", forHTTPHeaderField: "rid")
-
-        #expect(SuperTokensURLProtocol.canInit(with: request))
-        #expect(!SuperTokensURLProtocol.canInit(with: URLRequest(url: URL(string: "https://api.other.com/auth/me")!)))
     }
 
-    @Test func initializeSuperTokensOnlyRunsOncePerProcess() throws {
-        let originalConfig = Rownd.config
-        let originalSuperTokensInitialized = Rownd.isSuperTokensInitialized
-        defer {
-            Rownd.config = originalConfig
-            Rownd.isSuperTokensInitialized = originalSuperTokensInitialized
+    @Test func initializeSuperTokensOnlyRunsOncePerProcess() async throws {
+        try await withGlobalTestLock {
+            let originalConfig = Rownd.config
+            let originalSuperTokensInitialized = Rownd.isSuperTokensInitialized
+            defer {
+                Rownd.config = originalConfig
+                Rownd.isSuperTokensInitialized = originalSuperTokensInitialized
+            }
+
+            Rownd.config.supertokens = RowndSuperTokensConfig(
+                appName: "Example App",
+                apiDomain: "https://api.example.com",
+                apiBasePath: "/auth"
+            )
+            Rownd.isSuperTokensInitialized = false
+
+            let firstInitialize = try Rownd.initializeSuperTokensIfNeeded()
+            let secondInitialize = try Rownd.initializeSuperTokensIfNeeded()
+            #expect(firstInitialize)
+            #expect(!secondInitialize)
         }
+    }
 
-        Rownd.config.supertokens = RowndSuperTokensConfig(
-            appName: "Example App",
-            apiDomain: "https://api.example.com",
-            apiBasePath: "/auth"
-        )
-        Rownd.isSuperTokensInitialized = false
+    @Test func repeatedConfigureKeepsSuperTokensInitializationGuardSet() async throws {
+        try await withGlobalTestLock {
+            let originalApiClient = Rownd.apiClient
+            let originalConfig = Rownd.config
+            let originalSuperTokensInitialized = Rownd.isSuperTokensInitialized
+            defer {
+                Rownd.apiClient = originalApiClient
+                Rownd.config = originalConfig
+                Rownd.isSuperTokensInitialized = originalSuperTokensInitialized
+                AppConfig.testingProtocolClasses = nil
+                AppConfigRequestURLProtocol.reset()
+            }
 
-        #expect(try Rownd.initializeSuperTokensIfNeeded())
-        #expect(try !Rownd.initializeSuperTokensIfNeeded())
+            await MainActor.run {
+                Context.currentContext.store.dispatch(SetAppConfig(payload: AppConfigState()))
+                Context.currentContext.store.dispatch(SetAuthState(payload: AuthState()))
+                Context.currentContext.store.dispatch(SetClockSync(clockSyncState: .synced))
+            }
+
+            AppConfigRequestURLProtocol.responseData = Self.appConfigResponseData
+            AppConfig.testingProtocolClasses = [AppConfigRequestURLProtocol.self]
+            Rownd.apiClient = APIClient(baseURL: URL(string: "https://ignored.example.com")!) {
+                $0.sessionConfiguration.protocolClasses = [AppConfigRequestURLProtocol.self]
+                $0.sessionConfiguration.urlCache = nil
+            }
+
+            Rownd.config = RowndConfig()
+            Rownd.isSuperTokensInitialized = false
+
+            _ = await Rownd.configure(
+                appKey: "app_test",
+                supertokens: RowndSuperTokensConfig(
+                    appName: "Example App",
+                    apiDomain: "https://first.example.com",
+                    apiBasePath: "/auth"
+                )
+            )
+
+            _ = await Rownd.configure(
+                appKey: "app_test",
+                supertokens: RowndSuperTokensConfig(
+                    appName: "Example App",
+                    apiDomain: "https://second.example.com",
+                    apiBasePath: "/auth"
+                )
+            )
+
+            #expect(Rownd.isSuperTokensInitialized)
+            #expect(Rownd.config.supertokens?.apiDomain == "https://second.example.com")
+        }
     }
 
     private func expectValidationError(
@@ -143,6 +207,15 @@ import Testing
             Issue.record("Unexpected validation error: \(error)")
         }
     }
+
+    private static let appConfigResponseData = """
+    {
+      "app": {
+        "id": "app_test",
+        "name": "Example App"
+      }
+    }
+    """.data(using: .utf8)!
 }
 
 private final class AppConfigRequestURLProtocol: URLProtocol {

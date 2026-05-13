@@ -240,11 +240,16 @@ public class Rownd: NSObject {
     }
 
     public static func signOut() {
-        Task { @MainActor in
-            let store = Context.currentContext.store
-            store.dispatch(SetAuthState(payload: AuthState()))
+        Task {
+            if isSuperTokensInitialized {
+                // Keep the compatibility session from resurrecting Rownd auth on later syncs.
+                await SuperTokensSessionBridge.signOut()
+            }
 
-            Task { @MainActor in
+            await MainActor.run {
+                let store = Context.currentContext.store
+                store.dispatch(SetAuthState(payload: AuthState()))
+
                 RowndEventEmitter.emit(
                     RowndEvent(
                         event: .signOut

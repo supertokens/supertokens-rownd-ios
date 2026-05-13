@@ -14,7 +14,7 @@ let package = Package(
     name: "Rownd",
     platforms: [
         .iOS(.v14),
-        .macOS(.v11),
+        .macOS(.v12),
         .macCatalyst(.v14)
     ],
     products: [
@@ -152,6 +152,13 @@ let package = Package(
                 "Factory",
                 "Rownd"
             ]
+        ),
+        .testTarget(
+            name: "RowndIntegrationTests",
+            dependencies: [
+                "Rownd"
+            ],
+            path: "Tests/RowndIntegrationTests"
         )
     ],
 

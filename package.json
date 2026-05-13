@@ -5,6 +5,8 @@
     "test:package:auth": "xcodebuild -workspace .swiftpm/xcode/package.xcworkspace -scheme Rownd -destination 'platform=iOS Simulator,name=iPhone 17' -only-testing:RowndTests/AuthTests test",
     "test:package:rownd": "xcodebuild -workspace .swiftpm/xcode/package.xcworkspace -scheme Rownd -destination 'platform=iOS Simulator,name=iPhone 17' -only-testing:RowndTests/RowndTests test",
     "test:package:shared": "xcodebuild -workspace .swiftpm/xcode/package.xcworkspace -scheme Rownd -destination 'platform=iOS Simulator,name=iPhone 17' -skip-testing:RowndTests/AuthTests -skip-testing:RowndTests/RowndTests test",
+    "test:integration:harness": "tsx test-server/run-harness.ts",
+    "test:integration": "TEST_BACKEND_URL=http://127.0.0.1:3100 xcodebuild -workspace .swiftpm/xcode/package.xcworkspace -scheme Rownd -destination 'platform=iOS Simulator,name=iPhone 17' -only-testing:RowndIntegrationTests test",
     "test:package": "npm run test:package:auth && npm run test:package:rownd && npm run test:package:shared",
     "test:all": "npm run test:package && npm run test:example",
     "release": "release-it"
@@ -15,8 +17,17 @@
     "@release-it/bumper": "^6.0.1",
     "@release-it/conventional-changelog": "^9.0.2",
     "@release-it/keep-a-changelog": "^5.0.0",
+    "@supertokens-plugins/rownd-nodejs": "file:../../../supertokens-plugins/packages/rownd-nodejs",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
     "husky": "^9.1.6",
     "podspec-bump": "^0.4.2",
-    "release-it": "^17.10.0"
+    "release-it": "^17.10.0",
+    "supertokens-node": "^24.0.2",
+    "testcontainers": "^11.14.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
   }
 }
