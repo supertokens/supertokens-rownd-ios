@@ -64,6 +64,7 @@ public class Rownd: NSObject {
         }
 
         let state = await inst.inflateStoreCache()
+        await LegacySessionMigrator.migrateIfNeeded(authState: state.auth)
 
         // Skip the rest within app extensions
         if Bundle.main.bundlePath.hasSuffix(".appex") {
@@ -254,6 +255,18 @@ public class Rownd: NSObject {
                         event: .signOut
                     ))
             }
+        }
+    }
+
+    internal static func signOutForMigrationFailure() async {
+        if isSuperTokensInitialized {
+            await SuperTokensSessionBridge.signOut()
+        }
+
+        await MainActor.run {
+            let store = Context.currentContext.store
+            store.dispatch(SetAuthState(payload: AuthState()))
+            RowndEventEmitter.emit(RowndEvent(event: .signOut))
         }
     }
 

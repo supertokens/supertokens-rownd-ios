@@ -16,6 +16,8 @@ type HarnessCounters = {
   createSession: number;
   signOut: number;
   stRefresh: number;
+  legacyRefresh: number;
+  migrate: number;
   protected: number;
 };
 
@@ -40,6 +42,8 @@ const counters: HarnessCounters = {
   createSession: 0,
   signOut: 0,
   stRefresh: 0,
+  legacyRefresh: 0,
+  migrate: 0,
   protected: 0,
 };
 
@@ -47,6 +51,8 @@ function resetCounters() {
   counters.createSession = 0;
   counters.signOut = 0;
   counters.stRefresh = 0;
+  counters.legacyRefresh = 0;
+  counters.migrate = 0;
   counters.protected = 0;
 }
 
@@ -186,6 +192,9 @@ export async function startIntegrationHarness(): Promise<IntegrationHarness> {
     if (req.method === 'POST' && req.path === '/auth/session/refresh') {
       counters.stRefresh += 1;
     }
+    if (req.method === 'POST' && req.path === '/auth/plugin/rownd/migrate') {
+      counters.migrate += 1;
+    }
     if (req.method === 'POST' && req.path === '/auth/signout') {
       counters.signOut += 1;
     }
@@ -194,6 +203,15 @@ export async function startIntegrationHarness(): Promise<IntegrationHarness> {
   });
 
   app.use(middleware());
+
+  app.post('/hub/auth/token', (_req, res) => {
+    counters.legacyRefresh += 1;
+    res.json({
+      access_token: 'legacy-refreshed-access-token',
+      refresh_token: 'legacy-refreshed-refresh-token',
+      is_verified_user: true,
+    });
+  });
 
   app.get('/health', (_req, res) => {
     res.json({ status: 'OK' });
