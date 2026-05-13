@@ -98,3 +98,15 @@ internal enum SuperTokensSessionBridge {
         userDefaults.removeObject(forKey: antiCSRFStorageKey)
     }
 }
+
+internal struct SuperTokensSessionBridgeClient {
+    var doesSessionExist: () async -> Bool
+    var getAccessToken: () async -> String?
+    var attemptRefresh: () async -> Bool
+
+    static let live = SuperTokensSessionBridgeClient(
+        doesSessionExist: SuperTokensSessionBridge.doesSessionExist,
+        getAccessToken: SuperTokensSessionBridge.getAccessToken,
+        attemptRefresh: SuperTokensSessionBridge.attemptRefresh
+    )
+}

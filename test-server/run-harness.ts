@@ -1,5 +1,7 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn } from 'node:child_process';
+import type { Server } from 'node:http';
 import path from 'node:path';
+import express from 'express';
 import { startIntegrationHarness } from './server';
 
 // The Rownd plugin creates a default Rownd client during init. That client starts
@@ -14,11 +16,11 @@ process.on('unhandledRejection', (reason) => {
 });
 
 let harness: Awaited<ReturnType<typeof startIntegrationHarness>> | undefined;
-let hubServer: ChildProcess | undefined;
+let hubServer: Server | undefined;
 let isShuttingDown = false;
 
 const hubRepoDir = path.resolve(process.cwd(), '../supertokens-rownd-hub');
-const hubTsxBin = path.join(hubRepoDir, 'node_modules/.bin/tsx');
+const hubPort = Number(process.env.E2E_HUB_PORT || 8787);
 
 function run(command: string, args: string[], cwd: string) {
   const child = spawn(command, args, {
@@ -62,20 +64,25 @@ async function waitForHealth(url: string, timeoutMs = 120_000) {
 async function startHubServer() {
   await run('npm', ['run', 'build'], hubRepoDir);
 
-  hubServer = spawn(hubTsxBin, ['./test/e2e/harness/hub-server.ts'], {
-    cwd: hubRepoDir,
-    stdio: 'inherit',
-    shell: false,
+  const app = express();
+  const distDir = path.join(hubRepoDir, 'dist');
+
+  app.use((_, res, next) => {
+    res.setHeader('Access-Control-Allow-Origin', 'http://127.0.0.1:3100');
+    next();
   });
 
-  hubServer.on('exit', (code) => {
-    if (!isShuttingDown) {
-      console.error(`Hub SDK server exited unexpectedly with ${code}`);
-      process.exit(1);
-    }
+  app.get('/health', (_req, res) => {
+    res.json({ status: 'OK' });
   });
 
-  await waitForHealth('http://127.0.0.1:8787/health');
+  app.use(express.static(distDir));
+
+  hubServer = await new Promise<Server>((resolve) => {
+    const listeningServer = app.listen(hubPort, '127.0.0.1', () => resolve(listeningServer));
+  });
+
+  await waitForHealth(`http://127.0.0.1:${hubPort}/health`);
 }
 
 async function shutdown(exitCode = 0) {
@@ -90,7 +97,16 @@ async function shutdown(exitCode = 0) {
       await harness.stop();
     }
     if (hubServer) {
-      hubServer.kill('SIGTERM');
+      await new Promise<void>((resolve, reject) => {
+        hubServer?.close((error) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+
+          resolve();
+        });
+      });
       hubServer = undefined;
     }
   } catch (error) {
@@ -106,7 +122,7 @@ void startHubServer()
   .then((startedHarness) => {
     harness = startedHarness;
     console.log(`iOS integration harness listening at ${startedHarness.apiUrl}`);
-    console.log('Local Hub SDK server listening at http://127.0.0.1:8787');
+    console.log(`Local Hub SDK server listening at http://127.0.0.1:${hubPort}`);
   })
   .catch((error) => {
     console.error('Failed to start iOS integration harness', error);

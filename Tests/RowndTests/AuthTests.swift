@@ -32,256 +32,132 @@ import Testing
         Mocker.removeAll()
     }
     
-    @Test func testRefreshToken() async throws {
-        let store = Context.currentContext.store
-
-        Task { @MainActor in
-            store.dispatch(SetAuthState(payload: AuthState(
-                accessToken: generateJwt(expires: NSDate().timeIntervalSince1970), // this will be expired
-                refreshToken: "eyJhbGciOiJFZERTQSIsImtpZCI6InNpZy0xNjQ0OTM3MzYwIn0.eyJqdGkiOiJiNzY4NmUxNC0zYjk2LTQzMTItOWM3ZS1iODdmOTlmYTAxMzIiLCJhdWQiOlsiYXBwOjMzNzA4MDg0OTIyMTU1MDY3MSJdLCJzdWIiOiJnb29nbGUtb2F1dGgyfDExNDg5NTEyMjc5NTQ1MjEyNzI3NiIsImh0dHBzOi8vYXV0aC5yb3duZC5pby9hcHBfdXNlcl9pZCI6ImM5YTgxMDM5LTBjYmMtNDFkNy05YTlkLWVhOWI1YTE5Y2JmMCIsImh0dHBzOi8vYXV0aC5yb3duZC5pby9pc192ZXJpZmllZF91c2VyIjp0cnVlLCJpc3MiOiJodHRwczovL2FwaS5yb3duZC5pbyIsImlhdCI6MTY2NTk3MTk0MiwiaHR0cHM6Ly9hdXRoLnJvd25kLmlvL2p3dF90eXBlIjoicmVmcmVzaF90b2tlbiIsImV4cCI6MTY2ODU2Mzk0Mn0.Yn35j83bfFNgNk26gTvd4a2a2NAGXp7eknvOaFAtd3lWCdvtw6gKRso6Uzd7uydy2MWJFRWC38AkV6lMMfnrDw"
-            )))
-        }
-
-        let responseData = AuthState(
-            accessToken: generateJwt(expires: Date.init(timeIntervalSinceNow: 1000).timeIntervalSince1970),
-            refreshToken: generateJwt(expires: Date.init().timeIntervalSince1970)
+    @Test func testGetValidTokenReadsSuperTokensAccessToken() async throws {
+        let superTokensAccessToken = generateJwt(expires: Date(timeIntervalSinceNow: 1000).timeIntervalSince1970)
+        let legacyAuthState = AuthState(
+            accessToken: generateJwt(expires: Date(timeIntervalSinceNow: -1000).timeIntervalSince1970),
+            refreshToken: "legacy-refresh-token",
+            isVerifiedUser: true,
+            hasPreviouslySignedIn: true
         )
-        
-        var mock = Mock(
-            url: URL(string: "https://api.rownd.io/hub/auth/token")!,
-            ignoreQuery: true,
-            dataType: .json,
-            statusCode: 200,
-            data: [
-                .post : try JSONEncoder().encode(responseData)
-            ]
-        )
-        
-        mock.onRequestHandler = OnRequestHandler(httpBodyType: [String:String].self) { request, postBodyArguments in
-            print("Refresh called")
-        }
-        
-        mock.register()
-
-        let authState = try? await Context.currentContext.authenticator.refreshToken()
-
-        #expect(authState != nil, "Returned resource should not be nil")
-        #expect(authState?.accessToken != nil, "Access token should be present")
-        #expect(authState?.accessToken == responseData.accessToken, "Access token should be updated")
-    }
-    
-    @Test func testMultipleAuthenticatedReqeustsWithExpiredAccessToken() async throws {
-        let store = Context.currentContext.store
 
         await MainActor.run {
-            store.dispatch(SetAuthState(payload: AuthState(
-                accessToken: generateJwt(expires: Date.init(timeIntervalSinceNow: -1000).timeIntervalSince1970), // this will be expired
-                refreshToken: "eyJhbGciOiJFZERTQSIsImtpZCI6InNpZy0xNjQ0OTM3MzYwIn0.eyJqdGkiOiJiNzY4NmUxNC0zYjk2LTQzMTItOWM3ZS1iODdmOTlmYTAxMzIiLCJhdWQiOlsiYXBwOjMzNzA4MDg0OTIyMTU1MDY3MSJdLCJzdWIiOiJnb29nbGUtb2F1dGgyfDExNDg5NTEyMjc5NTQ1MjEyNzI3NiIsImh0dHBzOi8vYXV0aC5yb3duZC5pby9hcHBfdXNlcl9pZCI6ImM5YTgxMDM5LTBjYmMtNDFkNy05YTlkLWVhOWI1YTE5Y2JmMCIsImh0dHBzOi8vYXV0aC5yb3duZC5pby9pc192ZXJpZmllZF91c2VyIjp0cnVlLCJpc3MiOiJodHRwczovL2FwaS5yb3duZC5pbyIsImlhdCI6MTY2NTk3MTk0MiwiaHR0cHM6Ly9hdXRoLnJvd25kLmlvL2p3dF90eXBlIjoicmVmcmVzaF90b2tlbiIsImV4cCI6MTY2ODU2Mzk0Mn0.Yn35j83bfFNgNk26gTvd4a2a2NAGXp7eknvOaFAtd3lWCdvtw6gKRso6Uzd7uydy2MWJFRWC38AkV6lMMfnrDw"
-            )))
+            Context.currentContext.store.dispatch(SetAuthState(payload: legacyAuthState))
         }
+        AuthenticatorSubscription.currentAuthState = legacyAuthState
 
-        let responseData = AuthState(
-            accessToken: generateJwt(expires: Date.init(timeIntervalSinceNow: 1000).timeIntervalSince1970),
-            refreshToken: generateJwt(expires: Date.init().timeIntervalSince1970)
+        let bridge = TestSessionBridge(accessToken: superTokensAccessToken)
+        let authenticator = Authenticator(sessionBridge: bridge.client)
+
+        let authState = try await authenticator.getValidToken()
+
+        #expect(authState.accessToken == superTokensAccessToken)
+        #expect(authState.refreshToken == nil)
+        #expect(authState.isVerifiedUser == nil)
+        #expect(authState.hasPreviouslySignedIn == true)
+        #expect(await bridge.getAccessTokenCalls == 1)
+        #expect(await bridge.attemptRefreshCalls == 0)
+        #expect(Context.currentContext.store.state.auth.accessToken == superTokensAccessToken)
+    }
+
+    @Test func testGetValidTokenDoesNotDependOnRowndRefreshToken() async throws {
+        let superTokensAccessToken = generateJwt(expires: Date(timeIntervalSinceNow: 1000).timeIntervalSince1970)
+        let legacyAuthState = AuthState(
+            accessToken: nil,
+            refreshToken: "legacy-refresh-token"
         )
-        print("Response data will be: \(String(describing: responseData))")
-        
-        var numTimesRefreshCalled = 0
-        var mock = Mock(
-            url: URL(string: "https://api.rownd.io/hub/auth/token")!,
-            ignoreQuery: true,
-            dataType: .json,
-            statusCode: 200,
-            data: [
-                .post : try JSONEncoder().encode(responseData)
-            ]
-        )
-        
-        mock.onRequestHandler = OnRequestHandler(httpBodyType: [String:String].self) { request, postBodyArguments in
-            numTimesRefreshCalled += 1
-            print("Refresh called: \(numTimesRefreshCalled) times")
+
+        await MainActor.run {
+            Context.currentContext.store.dispatch(SetAuthState(payload: legacyAuthState))
         }
-        
-        mock.delay = DispatchTimeInterval.seconds(2)
-        
-        mock.register()
+        AuthenticatorSubscription.currentAuthState = legacyAuthState
+
+        let bridge = TestSessionBridge(accessToken: superTokensAccessToken)
+        let authenticator = Authenticator(sessionBridge: bridge.client)
+
+        let authState = try await authenticator.getValidToken()
+
+        #expect(authState.accessToken == superTokensAccessToken)
+        #expect(authState.refreshToken == nil)
+        #expect(await bridge.attemptRefreshCalls == 0)
+    }
+
+    @Test func testGetValidTokenRefreshesExpiredSuperTokensAccessToken() async throws {
+        let expiredAccessToken = generateJwt(expires: Date(timeIntervalSinceNow: -1000).timeIntervalSince1970)
+        let refreshedAccessToken = generateJwt(expires: Date(timeIntervalSinceNow: 1000).timeIntervalSince1970)
+        let bridge = TestSessionBridge(
+            accessToken: expiredAccessToken,
+            sessionExists: true,
+            refreshSucceeds: true,
+            refreshedAccessToken: refreshedAccessToken
+        )
+        let authenticator = Authenticator(sessionBridge: bridge.client)
+
+        let authState = try await authenticator.getValidToken()
+
+        #expect(authState.accessToken == refreshedAccessToken)
+        #expect(await bridge.attemptRefreshCalls == 1)
+    }
+
+    @Test func testGetValidTokenThrowsWhenSuperTokensHasNoToken() async throws {
+        let bridge = TestSessionBridge(accessToken: nil, sessionExists: false)
+        let authenticator = Authenticator(sessionBridge: bridge.client)
+
+        await #expect(throws: AuthenticationError.noAccessTokenPresent) {
+            try await authenticator.getValidToken()
+        }
+    }
+
+    @Test func testRefreshTokenUsesSuperTokensRefresh() async throws {
+        let superTokensAccessToken = generateJwt(expires: Date(timeIntervalSinceNow: 1000).timeIntervalSince1970)
+        let bridge = TestSessionBridge(accessToken: superTokensAccessToken, sessionExists: true, refreshSucceeds: true)
+        let authenticator = Authenticator(sessionBridge: bridge.client)
+
+        let authState = try await authenticator.refreshToken()
+
+        #expect(authState.accessToken == superTokensAccessToken)
+        #expect(authState.refreshToken == nil)
+        #expect(await bridge.attemptRefreshCalls == 1)
+        #expect(Context.currentContext.store.state.auth.accessToken == superTokensAccessToken)
+    }
+
+    @Test func testConcurrentRefreshTokenCallsShareRefreshTask() async throws {
+        let superTokensAccessToken = generateJwt(expires: Date(timeIntervalSinceNow: 1000).timeIntervalSince1970)
+        let bridge = TestSessionBridge(
+            accessToken: superTokensAccessToken,
+            sessionExists: true,
+            refreshSucceeds: true,
+            attemptRefreshDelayNanoseconds: 200_000_000
+        )
+        let authenticator = Authenticator(sessionBridge: bridge.client)
+
+        async let task1 = authenticator.refreshToken()
+        async let task2 = authenticator.refreshToken()
+        async let task3 = authenticator.refreshToken()
+
+        let (value1, value2, value3) = try await (task1, task2, task3)
+
+        #expect(value1.accessToken == superTokensAccessToken)
+        #expect(value2.accessToken == superTokensAccessToken)
+        #expect(value3.accessToken == superTokensAccessToken)
+        #expect(await bridge.attemptRefreshCalls == 1)
+    }
+
+    @Test func testRowndGetAccessTokenUsesSuperTokensTokenWithoutLegacyRefresh() async throws {
+        let superTokensAccessToken = generateJwt(expires: Date(timeIntervalSinceNow: 1000).timeIntervalSince1970)
+        let bridge = TestSessionBridge(accessToken: superTokensAccessToken)
+        Context.currentContext.authenticator = Authenticator(sessionBridge: bridge.client)
 
         async let task1 = Rownd.getAccessToken()
         async let task2 = Rownd.getAccessToken()
         async let task3 = Rownd.getAccessToken()
 
-        // Wait for all values concurrently
         let (value1, value2, value3) = try await (task1, task2, task3)
 
-        // Ensure they all match the expected token
-        #expect(value1 == responseData.accessToken)
-        #expect(value2 == responseData.accessToken)
-        #expect(value3 == responseData.accessToken)
-
-        #expect(numTimesRefreshCalled == 1)
-    }
-    
-    @Test func testRefreshTokenRetryWithHttpErrors() async throws {
-        let store = Context.currentContext.store
-
-        Task { @MainActor in
-            store.dispatch(SetAuthState(payload: AuthState(
-                accessToken: generateJwt(expires: Date.init(timeIntervalSinceNow: -1000).timeIntervalSince1970), // this will be expired
-                refreshToken: "eyJhbGciOiJFZERTQSIsImtpZCI6InNpZy0xNjQ0OTM3MzYwIn0.eyJqdGkiOiJiNzY4NmUxNC0zYjk2LTQzMTItOWM3ZS1iODdmOTlmYTAxMzIiLCJhdWQiOlsiYXBwOjMzNzA4MDg0OTIyMTU1MDY3MSJdLCJzdWIiOiJnb29nbGUtb2F1dGgyfDExNDg5NTEyMjc5NTQ1MjEyNzI3NiIsImh0dHBzOi8vYXV0aC5yb3duZC5pby9hcHBfdXNlcl9pZCI6ImM5YTgxMDM5LTBjYmMtNDFkNy05YTlkLWVhOWI1YTE5Y2JmMCIsImh0dHBzOi8vYXV0aC5yb3duZC5pby9pc192ZXJpZmllZF91c2VyIjp0cnVlLCJpc3MiOiJodHRwczovL2FwaS5yb3duZC5pbyIsImlhdCI6MTY2NTk3MTk0MiwiaHR0cHM6Ly9hdXRoLnJvd25kLmlvL2p3dF90eXBlIjoicmVmcmVzaF90b2tlbiIsImV4cCI6MTY2ODU2Mzk0Mn0.Yn35j83bfFNgNk26gTvd4a2a2NAGXp7eknvOaFAtd3lWCdvtw6gKRso6Uzd7uydy2MWJFRWC38AkV6lMMfnrDw"
-            )))
-        }
-
-        let responseData = AuthState(
-            accessToken: generateJwt(expires: Date.init(timeIntervalSinceNow: 1000).timeIntervalSince1970),
-            refreshToken: generateJwt(expires: Date.init().timeIntervalSince1970)
-        )
-        print("Response data will be: \(String(describing: responseData))")
-        
-        var numTimesRefreshCalled = 0
-        var mock = Mock(
-            url: URL(string: "https://api.rownd.io/hub/auth/token")!,
-            ignoreQuery: true,
-            dataType: .json,
-            statusCode: 500,
-            data: [
-                .post : try JSONEncoder().encode(["error": "Something went wrong"])
-            ]
-        )
-        
-        mock.onRequestHandler = OnRequestHandler(httpBodyType: [String:String].self) { request, postBodyArguments in
-            // After a couple of errors, make the mock return normal status
-            if numTimesRefreshCalled == 2 {
-                do {
-                    Mock(
-                        url: URL(string: "https://api.rownd.io/hub/auth/token")!,
-                        dataType: .json,
-                        statusCode: 200,
-                        data: [
-                            .post : try JSONEncoder().encode(responseData)
-                        ]
-                    ).register()
-                } catch {
-                    Issue.record("Failed to register updated mock")
-                }
-            }
-            
-            numTimesRefreshCalled += 1
-            print("Refresh called: \(numTimesRefreshCalled) times")
-        }
-        
-        mock.delay = DispatchTimeInterval.seconds(2)
-        
-        mock.register()
-
-        let token1 = try await Rownd.getAccessToken()
-        #expect(token1 == responseData.accessToken)
-    }
-    
-    @Test func testRefreshTokenThrowsWhenOfflineShouldNotSignOut() async throws {
-        let store = Context.currentContext.store
-
-        Task { @MainActor in
-            store.dispatch(SetAuthState(payload: AuthState(
-                accessToken: generateJwt(expires: Date.init(timeIntervalSinceNow: -1000).timeIntervalSince1970), // this will be expired
-                refreshToken: "eyJhbGciOiJFZERTQSIsImtpZCI6InNpZy0xNjQ0OTM3MzYwIn0.eyJqdGkiOiJiNzY4NmUxNC0zYjk2LTQzMTItOWM3ZS1iODdmOTlmYTAxMzIiLCJhdWQiOlsiYXBwOjMzNzA4MDg0OTIyMTU1MDY3MSJdLCJzdWIiOiJnb29nbGUtb2F1dGgyfDExNDg5NTEyMjc5NTQ1MjEyNzI3NiIsImh0dHBzOi8vYXV0aC5yb3duZC5pby9hcHBfdXNlcl9pZCI6ImM5YTgxMDM5LTBjYmMtNDFkNy05YTlkLWVhOWI1YTE5Y2JmMCIsImh0dHBzOi8vYXV0aC5yb3duZC5pby9pc192ZXJpZmllZF91c2VyIjp0cnVlLCJpc3MiOiJodHRwczovL2FwaS5yb3duZC5pbyIsImlhdCI6MTY2NTk3MTk0MiwiaHR0cHM6Ly9hdXRoLnJvd25kLmlvL2p3dF90eXBlIjoicmVmcmVzaF90b2tlbiIsImV4cCI6MTY2ODU2Mzk0Mn0.Yn35j83bfFNgNk26gTvd4a2a2NAGXp7eknvOaFAtd3lWCdvtw6gKRso6Uzd7uydy2MWJFRWC38AkV6lMMfnrDw"
-            )))
-        }
-
-        let responseData = AuthState(
-            accessToken: generateJwt(expires: Date.init(timeIntervalSinceNow: 1000).timeIntervalSince1970),
-            refreshToken: generateJwt(expires: Date.init().timeIntervalSince1970)
-        )
-        
-        Mock(
-            url: URL(string: "https://api.rownd.io/hub/auth/token")!,
-            ignoreQuery: true,
-            dataType: .json,
-            statusCode: 200,
-            data: [
-                .post : try JSONEncoder().encode(responseData)
-            ],
-            requestError: URLError(.notConnectedToInternet)
-        ).register()
-
-        do {
-            let _ = try await Rownd.getAccessToken()
-            Issue.record("Token refresh should have failed due to network conditions")
-        } catch {
-            #expect(store.state.auth.isAuthenticated == true)
-        }
-    }
-    
-    @Test func testSignOutWhenRefreshTokenIsAlreadyConsumed() async throws {
-        Mock(
-            url: URL(string: "https://api.rownd.io/hub/auth/token")!,
-            ignoreQuery: true,
-            dataType: .json,
-            statusCode: 400,
-            data: [
-                .post : try JSONEncoder().encode([
-                    "statusCode": "400",
-                    "error":"Bad Request",
-                    "message":"Invalid refresh token: Refresh token has been consumed"
-                ])
-            ]
-        ).register()
-        
-        let accessToken = generateJwt(expires: Date.init(timeIntervalSinceNow: -1000).timeIntervalSince1970) // this will be expired
-        let store = Context.currentContext.store
-        
-        let authSubscriber = TestFilteredSubscriber<AuthState?>()
-        store.subscribe(authSubscriber) {
-            $0.select { $0.auth }
-        }
-
-        await MainActor.run {
-            store.dispatch(SetAuthState(payload: AuthState(
-                accessToken: accessToken,
-                refreshToken: "eyJhbGciOiJFZERTQSIsImtpZCI6InNpZy0xNjQ0OTM3MzYwIn0.eyJqdGkiOiJiNzY4NmUxNC0zYjk2LTQzMTItOWM3ZS1iODdmOTlmYTAxMzIiLCJhdWQiOlsiYXBwOjMzNzA4MDg0OTIyMTU1MDY3MSJdLCJzdWIiOiJnb29nbGUtb2F1dGgyfDExNDg5NTEyMjc5NTQ1MjEyNzI3NiIsImh0dHBzOi8vYXV0aC5yb3duZC5pby9hcHBfdXNlcl9pZCI6ImM5YTgxMDM5LTBjYmMtNDFkNy05YTlkLWVhOWI1YTE5Y2JmMCIsImh0dHBzOi8vYXV0aC5yb3duZC5pby9pc192ZXJpZmllZF91c2VyIjp0cnVlLCJpc3MiOiJodHRwczovL2FwaS5yb3duZC5pbyIsImlhdCI6MTY2NTk3MTk0MiwiaHR0cHM6Ly9hdXRoLnJvd25kLmlvL2p3dF90eXBlIjoicmVmcmVzaF90b2tlbiIsImV4cCI6MTY2ODU2Mzk0Mn0.Yn35j83bfFNgNk26gTvd4a2a2NAGXp7eknvOaFAtd3lWCdvtw6gKRso6Uzd7uydy2MWJFRWC38AkV6lMMfnrDw"
-            )))
-        }
-
-        await Task { @MainActor in
-            #expect((authSubscriber.receivedValue as? AuthState)?.isAuthenticated == true, "User should be authenticated initially")
-
-            let accessToken2 = try? await Rownd.getAccessToken()
-            #expect(accessToken2 == nil, "Returned token should be nil")
-
-            #expect((authSubscriber.receivedValue as? AuthState)?.isAuthenticated == false, "User should no longer be authenticated")
-        }.value
-    }
-    
-    @Test func testRefreshTokenThrowsWhenHttpServerErrorsOccur() async throws {
-        let store = Context.currentContext.store
-
-        Task { @MainActor in
-            store.dispatch(SetAuthState(payload: AuthState(
-                accessToken: generateJwt(expires: Date.init(timeIntervalSinceNow: -1000).timeIntervalSince1970), // this will be expired
-                refreshToken: "eyJhbGciOiJFZERTQSIsImtpZCI6InNpZy0xNjQ0OTM3MzYwIn0.eyJqdGkiOiJiNzY4NmUxNC0zYjk2LTQzMTItOWM3ZS1iODdmOTlmYTAxMzIiLCJhdWQiOlsiYXBwOjMzNzA4MDg0OTIyMTU1MDY3MSJdLCJzdWIiOiJnb29nbGUtb2F1dGgyfDExNDg5NTEyMjc5NTQ1MjEyNzI3NiIsImh0dHBzOi8vYXV0aC5yb3duZC5pby9hcHBfdXNlcl9pZCI6ImM5YTgxMDM5LTBjYmMtNDFkNy05YTlkLWVhOWI1YTE5Y2JmMCIsImh0dHBzOi8vYXV0aC5yb3duZC5pby9pc192ZXJpZmllZF91c2VyIjp0cnVlLCJpc3MiOiJodHRwczovL2FwaS5yb3duZC5pbyIsImlhdCI6MTY2NTk3MTk0MiwiaHR0cHM6Ly9hdXRoLnJvd25kLmlvL2p3dF90eXBlIjoicmVmcmVzaF90b2tlbiIsImV4cCI6MTY2ODU2Mzk0Mn0.Yn35j83bfFNgNk26gTvd4a2a2NAGXp7eknvOaFAtd3lWCdvtw6gKRso6Uzd7uydy2MWJFRWC38AkV6lMMfnrDw"
-            )))
-        }
-
-        let responseData = AuthState(
-            accessToken: generateJwt(expires: Date.init(timeIntervalSinceNow: 1000).timeIntervalSince1970),
-            refreshToken: generateJwt(expires: Date.init().timeIntervalSince1970)
-        )
-        
-        Mock(
-            url: URL(string: "https://api.rownd.io/hub/auth/token")!,
-            ignoreQuery: true,
-            dataType: .json,
-            statusCode: 504,
-            data: [
-                .post : try JSONEncoder().encode(responseData)
-            ]
-        ).register()
-
-        do {
-            let _ = try await Rownd.getAccessToken()
-            Issue.record("Token refresh should have failed due to network conditions")
-        } catch {
-            #expect(store.state.auth.isAuthenticated == true)
-        }
+        #expect(value1 == superTokensAccessToken)
+        #expect(value2 == superTokensAccessToken)
+        #expect(value3 == superTokensAccessToken)
+        #expect(await bridge.attemptRefreshCalls == 0)
     }
 
     @Test func testAccessTokenValidWithMargin() async throws {
@@ -431,4 +307,80 @@ class TestAuthenticator: AuthenticatorProtocol {
     }
 
 
+}
+
+final class TestSessionBridge {
+    private let lock = NSLock()
+    private var accessToken: String?
+    private let sessionExists: Bool
+    private let refreshSucceeds: Bool
+    private let refreshedAccessToken: String?
+    private let attemptRefreshDelayNanoseconds: UInt64
+    private var _getAccessTokenCalls = 0
+    private var _attemptRefreshCalls = 0
+
+    init(
+        accessToken: String?,
+        sessionExists: Bool = true,
+        refreshSucceeds: Bool = false,
+        refreshedAccessToken: String? = nil,
+        attemptRefreshDelayNanoseconds: UInt64 = 0
+    ) {
+        self.accessToken = accessToken
+        self.sessionExists = sessionExists
+        self.refreshSucceeds = refreshSucceeds
+        self.refreshedAccessToken = refreshedAccessToken
+        self.attemptRefreshDelayNanoseconds = attemptRefreshDelayNanoseconds
+    }
+
+    var client: SuperTokensSessionBridgeClient {
+        SuperTokensSessionBridgeClient(
+            doesSessionExist: { [weak self] in
+                self?.sessionExists ?? false
+            },
+            getAccessToken: { [weak self] in
+                self?.getAccessToken()
+            },
+            attemptRefresh: { [weak self] in
+                await self?.attemptRefresh() ?? false
+            }
+        )
+    }
+
+    var getAccessTokenCalls: Int {
+        get async {
+            lock.withLock { _getAccessTokenCalls }
+        }
+    }
+
+    var attemptRefreshCalls: Int {
+        get async {
+            lock.withLock { _attemptRefreshCalls }
+        }
+    }
+
+    private func getAccessToken() -> String? {
+        lock.withLock {
+            _getAccessTokenCalls += 1
+            return accessToken
+        }
+    }
+
+    private func attemptRefresh() async -> Bool {
+        lock.withLock {
+            _attemptRefreshCalls += 1
+        }
+
+        if attemptRefreshDelayNanoseconds > 0 {
+            try? await Task.sleep(nanoseconds: attemptRefreshDelayNanoseconds)
+        }
+
+        if refreshSucceeds, let refreshedAccessToken {
+            lock.withLock {
+                accessToken = refreshedAccessToken
+            }
+        }
+
+        return refreshSucceeds
+    }
 }

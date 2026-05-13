@@ -180,14 +180,16 @@ import Testing
         _ config: RowndSuperTokensConfig,
         _ operation: () throws -> Void
     ) throws {
-        let originalConfig = Rownd.config
-        defer {
-            Rownd.config = originalConfig
+        try withSynchronousGlobalTestLock {
+            let originalConfig = Rownd.config
+            defer {
+                Rownd.config = originalConfig
+            }
+
+            Rownd.config = RowndConfig()
+            Rownd.config.supertokens = config
+
+            try operation()
         }
-
-        Rownd.config = RowndConfig()
-        Rownd.config.supertokens = config
-
-        try operation()
     }
 }

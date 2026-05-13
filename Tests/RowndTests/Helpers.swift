@@ -68,3 +68,9 @@ func withGlobalTestLock<T>(_ operation: @escaping @Sendable () async throws -> T
         }
     }.value
 }
+
+func withSynchronousGlobalTestLock<T>(_ operation: () throws -> T) throws -> T {
+    try GlobalTestLock.queue.sync {
+        try operation()
+    }
+}
