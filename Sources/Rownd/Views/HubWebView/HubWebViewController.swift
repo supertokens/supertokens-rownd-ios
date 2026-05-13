@@ -294,19 +294,27 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
                 guard case .authentication(let authMessage) = hubMessage.payload else { return }
                 guard hubViewController?.targetPage == .signIn  else { return }
                 let initialJsFunctionArgsAsJson = self.jsFunctionArgsAsJson
-                DispatchQueue.main.async {
-                    // Ensure user.isLoading = false so that the data is fetched properly
-                    store.dispatch(SetUserLoading(isLoading: false))
-                    // Then set our tokens
-                    store.dispatch(store.state.auth.onReceiveAuthTokens(
-                        AuthState(accessToken: authMessage.accessToken, refreshToken: authMessage.refreshToken)
-                    ))
-                    store.dispatch(ResetSignInState())
-                }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in // .now() + num_seconds
-                    // Close the hub as long as no other rownd api was called
-                    if initialJsFunctionArgsAsJson == self?.jsFunctionArgsAsJson {
-                        self?.hubViewController?.hide()
+
+                Task.detached(priority: .userInitiated) { [weak self] in
+                    SuperTokensSessionBridge.bootstrapSession(
+                        accessToken: authMessage.accessToken,
+                        refreshToken: authMessage.refreshToken,
+                        antiCSRF: authMessage.antiCSRF
+                    )
+                    await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens()
+
+                    await MainActor.run {
+                        // Ensure user.isLoading = false so that the data is fetched properly
+                        store.dispatch(SetUserLoading(isLoading: false))
+                        store.dispatch(UserData.fetch())
+                        store.dispatch(ResetSignInState())
+                    }
+
+                    await MainActor.run { [weak self] in
+                        // Close the hub as long as no other rownd api was called
+                        if initialJsFunctionArgsAsJson == self?.jsFunctionArgsAsJson {
+                            self?.hubViewController?.hide()
+                        }
                     }
                 }
             case .closeHubViewController:

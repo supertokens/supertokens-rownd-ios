@@ -42,7 +42,7 @@ internal enum SuperTokensSessionBridge {
 
     // WKWebView requests do not traverse SuperTokensURLProtocol, so Hub-complete
     // auth flows need a direct local session bootstrap.
-    static func bootstrapSession(accessToken: String, refreshToken: String?) {
+    static func bootstrapSession(accessToken: String, refreshToken: String?, antiCSRF: String? = nil) {
         precondition(!Thread.isMainThread, "bootstrapSession must be called off the main thread")
         guard !SuperTokens.doesSessionExist() else { return }
 
@@ -51,6 +51,10 @@ internal enum SuperTokensSessionBridge {
 
         if let refreshToken, !refreshToken.isEmpty {
             userDefaults.set(refreshToken, forKey: refreshTokenStorageKey)
+        }
+
+        if let antiCSRF, !antiCSRF.isEmpty {
+            userDefaults.set(antiCSRF, forKey: antiCSRFStorageKey)
         }
 
         userDefaults.set(buildFrontToken(from: accessToken), forKey: frontTokenStorageKey)

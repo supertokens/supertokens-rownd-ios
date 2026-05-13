@@ -42,6 +42,23 @@ import Testing
         }
     }
 
+    @Test func bootstrapSessionPersistsAntiCSRFWhenProvided() async throws {
+        try await withMockedSuperTokensSession {
+            let accessToken = makeSuperTokensTestJWT(expiresIn: 3600)
+
+            await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: accessToken,
+                    refreshToken: nil,
+                    antiCSRF: "anti-csrf-token"
+                )
+            }.value
+
+            #expect(await SuperTokensSessionBridge.doesSessionExist())
+            #expect(UserDefaults.standard.string(forKey: "supertokens-ios-anticsrf-key") == "anti-csrf-token")
+        }
+    }
+
     @Test func bootstrapSessionDoesNotOverwriteExistingSession() async throws {
         try await withMockedSuperTokensSession {
             let originalAccessToken = makeSuperTokensTestJWT(expiresIn: 3600)
