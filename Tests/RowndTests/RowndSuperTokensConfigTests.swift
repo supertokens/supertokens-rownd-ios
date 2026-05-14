@@ -142,6 +142,34 @@ import Testing
         }
     }
 
+    @Test func rowndConfigEncodesSuperTokensAppInfoForHub() async throws {
+        try await withGlobalTestLock {
+            var config = RowndConfig()
+            config.supertokens = RowndSuperTokensConfig(
+                appName: "Example App",
+                apiDomain: "https://api.example.com",
+                apiBasePath: "/custom-auth"
+            )
+
+            let json = await MainActor.run { config.toJson() }
+            let decoded = try decodeJsonObject(json)
+            let supertokens = try #require(decoded["supertokens"] as? [String: Any])
+            let appInfo = try #require(supertokens["appInfo"] as? [String: Any])
+
+            #expect(appInfo["apiDomain"] as? String == "https://api.example.com")
+            #expect(appInfo["apiBasePath"] as? String == "/custom-auth")
+            #expect(supertokens["appName"] == nil)
+        }
+    }
+
+    @Test func rowndConfigOmitsSuperTokensWhenNotConfigured() async throws {
+        try await withGlobalTestLock {
+            let json = await MainActor.run { RowndConfig().toJson() }
+            let decoded = try decodeJsonObject(json)
+            #expect(decoded["supertokens"] == nil)
+        }
+    }
+
     @Test func repeatedConfigureKeepsSuperTokensInitializationGuardSet() async throws {
         try await withGlobalTestLock {
             let originalApiClient = Rownd.apiClient
@@ -206,6 +234,10 @@ import Testing
         } catch {
             Issue.record("Unexpected validation error: \(error)")
         }
+    }
+
+    private func decodeJsonObject(_ json: String) throws -> [String: Any] {
+        try #require(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
     }
 
     private static let appConfigResponseData = """

@@ -48,7 +48,42 @@ public struct RowndConfig: Encodable {
              forceDarkMode,
              postSignInRedirect,
              googleClientId,
-             customizations
+             customizations,
+             supertokens
+    }
+
+    private struct HubSuperTokensConfig: Encodable {
+        let appInfo: HubSuperTokensAppInfo
+    }
+
+    private struct HubSuperTokensAppInfo: Encodable {
+        let apiDomain: String
+        let apiBasePath: String
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+
+        try container.encode(apiUrl, forKey: .apiUrl)
+        try container.encode(baseUrl, forKey: .baseUrl)
+        try container.encode(subdomainExtension, forKey: .subdomainExtension)
+        try container.encode(appKey, forKey: .appKey)
+        try container.encode(forceDarkMode, forKey: .forceDarkMode)
+        try container.encodeIfPresent(postSignInRedirect, forKey: .postSignInRedirect)
+        try container.encode(googleClientId, forKey: .googleClientId)
+        try container.encode(customizations, forKey: .customizations)
+
+        if let supertokens = supertokens {
+            try container.encode(
+                HubSuperTokensConfig(
+                    appInfo: HubSuperTokensAppInfo(
+                        apiDomain: supertokens.apiDomain,
+                        apiBasePath: supertokens.apiBasePath
+                    )
+                ),
+                forKey: .supertokens
+            )
+        }
     }
 
     func toJson() -> String {
