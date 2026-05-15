@@ -194,15 +194,13 @@ public enum UserType: String, Codable {
     }
 }
 
-typealias TokenRequestUserData = [String: AnyCodable?]
-
 struct TokenRequest: Codable {
     var refreshToken: String?
     var idToken: String?
     var appId: String?
     var intent: RowndSignInIntent?
     var intentMismatchBehavior: String?
-    var userData: TokenRequestUserData?
+    var userData: [String: AnyCodable?]?
     var instantUserId: String?
 
     enum CodingKeys: String, CodingKey {
@@ -230,49 +228,7 @@ struct TokenResponse: Codable {
     }
 }
 
-struct TokenResource: APIResource {
-
-    var headers: [String: String]?
-
-    typealias ModelType = TokenResponse
-
-    var methodPath: String {
-        return "/hub/auth/token"
-    }
-}
-
 class Auth {
-    static func fetchToken(_ token: String) async throws -> TokenResponse? {
-        return try await fetchToken(idToken: token, userData: nil, intent: nil)
-    }
-
-    static func fetchToken(idToken: String, userData: TokenRequestUserData?, intent: RowndSignInIntent?) async throws -> TokenResponse? {
-        guard let appId = Context.currentContext.store.state.appConfig.id else { return nil }
-        let tokenRequest = TokenRequest(
-            idToken: idToken,
-            appId: appId,
-            intent: intent,
-            intentMismatchBehavior: "throw",
-            userData: userData
-        )
-        return try await fetchToken(tokenRequest: tokenRequest)
-    }
-
-    static func fetchToken(tokenRequest: TokenRequest) async throws -> TokenResponse {
-        var tokenRequest = tokenRequest
-        if Context.currentContext.store.state.user.authLevel == .instant {
-            tokenRequest.instantUserId = Context.currentContext.store.state.user.data["user_id"]?.value as? String
-        }
-
-        let tokenResp: Response<TokenResponse> = try await rowndApi.send(Request(
-            path: "/hub/auth/token",
-            method: .post,
-            body: tokenRequest
-        ))
-
-        return tokenResp.value
-    }
-    
     static func signOutUser() async throws {
         let supertokens = try Rownd.requireSuperTokensConfig()
 

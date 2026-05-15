@@ -298,23 +298,6 @@ public class Rownd: NSObject {
         return try await store.state.auth.getAccessToken(throwIfMissing: throwIfMissing)
     }
 
-    @discardableResult public static func getAccessToken(token: String) async -> String? {
-        guard let tokenResponse = try? await Auth.fetchToken(token) else { return nil }
-
-        Task { @MainActor in
-            let store = Context.currentContext.store
-            store.dispatch(
-                SetAuthState(
-                    payload: AuthState(
-                        accessToken: tokenResponse.accessToken,
-                        refreshToken: tokenResponse.refreshToken)))
-            store.dispatch(UserData.fetch())
-        }
-
-        return tokenResponse.accessToken
-
-    }
-
     public func state() -> Store<RowndState> {
         return Context.currentContext.store
     }

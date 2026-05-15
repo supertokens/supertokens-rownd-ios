@@ -61,6 +61,35 @@ import Testing
         let counters = try await getJSON(path: "counters")
         #expect(counters["signOut"] as? Int == 1)
         #expect(counters["legacyRefresh"] as? Int == 0)
+
+        let capturedRequests = try await getJSON(path: "captured-requests")
+        let signOutRequest = try #require(capturedRequests["signOut"] as? [String: Any])
+        let authorization = try #require(signOutRequest["authorization"] as? String)
+        #expect(authorization.hasPrefix("Bearer "))
+        #expect(signOutRequest["authorizationCount"] as? Int == 1)
+        #expect(signOutRequest["rowndAppKey"] as? String == nil)
+    }
+
+    @Test func protectedPluginRouteRefreshesSuperTokensSessionWithoutLegacyRefresh() async throws {
+        try await TestInfrastructure.prepare()
+
+        try await createHarnessSession(userId: "ios-refresh-user")
+
+        let response = try await getJSON(path: "test/refresh-once")
+        #expect(response["status"] as? String == "OK")
+        #expect(response["userId"] as? String == "ios-refresh-user")
+
+        let counters = try await getJSON(path: "counters")
+        #expect(counters["refreshOnce"] as? Int == 2)
+        #expect(counters["stRefresh"] as? Int == 1)
+        #expect(counters["legacyRefresh"] as? Int == 0)
+
+        let capturedRequests = try await getJSON(path: "captured-requests")
+        let refreshOnceRequest = try #require(capturedRequests["refreshOnce"] as? [String: Any])
+        let authorization = try #require(refreshOnceRequest["authorization"] as? String)
+        #expect(authorization.hasPrefix("Bearer "))
+        #expect(refreshOnceRequest["authorizationCount"] as? Int == 1)
+        #expect(refreshOnceRequest["rowndAppKey"] as? String == nil)
     }
 
     @Test func hubStyleAuthenticationPayloadBootstrapsNativeSession() async throws {
@@ -92,6 +121,11 @@ import Testing
         let counters = try await getJSON(path: "counters")
         #expect(counters["legacyRefresh"] as? Int == 0)
         #expect(counters["migrate"] as? Int == 0)
+
+        let capturedRequests = try await getJSON(path: "captured-requests")
+        let protectedRequest = try #require(capturedRequests["protected"] as? [String: Any])
+        #expect(protectedRequest["authorizationCount"] as? Int == 1)
+        #expect(protectedRequest["rowndAppKey"] as? String == nil)
     }
 
     @Test func validLegacySessionMigratesThroughHarness() async throws {

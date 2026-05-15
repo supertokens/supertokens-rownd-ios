@@ -82,6 +82,18 @@ import Get
         }
     }
 
+    @Test func legacySmartLinksAreNotHandledBySuperTokensBackedSdk() async throws {
+        try await withGlobalTestLock {
+            let originalConfig = Rownd.config
+            defer { Rownd.config = originalConfig }
+
+            Rownd.config.signInLinkPattern = ".*\\.rownd\\.link$"
+
+            #expect(SmartLinks.handleSmartLink(url: URL(string: "https://example.rownd.link/sign-in-token")) == false)
+            #expect(SmartLinks.handleSmartLink(url: URL(string: "https://example.rownd.link/verified/email")) == false)
+        }
+    }
+
     @Test func apiDelegatesSkipLegacyHeadersForSuperTokensDomain() async throws {
         try await withGlobalTestLock {
             let originalConfig = Rownd.config

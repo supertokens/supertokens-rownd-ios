@@ -19,6 +19,13 @@ type HarnessCounters = {
   legacyRefresh: number;
   migrate: number;
   protected: number;
+  refreshOnce: number;
+};
+
+type CapturedRequest = {
+  authorization?: string;
+  authorizationCount: number;
+  rowndAppKey?: string;
 };
 
 type IntegrationHarness = {
@@ -45,7 +52,18 @@ const counters: HarnessCounters = {
   legacyRefresh: 0,
   migrate: 0,
   protected: 0,
+  refreshOnce: 0,
 };
+
+const capturedRequests: Record<string, CapturedRequest | undefined> = {};
+
+function captureRequest(name: string, req: express.Request) {
+  capturedRequests[name] = {
+    authorization: req.header('authorization'),
+    authorizationCount: req.rawHeaders.filter((header) => header.toLowerCase() === 'authorization').length,
+    rowndAppKey: req.header('x-rownd-app-key'),
+  };
+}
 
 function resetCounters() {
   counters.createSession = 0;
@@ -54,6 +72,11 @@ function resetCounters() {
   counters.legacyRefresh = 0;
   counters.migrate = 0;
   counters.protected = 0;
+  counters.refreshOnce = 0;
+
+  for (const key of Object.keys(capturedRequests)) {
+    delete capturedRequests[key];
+  }
 }
 
 export async function startIntegrationHarness(): Promise<IntegrationHarness> {
@@ -204,7 +227,8 @@ export async function startIntegrationHarness(): Promise<IntegrationHarness> {
 
   app.use(middleware());
 
-  app.post('/auth/plugin/rownd/signout', verifySession(), (_req, res) => {
+  app.post('/auth/plugin/rownd/signout', verifySession(), (req, res) => {
+    captureRequest('signOut', req);
     res.json({ status: 'OK' });
   });
 
@@ -245,6 +269,10 @@ export async function startIntegrationHarness(): Promise<IntegrationHarness> {
     res.json(counters);
   });
 
+  app.get('/captured-requests', (_req, res) => {
+    res.json(capturedRequests);
+  });
+
   app.post('/test/session', async (req: any, res: any) => {
     counters.createSession += 1;
     const userId = typeof req.body?.userId === 'string' ? req.body.userId : 'ios-test-user';
@@ -255,12 +283,34 @@ export async function startIntegrationHarness(): Promise<IntegrationHarness> {
 
   app.get('/test/protected', verifySession(), async (req: any, res) => {
     counters.protected += 1;
+    captureRequest('protected', req);
     res.json({
       status: 'OK',
       userId: req.session.getUserId(),
       accessTokenPayload: req.session.getAccessTokenPayload(),
     });
   });
+
+  app.get(
+    '/test/refresh-once',
+    (req, res, next) => {
+      counters.refreshOnce += 1;
+      if (counters.refreshOnce === 1) {
+        res.status(401).json({ status: 'UNAUTHORISED' });
+        return;
+      }
+
+      next();
+    },
+    verifySession(),
+    async (req: any, res) => {
+      captureRequest('refreshOnce', req);
+      res.json({
+        status: 'OK',
+        userId: req.session.getUserId(),
+      });
+    },
+  );
 
   app.use(errorHandler());
 
