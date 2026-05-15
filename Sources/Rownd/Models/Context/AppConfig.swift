@@ -271,9 +271,7 @@ class AppConfig {
     }
 
     static func appConfigURL() throws -> URL {
-        guard let supertokens = Rownd.config.supertokens else {
-            throw RowndError("SuperTokens configuration is required before fetching app config")
-        }
+        let supertokens = try Rownd.requireSuperTokensConfig()
 
         guard let apiDomain = URL(string: supertokens.apiDomain) else {
             throw RowndError("Invalid SuperTokens apiDomain: \(supertokens.apiDomain)")
@@ -287,10 +285,10 @@ class AppConfig {
     }
 
     static func makeAppConfigClient() throws -> APIClient {
-        guard let supertokens = Rownd.config.supertokens,
-            let apiDomain = URL(string: supertokens.apiDomain)
-        else {
-            throw RowndError("SuperTokens configuration is required before fetching app config")
+        let supertokens = try Rownd.requireSuperTokensConfig()
+
+        guard let apiDomain = URL(string: supertokens.apiDomain) else {
+            throw RowndError("Invalid SuperTokens apiDomain: \(supertokens.apiDomain)")
         }
 
         return APIClient(baseURL: apiDomain) {
@@ -302,10 +300,10 @@ class AppConfig {
     }
 
     static func validateSuperTokensConfig(_ appConfig: AppConfigResponse) throws {
-        guard let configured = Rownd.config.supertokens,
-            let serverConfig = appConfig.app.config?.supertokens?.appInfo
-        else {
-            return
+        let configured = try Rownd.requireSuperTokensConfig()
+
+        guard let serverConfig = appConfig.app.config?.supertokens?.appInfo else {
+            throw RowndError("App config is missing required SuperTokens configuration")
         }
 
         if serverConfig.apiDomain != configured.apiDomain {

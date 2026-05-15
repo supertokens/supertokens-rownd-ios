@@ -8,6 +8,7 @@
 import Testing
 @testable import Rownd
 import Foundation
+import Get
 
 @Suite(.serialized) struct RowndTests {
 
@@ -81,4 +82,92 @@ import Foundation
         }
     }
 
+    @Test func apiDelegatesSkipLegacyHeadersForSuperTokensDomain() async throws {
+        try await withGlobalTestLock {
+            let originalConfig = Rownd.config
+            let originalContext = Context.currentContext
+            let isolatedStore = createStore()
+            _ = Context(isolatedStore)
+            defer {
+                Rownd.config = originalConfig
+                Context.currentContext = originalContext
+            }
+
+            Rownd.config.appKey = "test-app-key"
+            Rownd.config.supertokens = RowndSuperTokensConfig(
+                appName: "Test App",
+                apiDomain: "https://api.example.com",
+                apiBasePath: "/auth"
+            )
+            await MainActor.run {
+                Context.currentContext.store.dispatch(
+                    SetAuthState(payload: AuthState(accessToken: "legacy-token"))
+                )
+            }
+            Context.currentContext.authenticator = Authenticator(
+                sessionBridge: TestSessionBridge(accessToken: "st-token").client
+            )
+
+            var authenticatedRequest = URLRequest(url: URL(string: "https://api.example.com/auth/plugin/rownd/user")!)
+            try await RowndApiClientDelegate().client(testAPIClient(), willSendRequest: &authenticatedRequest)
+
+            #expect(authenticatedRequest.value(forHTTPHeaderField: "Authorization") == nil)
+            #expect(authenticatedRequest.value(forHTTPHeaderField: "X-Rownd-App-Key") == nil)
+
+            var unauthenticatedRequest = URLRequest(url: URL(string: "https://api.example.com/auth/plugin/rownd/app-config")!)
+            try await RowndUnauthenticatedApiClientDelegate().client(
+                testAPIClient(),
+                willSendRequest: &unauthenticatedRequest
+            )
+
+            #expect(unauthenticatedRequest.value(forHTTPHeaderField: "X-Rownd-App-Key") == nil)
+        }
+    }
+
+    @Test func apiDelegatesKeepLegacyHeadersForNonSuperTokensDomain() async throws {
+        try await withGlobalTestLock {
+            let originalConfig = Rownd.config
+            let originalContext = Context.currentContext
+            let isolatedStore = createStore()
+            _ = Context(isolatedStore)
+            defer {
+                Rownd.config = originalConfig
+                Context.currentContext = originalContext
+            }
+
+            Rownd.config.appKey = "test-app-key"
+            Rownd.config.supertokens = RowndSuperTokensConfig(
+                appName: "Test App",
+                apiDomain: "https://api.example.com",
+                apiBasePath: "/auth"
+            )
+            let accessToken = generateJwt(expires: Date(timeIntervalSinceNow: 1000).timeIntervalSince1970)
+            await MainActor.run {
+                Context.currentContext.store.dispatch(
+                    SetAuthState(payload: AuthState(accessToken: accessToken))
+                )
+            }
+            let bridge = TestSessionBridge(accessToken: accessToken)
+            Context.currentContext.authenticator = Authenticator(sessionBridge: bridge.client)
+
+            var authenticatedRequest = URLRequest(url: URL(string: "https://api.rownd.io/me")!)
+            try await RowndApiClientDelegate().client(testAPIClient(), willSendRequest: &authenticatedRequest)
+
+            #expect(authenticatedRequest.value(forHTTPHeaderField: "Authorization") == "Bearer \(accessToken)")
+            #expect(authenticatedRequest.value(forHTTPHeaderField: "X-Rownd-App-Key") == "test-app-key")
+
+            var unauthenticatedRequest = URLRequest(url: URL(string: "https://api.rownd.io/hub/app-config")!)
+            try await RowndUnauthenticatedApiClientDelegate().client(
+                testAPIClient(),
+                willSendRequest: &unauthenticatedRequest
+            )
+
+            #expect(unauthenticatedRequest.value(forHTTPHeaderField: "X-Rownd-App-Key") == "test-app-key")
+        }
+    }
+
+}
+
+private func testAPIClient() -> APIClient {
+    APIClient(baseURL: URL(string: "https://api.example.com"))
 }

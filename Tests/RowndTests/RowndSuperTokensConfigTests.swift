@@ -70,7 +70,15 @@ import Testing
             {
               "app": {
                 "id": "app_test",
-                "name": "Example App"
+                "name": "Example App",
+                "config": {
+                  "supertokens": {
+                    "appInfo": {
+                      "apiDomain": "https://api.example.com",
+                      "apiBasePath": "/auth"
+                    }
+                  }
+                }
               }
             }
             """.data(using: .utf8)!
@@ -162,14 +170,6 @@ import Testing
         }
     }
 
-    @Test func rowndConfigOmitsSuperTokensWhenNotConfigured() async throws {
-        try await withGlobalTestLock {
-            let json = await MainActor.run { RowndConfig().toJson() }
-            let decoded = try decodeJsonObject(json)
-            #expect(decoded["supertokens"] == nil)
-        }
-    }
-
     @Test func repeatedConfigureKeepsSuperTokensInitializationGuardSet() async throws {
         try await withGlobalTestLock {
             let originalApiClient = Rownd.apiClient
@@ -218,7 +218,7 @@ import Testing
             )
 
             #expect(Rownd.isSuperTokensInitialized)
-            #expect(Rownd.config.supertokens?.apiDomain == "https://second.example.com")
+            #expect(Rownd.config.supertokens.apiDomain == "https://second.example.com")
         }
     }
 
@@ -244,7 +244,15 @@ import Testing
     {
       "app": {
         "id": "app_test",
-        "name": "Example App"
+        "name": "Example App",
+        "config": {
+          "supertokens": {
+            "appInfo": {
+              "apiDomain": "https://first.example.com",
+              "apiBasePath": "/auth"
+            }
+          }
+        }
       }
     }
     """.data(using: .utf8)!

@@ -274,9 +274,7 @@ class Auth {
     }
     
     static func signOutUser() async throws {
-        guard let supertokens = Rownd.config.supertokens else {
-            throw RowndError("SuperTokens configuration is required before sign out")
-        }
+        let supertokens = try Rownd.requireSuperTokensConfig()
 
         guard var components = URLComponents(string: supertokens.apiDomain) else {
             throw RowndError("Invalid SuperTokens apiDomain")

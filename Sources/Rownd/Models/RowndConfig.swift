@@ -22,6 +22,11 @@ public struct RowndSuperTokensConfig: Encodable, Hashable {
 public struct RowndConfig: Encodable {
     internal init() {}
 
+    private enum SuperTokensConfigState {
+        case missing
+        case configured(RowndSuperTokensConfig)
+    }
+
     // These are encoded for the hub to read
     public var apiUrl = "https://api.rownd.io"
     public var baseUrl = "https://hub.rownd.io"
@@ -38,7 +43,30 @@ public struct RowndConfig: Encodable {
     public var signInLinkPattern: String = ".*\\.rownd\\.link$"
     public var deepLinkHandler: RowndDeepLinkHandlerDelegate?
     public var forceInstantUserConversion: Bool = false
-    public var supertokens: RowndSuperTokensConfig?
+    private var superTokensConfigState: SuperTokensConfigState = .missing
+
+    public var supertokens: RowndSuperTokensConfig {
+        get {
+            switch superTokensConfigState {
+            case .missing:
+                fatalError("SuperTokens configuration is required")
+            case let .configured(supertokens):
+                return supertokens
+            }
+        }
+        set {
+            superTokensConfigState = .configured(newValue)
+        }
+    }
+
+    internal func requireSuperTokensConfig() throws -> RowndSuperTokensConfig {
+        switch superTokensConfigState {
+        case .missing:
+            throw RowndError("SuperTokens configuration is required")
+        case let .configured(supertokens):
+            return supertokens
+        }
+    }
 
     private enum CodingKeys: String, CodingKey {
         case apiUrl,
@@ -73,17 +101,16 @@ public struct RowndConfig: Encodable {
         try container.encode(googleClientId, forKey: .googleClientId)
         try container.encode(customizations, forKey: .customizations)
 
-        if let supertokens = supertokens {
-            try container.encode(
-                HubSuperTokensConfig(
-                    appInfo: HubSuperTokensAppInfo(
-                        apiDomain: supertokens.apiDomain,
-                        apiBasePath: supertokens.apiBasePath
-                    )
-                ),
-                forKey: .supertokens
-            )
-        }
+        let supertokens = try Rownd.requireSuperTokensConfig()
+        try container.encode(
+            HubSuperTokensConfig(
+                appInfo: HubSuperTokensAppInfo(
+                    apiDomain: supertokens.apiDomain,
+                    apiBasePath: supertokens.apiBasePath
+                )
+            ),
+            forKey: .supertokens
+        )
     }
 
     func toJson() -> String {

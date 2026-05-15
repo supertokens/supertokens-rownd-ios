@@ -68,7 +68,7 @@ import Testing
         }
     }
 
-    @Test func decodeAppConfigWithoutSuperTokensConfigRemainsValid() throws {
+    @Test func decodeAppConfigWithoutSuperTokensConfigFailsValidation() throws {
         try withSuperTokensConfig(
             RowndSuperTokensConfig(
                 appName: "Example App",
@@ -90,8 +90,11 @@ import Testing
             )
 
             #expect(appConfig.app.config?.supertokens == nil)
-            #expect(throws: Never.self) {
+            do {
                 try AppConfig.validateSuperTokensConfig(appConfig)
+                Issue.record("Expected missing SuperTokens config validation to fail")
+            } catch let error as RowndError {
+                #expect(error.description == "App config is missing required SuperTokens configuration")
             }
         }
     }

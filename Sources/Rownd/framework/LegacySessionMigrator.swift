@@ -15,23 +15,23 @@ enum LegacySessionMigrationResult: Equatable {
 }
 
 struct LegacySessionMigrationClient {
-    private let apiDomain: String
-    private let apiBasePath: String
+    private let apiDomainOverride: String?
+    private let apiBasePathOverride: String?
     private let legacyApiDomain: String
     private let session: URLSession
     private let refreshLegacyTokenHandler: ((String) async throws -> TokenResponse)?
     private let migrateHandler: ((String) async throws -> LegacySessionMigrationResult)?
 
     init(
-        apiDomain: String? = Rownd.config.supertokens?.apiDomain,
-        apiBasePath: String? = Rownd.config.supertokens?.apiBasePath,
+        apiDomain: String? = nil,
+        apiBasePath: String? = nil,
         legacyApiDomain: String = "https://api.rownd.io",
         session: URLSession = .shared,
         refreshLegacyTokenHandler: ((String) async throws -> TokenResponse)? = nil,
         migrateHandler: ((String) async throws -> LegacySessionMigrationResult)? = nil
     ) {
-        self.apiDomain = apiDomain ?? ""
-        self.apiBasePath = apiBasePath ?? ""
+        self.apiDomainOverride = apiDomain
+        self.apiBasePathOverride = apiBasePath
         self.legacyApiDomain = legacyApiDomain
         self.session = session
         self.refreshLegacyTokenHandler = refreshLegacyTokenHandler
@@ -83,6 +83,10 @@ struct LegacySessionMigrationClient {
         if let migrateHandler {
             return try await migrateHandler(legacyAccessToken)
         }
+
+        let supertokens = try Rownd.requireSuperTokensConfig()
+        let apiDomain = apiDomainOverride ?? supertokens.apiDomain
+        let apiBasePath = apiBasePathOverride ?? supertokens.apiBasePath
 
         guard var components = URLComponents(string: apiDomain) else {
             throw RowndError("Invalid SuperTokens apiDomain")

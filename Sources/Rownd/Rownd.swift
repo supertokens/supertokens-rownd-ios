@@ -406,15 +406,17 @@ public class Rownd: NSObject {
         return config
     }
 
+    internal static func requireSuperTokensConfig() throws -> RowndSuperTokensConfig {
+        try config.requireSuperTokensConfig()
+    }
+
     @discardableResult
     internal static func initializeSuperTokensIfNeeded() throws -> Bool {
         guard !isSuperTokensInitialized else {
             return false
         }
 
-        guard let supertokens = config.supertokens else {
-            throw RowndError("SuperTokens configuration is required before initialization")
-        }
+        let supertokens = try requireSuperTokensConfig()
 
         try SuperTokens.initialize(
             apiDomain: supertokens.apiDomain,

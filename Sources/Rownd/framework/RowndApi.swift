@@ -19,7 +19,9 @@ class RowndUnauthenticatedApiClientDelegate: APIClientDelegate {
     func client(_ client: APIClient, willSendRequest request: inout URLRequest) async throws {
         request.setValue(Constants.TIME_META_HEADER, forHTTPHeaderField: Constants.TIME_META_HEADER_NAME)
         request.setValue(Constants.DEFAULT_API_USER_AGENT, forHTTPHeaderField: "User-Agent")
-        request.setValue(Rownd.config.appKey, forHTTPHeaderField: "X-Rownd-App-Key")
+        if try !request.targetsConfiguredSuperTokensApiDomain() {
+            request.setValue(Rownd.config.appKey, forHTTPHeaderField: "X-Rownd-App-Key")
+        }
         if request.httpMethod?.lowercased() != "get", request.value(forHTTPHeaderField: "Content-Type") == nil {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
@@ -58,12 +60,17 @@ class RowndApi {
 
 class RowndApiClientDelegate: APIClientDelegate {
     func client(_ client: APIClient, willSendRequest request: inout URLRequest) async throws {
-        request.setValue(Rownd.config.appKey, forHTTPHeaderField: "X-Rownd-App-Key")
+        let targetsSuperTokensApiDomain = try request.targetsConfiguredSuperTokensApiDomain()
+        if !targetsSuperTokensApiDomain {
+            request.setValue(Rownd.config.appKey, forHTTPHeaderField: "X-Rownd-App-Key")
+        }
         request.setValue(Constants.TIME_META_HEADER, forHTTPHeaderField: Constants.TIME_META_HEADER_NAME)
         request.setValue(Constants.DEFAULT_API_USER_AGENT, forHTTPHeaderField: "User-Agent")
 
         do {
-            if Context.currentContext.store.state.auth.isAuthenticated, let accessToken = try await Rownd.getAccessToken() {
+            if !targetsSuperTokensApiDomain,
+               Context.currentContext.store.state.auth.isAuthenticated,
+               let accessToken = try await Rownd.getAccessToken() {
                 request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
             }
         } catch {
@@ -91,4 +98,17 @@ extension RowndApiError {
 enum ApiError: Error {
     case generic(RowndApiError)
     case unexpected
+}
+
+private extension URLRequest {
+    func targetsConfiguredSuperTokensApiDomain() throws -> Bool {
+        let supertokens = try Rownd.requireSuperTokensConfig()
+
+        guard let requestHost = url?.host,
+              let configuredHost = URL(string: supertokens.apiDomain)?.host else {
+            return false
+        }
+
+        return requestHost.caseInsensitiveCompare(configuredHost) == .orderedSame
+    }
 }

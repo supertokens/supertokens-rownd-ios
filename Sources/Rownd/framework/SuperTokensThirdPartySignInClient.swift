@@ -29,17 +29,17 @@ struct SuperTokensThirdPartySignInResponse: Decodable {
 }
 
 struct SuperTokensThirdPartySignInClient {
-    private let apiDomain: String
-    private let apiBasePath: String
+    private let apiDomainOverride: String?
+    private let apiBasePathOverride: String?
     private let session: URLSession
 
     init(
-        apiDomain: String? = Rownd.config.supertokens?.apiDomain,
-        apiBasePath: String? = Rownd.config.supertokens?.apiBasePath,
+        apiDomain: String? = nil,
+        apiBasePath: String? = nil,
         session: URLSession = .shared
     ) {
-        self.apiDomain = apiDomain ?? ""
-        self.apiBasePath = apiBasePath ?? ""
+        self.apiDomainOverride = apiDomain
+        self.apiBasePathOverride = apiBasePath
         self.session = session
     }
 
@@ -67,6 +67,10 @@ struct SuperTokensThirdPartySignInClient {
     }
 
     private func signIn(_ body: SuperTokensThirdPartySignInRequest) async throws -> SuperTokensThirdPartySignInResponse {
+        let supertokens = try Rownd.requireSuperTokensConfig()
+        let apiDomain = apiDomainOverride ?? supertokens.apiDomain
+        let apiBasePath = apiBasePathOverride ?? supertokens.apiBasePath
+
         guard var components = URLComponents(string: apiDomain) else {
             throw RowndError("Invalid SuperTokens apiDomain")
         }
