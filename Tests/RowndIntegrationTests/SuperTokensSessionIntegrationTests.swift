@@ -39,6 +39,30 @@ import Testing
         #expect(await SuperTokensSessionBridge.getAccessToken() == nil)
     }
 
+    @Test func signOutAllCallsPluginSignoutAndClearsLocalSession() async throws {
+        try await TestInfrastructure.prepare()
+
+        try await createHarnessSession(userId: "ios-signout-all-user")
+        #expect(await SuperTokensSessionBridge.doesSessionExist())
+
+        try Rownd.signOut(scope: .all)
+
+        for _ in 0..<40 {
+            if await !SuperTokensSessionBridge.doesSessionExist() {
+                break
+            }
+
+            try await Task.sleep(nanoseconds: 25_000_000)
+        }
+
+        #expect(await !SuperTokensSessionBridge.doesSessionExist())
+        #expect(await SuperTokensSessionBridge.getAccessToken() == nil)
+
+        let counters = try await getJSON(path: "counters")
+        #expect(counters["signOut"] as? Int == 1)
+        #expect(counters["legacyRefresh"] as? Int == 0)
+    }
+
     @Test func hubStyleAuthenticationPayloadBootstrapsNativeSession() async throws {
         try await TestInfrastructure.prepare()
 

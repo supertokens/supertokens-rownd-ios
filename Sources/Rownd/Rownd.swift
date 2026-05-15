@@ -225,8 +225,7 @@ public class Rownd: NSObject {
         case .all:
             Task {
                 do {
-                    let signOutRequest = SignOutRequest(signOutAll: true)
-                    try await Auth.signOutUser(signOutRequest: signOutRequest)
+                    try await Auth.signOutUser()
                     // sign out of current session
                     signOut()
                 } catch {

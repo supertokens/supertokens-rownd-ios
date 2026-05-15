@@ -194,14 +194,6 @@ public enum UserType: String, Codable {
     }
 }
 
-struct SignOutRequest: Codable {
-    var signOutAll: Bool
-
-    enum CodingKeys: String, CodingKey {
-        case signOutAll = "sign_out_all"
-    }
-}
-
 typealias TokenRequestUserData = [String: AnyCodable?]
 
 struct TokenRequest: Codable {
@@ -281,16 +273,31 @@ class Auth {
         return tokenResp.value
     }
     
-    static func signOutUser(signOutRequest: SignOutRequest) async throws {
+    static func signOutUser() async throws {
+        guard let supertokens = Rownd.config.supertokens else {
+            throw RowndError("SuperTokens configuration is required before sign out")
+        }
 
-        guard let appId = Context.currentContext.store.state.appConfig.id else {  throw RowndError("AppId not found") }
-        
-        try await Rownd.apiClient.send(Request(
-            path: "/me/applications/\(appId)/signout",
-            method: .post,
-            body: signOutRequest
-        ))
-        
+        guard var components = URLComponents(string: supertokens.apiDomain) else {
+            throw RowndError("Invalid SuperTokens apiDomain")
+        }
+        components.path = supertokens.apiBasePath + "/plugin/rownd/signout"
+
+        guard let url = components.url else {
+            throw RowndError("Invalid SuperTokens signout URL")
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+
+        let (_, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw RowndError("SuperTokens signout returned a non-HTTP response")
+        }
+
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            throw RowndError("SuperTokens signout failed with status code \(httpResponse.statusCode)")
+        }
     }
 }
 

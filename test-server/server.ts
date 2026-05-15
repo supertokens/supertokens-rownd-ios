@@ -195,7 +195,7 @@ export async function startIntegrationHarness(): Promise<IntegrationHarness> {
     if (req.method === 'POST' && req.path === '/auth/plugin/rownd/migrate') {
       counters.migrate += 1;
     }
-    if (req.method === 'POST' && req.path === '/auth/signout') {
+    if (req.method === 'POST' && req.path === '/auth/plugin/rownd/signout') {
       counters.signOut += 1;
     }
 
@@ -203,6 +203,10 @@ export async function startIntegrationHarness(): Promise<IntegrationHarness> {
   });
 
   app.use(middleware());
+
+  app.post('/auth/plugin/rownd/signout', verifySession(), (_req, res) => {
+    res.json({ status: 'OK' });
+  });
 
   app.post('/hub/auth/token', (_req, res) => {
     counters.legacyRefresh += 1;
