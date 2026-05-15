@@ -226,13 +226,10 @@ public class Rownd: NSObject {
             Task {
                 do {
                     try await Auth.signOutUser()
-                    // sign out of current session
-                    signOut()
+                    await performLocalSignOut()
                 } catch {
                     logger.error(
                         "Failed to sign out user from all sessions: \(String(describing: error))")
-                    throw RowndError(
-                        "Failed to sign out user from all sessions: \(error.localizedDescription)")
                 }
             }
         }
@@ -241,25 +238,17 @@ public class Rownd: NSObject {
 
     public static func signOut() {
         Task {
-            if isSuperTokensInitialized {
-                // Keep the compatibility session from resurrecting Rownd auth on later syncs.
-                await SuperTokensSessionBridge.signOut()
-            }
-
-            await MainActor.run {
-                let store = Context.currentContext.store
-                store.dispatch(SetAuthState(payload: AuthState()))
-
-                RowndEventEmitter.emit(
-                    RowndEvent(
-                        event: .signOut
-                    ))
-            }
+            await performLocalSignOut()
         }
     }
 
     internal static func signOutForMigrationFailure() async {
+        await performLocalSignOut()
+    }
+
+    private static func performLocalSignOut() async {
         if isSuperTokensInitialized {
+            // Keep the compatibility session from resurrecting Rownd auth on later syncs.
             await SuperTokensSessionBridge.signOut()
         }
 
