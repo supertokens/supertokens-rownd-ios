@@ -57,4 +57,28 @@ import Foundation
         }
     }
 
+    @Test func guestAndAnonymousSignInOpenHubWithAnonymousSignInType() async throws {
+        try await withGlobalTestLock {
+            for hint in [RowndSignInHint.guest, .anonymous] {
+                var capturedPage: HubPageSelector?
+                var capturedOptions: RowndSignInOptions?
+
+                Rownd.displayHubHandler = { page, jsFnOptions in
+                    capturedPage = page
+                    capturedOptions = jsFnOptions as? RowndSignInOptions
+                }
+                defer { Rownd.displayHubHandler = nil }
+
+                Rownd.requestSignIn(with: hint)
+
+                guard case .signIn = capturedPage else {
+                    Issue.record("Expected guest/anonymous sign-in to open Hub sign-in")
+                    return
+                }
+
+                #expect(capturedOptions?.signInType == .anonymous)
+            }
+        }
+    }
+
 }

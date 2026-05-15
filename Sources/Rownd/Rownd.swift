@@ -35,6 +35,7 @@ public class Rownd: NSObject {
     internal static var customerWebViews = CustomerWebViewManager()
     @MainActor private static var instantUsers: InstantUsers?
     internal static var isSuperTokensInitialized = false
+    internal static var displayHubHandler: ((HubPageSelector, Encodable?) -> Void)?
 
     // Run processAutomations() every second to support time-based automations
     internal var automationTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
@@ -473,6 +474,11 @@ public class Rownd: NSObject {
     }
 
     private func displayHub(_ page: HubPageSelector, jsFnOptions: Encodable?) {
+        if let displayHubHandler = Rownd.displayHubHandler {
+            displayHubHandler(page, jsFnOptions)
+            return
+        }
+
         Task { @MainActor in
             let hubController = getHubViewController()
             displayViewControllerOnTop(hubController)
