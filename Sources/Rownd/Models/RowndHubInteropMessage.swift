@@ -178,12 +178,14 @@ enum MessagePayload: Decodable {
 
     public struct AuthenticationMessage: Codable {
         var accessToken: String
-        var refreshToken: String?
+        var refreshToken: String
+        var frontToken: String
         var antiCSRF: String?
 
         enum CodingKeys: String, CodingKey {
             case accessToken = "access_token"
             case refreshToken = "refresh_token"
+            case frontToken = "front_token"
             case antiCSRF = "anti_csrf"
         }
     }

@@ -74,7 +74,14 @@ extension AuthState: Codable {
     func toRphInitHash() -> String? {
         let userId: String? = Context.currentContext.store.state.user.get(field: "user_id") as? String ?? nil
 
-        let rphInit = RphInit(accessToken: self.accessToken, refreshToken: self.refreshToken, appId: Context.currentContext.store.state.appConfig.id, appUserId: userId)
+        let rphInit = RphInit(
+            accessToken: self.accessToken,
+            refreshToken: self.refreshToken ?? SuperTokensSessionBridge.getRefreshToken(),
+            frontToken: SuperTokensSessionBridge.getFrontToken(),
+            antiCSRF: SuperTokensSessionBridge.getAntiCSRF(),
+            appId: Context.currentContext.store.state.appConfig.id,
+            appUserId: userId
+        )
         
         do {
             return try rphInit.valueForURLFragment()

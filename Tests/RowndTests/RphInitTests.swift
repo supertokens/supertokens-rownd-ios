@@ -11,7 +11,14 @@ import Foundation
 
 @Suite(.serialized) struct RphInitTests {
     @Test func testValueForURLFragment() async throws {
-        let rphInit = RphInit(accessToken: "accessToken", refreshToken: "refreshToken", appId: "app1", appUserId: "user1")
+        let rphInit = RphInit(
+            accessToken: "accessToken",
+            refreshToken: "refreshToken",
+            frontToken: "frontToken",
+            antiCSRF: "antiCSRF",
+            appId: "app1",
+            appUserId: "user1"
+        )
         let str = try rphInit.valueForURLFragment()
 
         #expect(str.starts(with: "gz."), "value should contain 'gz.' prefix")
@@ -22,6 +29,8 @@ import Foundation
         let expected: [String: String] = [
             "access_token": "accessToken",
             "refresh_token": "refreshToken",
+            "front_token": "frontToken",
+            "anti_csrf": "antiCSRF",
             "app_id": "app1",
             "app_user_id": "user1"
         ]

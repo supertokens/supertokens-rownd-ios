@@ -21,6 +21,18 @@ internal enum SuperTokensSessionBridge {
         }.value
     }
 
+    static func getRefreshToken() -> String? {
+        UserDefaults.standard.string(forKey: refreshTokenStorageKey)
+    }
+
+    static func getFrontToken() -> String? {
+        UserDefaults.standard.string(forKey: frontTokenStorageKey)
+    }
+
+    static func getAntiCSRF() -> String? {
+        UserDefaults.standard.string(forKey: antiCSRFStorageKey)
+    }
+
     static func attemptRefresh() async -> Bool {
         await Task.detached(priority: .userInitiated) {
             (try? SuperTokens.attemptRefreshingSession()) == true

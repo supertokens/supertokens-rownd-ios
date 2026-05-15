@@ -299,6 +299,7 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
                     SuperTokensSessionBridge.bootstrapSession(
                         accessToken: authMessage.accessToken,
                         refreshToken: authMessage.refreshToken,
+                        frontToken: authMessage.frontToken,
                         antiCSRF: authMessage.antiCSRF
                     )
                     await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens()

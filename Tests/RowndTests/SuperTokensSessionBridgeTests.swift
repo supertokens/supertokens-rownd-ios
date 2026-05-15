@@ -59,6 +59,26 @@ import Testing
         }
     }
 
+    @Test func localArtifactGettersReturnPersistedSessionValues() async throws {
+        try await withMockedSuperTokensSession {
+            let accessToken = makeSuperTokensTestJWT(expiresIn: 3600)
+            let refreshToken = makeSuperTokensTestJWT(expiresIn: 7200)
+
+            await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: accessToken,
+                    refreshToken: refreshToken,
+                    frontToken: "front-token",
+                    antiCSRF: "anti-csrf-token"
+                )
+            }.value
+
+            #expect(SuperTokensSessionBridge.getRefreshToken() == refreshToken)
+            #expect(SuperTokensSessionBridge.getFrontToken() == "front-token")
+            #expect(SuperTokensSessionBridge.getAntiCSRF() == "anti-csrf-token")
+        }
+    }
+
     @Test func bootstrapSessionDoesNotOverwriteExistingSession() async throws {
         try await withMockedSuperTokensSession {
             let originalAccessToken = makeSuperTokensTestJWT(expiresIn: 3600)

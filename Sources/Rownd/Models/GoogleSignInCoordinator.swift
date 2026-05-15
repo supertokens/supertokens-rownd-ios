@@ -84,7 +84,9 @@ class GoogleSignInCoordinator: NSObject {
                         
                         let rphInit = RphInit(
                             accessToken: accessToken,
-                            refreshToken: nil,
+                            refreshToken: SuperTokensSessionBridge.getRefreshToken(),
+                            frontToken: SuperTokensSessionBridge.getFrontToken(),
+                            antiCSRF: SuperTokensSessionBridge.getAntiCSRF(),
                             appId: appId ?? Context.currentContext.store.state.appConfig.id,
                             appUserId: appUserId.string
                         )
