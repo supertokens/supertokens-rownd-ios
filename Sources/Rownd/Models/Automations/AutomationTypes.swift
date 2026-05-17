@@ -64,7 +64,6 @@ extension RowndAutomationAction: Codable {
 
 public enum RowndAutomationActionType: String {
     case requireAuthentication = "REQUIRE_AUTHENTICATION"
-    case promptForPasskey = "PROMPT_FOR_PASSKEY"
     case signOut = "SIGN_OUT"
     case requireVerification = "REQUIRE_VERIFICATION"
     case redirect = "REDIRECT"

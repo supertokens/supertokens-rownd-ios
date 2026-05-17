@@ -192,12 +192,11 @@ extension AppHubCustomStylesConfigState: Codable {
 
 public struct SignInMethods: Hashable {
     public var google: GoogleSignInMethodConfig?
-    public var passkeys: PasskeysSignInMethodConfig?
 }
 
 extension SignInMethods: Codable {
     enum CodingKeys: String, CodingKey {
-        case google, passkeys
+        case google
     }
 }
 
@@ -212,17 +211,6 @@ extension GoogleSignInMethodConfig: Codable {
         case enabled
         case serverClientId = "client_id"
         case iosClientId = "ios_client_id"
-    }
-}
-
-public struct PasskeysSignInMethodConfig: Hashable {
-    public var enabled: Bool?
-    public var domains: [String]?
-}
-
-extension PasskeysSignInMethodConfig: Codable {
-    enum CodingKeys: String, CodingKey {
-        case enabled, domains
     }
 }
 

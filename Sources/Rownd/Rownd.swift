@@ -11,7 +11,6 @@ import Foundation
 import Get
 import GoogleSignIn
 import LBBottomSheet
-import LocalAuthentication
 import ReSwift
 import SwiftUI
 import SuperTokensIOS
@@ -28,10 +27,8 @@ public class Rownd: NSObject {
     internal static var googleSignInCoordinator: GoogleSignInCoordinator = GoogleSignInCoordinator(
         inst)
     @MainActor private var _bottomSheetController: BottomSheetViewController?
-    internal static var passkeyCoordinator: PasskeyCoordinator = PasskeyCoordinator()
     internal static var apiClient = RowndApi().client
     internal static let automationsCoordinator = AutomationsCoordinator()
-    internal static var connectionAction = ConnectionAction()
     internal static var customerWebViews = CustomerWebViewManager()
     @MainActor private static var instantUsers: InstantUsers?
     internal static var isSuperTokensInitialized = false
@@ -131,21 +128,6 @@ public class Rownd: NSObject {
         return SmartLinks.handleSmartLink(url: url)
     }
 
-    public class auth {
-        public class passkeys {
-            public static func register() {
-                inst.displayHub(
-                    .connectPasskey,
-                    jsFnOptions: RowndConnectPasskeySignInOptions(
-                        biometricType: LAContext().biometricType.rawValue
-                    ).dictionary())
-            }
-            public static func authenticate() {
-                passkeyCoordinator.authenticate(nil)
-            }
-        }
-    }
-
     public static func getInstance() -> Rownd {
         return inst
     }
@@ -169,8 +151,6 @@ public class Rownd: NSObject {
             requestSignIn(determineSignInOptions(signInOptions, signInType: SignInType.email))
         case .appleId:
             appleSignUpCoordinator.signIn(signInOptions?.intent)
-        case .passkey:
-            passkeyCoordinator.authenticate(signInOptions?.intent)
         case .googleId:
             Task {
                 await googleSignInCoordinator.signIn(
@@ -192,32 +172,6 @@ public class Rownd: NSObject {
 
     internal static func requestSignIn(jsFnOptions: Encodable?) {
         inst.displayHub(.signIn, jsFnOptions: jsFnOptions)
-    }
-
-    @MainActor
-    public static func connectAuthenticator(
-        with: RowndConnectSignInHint, completion: (() -> Void)? = nil
-    ) {
-        connectAuthenticator(with: with, completion: completion, args: nil)
-    }
-
-    internal static func connectAuthenticator(
-        with: RowndConnectSignInHint, completion: (() -> Void)? = nil, args: [String: AnyCodable]?
-    ) {
-        switch with {
-        case .passkey:
-            let store = Context.currentContext.store
-            if store.state.auth.accessToken != nil {
-                var passkeySignInOptions = RowndConnectPasskeySignInOptions(
-                    biometricType: LAContext().biometricType.rawValue
-                ).dictionary()
-                args?.forEach { (k, v) in passkeySignInOptions[k] = v }
-                inst.displayHub(.connectPasskey, jsFnOptions: passkeySignInOptions)
-            } else {
-                logger.log("Need to be authenticated to Connect another method")
-                requestSignIn()
-            }
-        }
     }
 
     public static func signOut(scope: RowndSignoutScope) throws {
@@ -272,12 +226,6 @@ public class Rownd: NSObject {
     /// - Returns: A closure that can be called later to deregister the web view
     public static func registerWebView(_ webView: WKWebView) -> () -> Void {
         return customerWebViews.register(webView)
-    }
-
-    public class firebase {
-        public static func getIdToken() async throws -> String {
-            return try await connectionAction.getFirebaseIdToken()
-        }
     }
 
     @discardableResult public static func getAccessToken(throwIfMissing: Bool = false) async throws
@@ -553,12 +501,8 @@ public enum UserFieldAccessType {
 }
 
 public enum RowndSignInHint {
-    case appleId, googleId, passkey, email, phone,
+    case appleId, googleId, email, phone,
         guest, anonymous  // these two do the same thing
-}
-
-public enum RowndConnectSignInHint {
-    case passkey
 }
 
 public struct RowndSignInOptions: Encodable {
@@ -598,7 +542,6 @@ public enum SignInType: String, Codable {
     case phone = "phone"
     case apple = "apple"
     case google = "google"
-    case passkey = "passkey"
     case anonymous = "anonymous"
 }
 
@@ -628,26 +571,6 @@ internal struct RowndSignInJsOptions: Encodable {
         case signInType = "sign_in_type"
         case challengeId = "request_id"
         case userIdentifier = "identifier"
-    }
-}
-
-public struct RowndConnectPasskeySignInOptions: Encodable {
-    public var status: Status?
-    public var biometricType: String? = ""
-    public var type: String = "passkey"
-    public var error: String?
-    internal func dictionary() -> [String: AnyCodable] {
-        return [
-            "status": AnyCodable(status),
-            "biometric_type": AnyCodable(biometricType),
-            "type": AnyCodable(type),
-            "error": AnyCodable(error),
-        ]
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case status, type, error
-        case biometricType = "biometric_type"
     }
 }
 

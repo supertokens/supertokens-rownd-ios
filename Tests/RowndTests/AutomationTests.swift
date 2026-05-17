@@ -12,7 +12,7 @@ import XCTest
 final class AutomationTests: XCTestCase {
     
     let appConfigStringWithAutomationOrRules = """
-    { "hub": { "customizations": { "rounded_corners": true, "visual_swoops": true, "blur_background": true, "dark_mode": "auto" }, "auth": { "sign_in_methods": { "email": { "enabled": true }, "phone": { "enabled": false }, "apple": { "enabled": false, "client_id": "" }, "google": { "enabled": false, "client_id": "", "ios_client_id": "", "scopes": [] }, "crypto_wallet": { "enabled": false }, "passkeys": { "enabled": false, "registration_prompt_frequency": "14d" }, "anonymous": { "enabled": true } }, "show_app_icon": false } }, "automations": [ { "rules": [ { "$or": [ { "entity_type": "metadata", "attribute": "is_authenticated", "condition": "EQUALS", "value": false }, { "entity_type": "metadata", "attribute": "auth_level", "condition": "EQUALS", "value": "instant" } ] }, { "entity_type": "scope", "attribute": "url", "condition": "EQUALS", "value": "https://app.rownd.io" } ], "triggers": [ { "type": "HTML_SELECTOR", "value": ".random" } ], "actions": [ { "type": "EDIT_ELEMENTS", "args": { "style": { "display": "none !important" }, "selector": ".random" } } ], "id": "cm01g3wji009e7fdjp6767sa8", "app_id": "406650865825350227", "platform": "web", "template": "hide_content", "name": "Untitled automation", "created_at": "2024-08-19T20:25:32.286Z", "updated_at": "2024-08-19T20:25:32.286Z", "state": "enabled", "order": 10 } ], "profile_storage_version": "v1" }
+    { "hub": { "customizations": { "rounded_corners": true, "visual_swoops": true, "blur_background": true, "dark_mode": "auto" }, "auth": { "sign_in_methods": { "email": { "enabled": true }, "phone": { "enabled": false }, "apple": { "enabled": false, "client_id": "" }, "google": { "enabled": false, "client_id": "", "ios_client_id": "", "scopes": [] }, "crypto_wallet": { "enabled": false }, "anonymous": { "enabled": true } }, "show_app_icon": false } }, "automations": [ { "rules": [ { "$or": [ { "entity_type": "metadata", "attribute": "is_authenticated", "condition": "EQUALS", "value": false }, { "entity_type": "metadata", "attribute": "auth_level", "condition": "EQUALS", "value": "instant" } ] }, { "entity_type": "scope", "attribute": "url", "condition": "EQUALS", "value": "https://app.rownd.io" } ], "triggers": [ { "type": "HTML_SELECTOR", "value": ".random" } ], "actions": [ { "type": "EDIT_ELEMENTS", "args": { "style": { "display": "none !important" }, "selector": ".random" } } ], "id": "cm01g3wji009e7fdjp6767sa8", "app_id": "406650865825350227", "platform": "web", "template": "hide_content", "name": "Untitled automation", "created_at": "2024-08-19T20:25:32.286Z", "updated_at": "2024-08-19T20:25:32.286Z", "state": "enabled", "order": 10 } ], "profile_storage_version": "v1" }
     """
 
     func testDecodingAppConfigAutomation() {
@@ -41,7 +41,7 @@ final class AutomationTests: XCTestCase {
             XCTAssertTrue(automation.triggers.first?.type == RowndAutomationTriggerType.htmlSelector, "HTML_SELECTOR is the expected trigger type")
             
             do {
-                let encoded = try appConfig.toDictionary()
+                _ = try appConfig.toDictionary()
             } catch {
                 XCTFail("Failed to encode app config string \(error)")
             }
@@ -56,7 +56,7 @@ final class AutomationTests: XCTestCase {
     func testDecodingAppConfigAutomation2() {
         do {
             let appConfigString = """
-            { "hub": { "customizations": { "rounded_corners": true, "visual_swoops": true, "blur_background": true, "dark_mode": "auto" }, "auth": { "sign_in_methods": { "email": { "enabled": true }, "phone": { "enabled": false }, "apple": { "enabled": false, "client_id": "" }, "google": { "enabled": false, "client_id": "", "ios_client_id": "", "scopes": [] }, "crypto_wallet": { "enabled": false }, "passkeys": { "enabled": false, "registration_prompt_frequency": "14d" }, "anonymous": { "enabled": true } }, "show_app_icon": false } }, "automations": [ { "rules": [ { "entity_type": "metadata", "attribute": "auth_level", "condition": "EQUALS", "value": "instant" } ], "triggers": [ { "type": "TIME", "value": "3h" } ], "actions": [ { "type": "EDIT_ELEMENTS", "args": { "style": { "display": "none !important" }, "selector": ".random" } } ], "id": "cm01g3wji009e7fdjp6767sa8", "app_id": "406650865825350227", "platform": "web", "template": "hide_content", "name": "Untitled automation", "created_at": "2024-08-19T20:25:32.286Z", "updated_at": "2024-08-19T20:25:32.286Z", "state": "enabled", "order": 10 } ], "profile_storage_version": "v1" }
+            { "hub": { "customizations": { "rounded_corners": true, "visual_swoops": true, "blur_background": true, "dark_mode": "auto" }, "auth": { "sign_in_methods": { "email": { "enabled": true }, "phone": { "enabled": false }, "apple": { "enabled": false, "client_id": "" }, "google": { "enabled": false, "client_id": "", "ios_client_id": "", "scopes": [] }, "crypto_wallet": { "enabled": false }, "anonymous": { "enabled": true } }, "show_app_icon": false } }, "automations": [ { "rules": [ { "entity_type": "metadata", "attribute": "auth_level", "condition": "EQUALS", "value": "instant" } ], "triggers": [ { "type": "TIME", "value": "3h" } ], "actions": [ { "type": "EDIT_ELEMENTS", "args": { "style": { "display": "none !important" }, "selector": ".random" } } ], "id": "cm01g3wji009e7fdjp6767sa8", "app_id": "406650865825350227", "platform": "web", "template": "hide_content", "name": "Untitled automation", "created_at": "2024-08-19T20:25:32.286Z", "updated_at": "2024-08-19T20:25:32.286Z", "state": "enabled", "order": 10 } ], "profile_storage_version": "v1" }
             """
             let decoder = JSONDecoder()
             let appConfig = try decoder.decode(
@@ -81,7 +81,7 @@ final class AutomationTests: XCTestCase {
             XCTAssertTrue(automation.triggers.first?.value == "3h")
             
             do {
-                let encoded = try appConfig.toDictionary()
+                _ = try appConfig.toDictionary()
             } catch {
                 XCTFail("Failed to encode app config string \(error)")
             }
@@ -95,7 +95,7 @@ final class AutomationTests: XCTestCase {
     func testFailedDecodingAppConfigAutomationFallback() {
         do {
             let invalidAppConfigString = """
-            { "hub": { "customizations": { "rounded_corners": true, "visual_swoops": true, "blur_background": true, "dark_mode": "auto" }, "auth": { "sign_in_methods": { "email": { "enabled": true }, "phone": { "enabled": false }, "apple": { "enabled": false, "client_id": "" }, "google": { "enabled": false, "client_id": "", "ios_client_id": "", "scopes": [] }, "crypto_wallet": { "enabled": false }, "passkeys": { "enabled": false, "registration_prompt_frequency": "14d" }, "anonymous": { "enabled": true } }, "show_app_icon": false } }, "automations": [ { "rules": [ { "random": "randy" } ], "id": "cm01g3wji009e7fdjp6767sa8", "app_id": "406650865825350227", "platform": "web", "template": "hide_content", "name": "Untitled automation", "state": "enabled" } ] }
+            { "hub": { "customizations": { "rounded_corners": true, "visual_swoops": true, "blur_background": true, "dark_mode": "auto" }, "auth": { "sign_in_methods": { "email": { "enabled": true }, "phone": { "enabled": false }, "apple": { "enabled": false, "client_id": "" }, "google": { "enabled": false, "client_id": "", "ios_client_id": "", "scopes": [] }, "crypto_wallet": { "enabled": false }, "anonymous": { "enabled": true } }, "show_app_icon": false } }, "automations": [ { "rules": [ { "random": "randy" } ], "id": "cm01g3wji009e7fdjp6767sa8", "app_id": "406650865825350227", "platform": "web", "template": "hide_content", "name": "Untitled automation", "state": "enabled" } ] }
             """
             let decoder = JSONDecoder()
             let appConfig = try decoder.decode(
@@ -106,7 +106,7 @@ final class AutomationTests: XCTestCase {
             XCTAssertNil(appConfig.automations)
             
             do {
-                let encoded = try appConfig.toDictionary()
+                _ = try appConfig.toDictionary()
             } catch {
                 XCTFail("Failed to encode app config string \(error)")
             }

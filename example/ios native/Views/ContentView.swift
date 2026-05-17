@@ -21,8 +21,6 @@ struct ContentView: View {
     @State var firstName = ""
     @State var plainCryptText = ""
     @State var cipherCryptText = ""
-    @State var displayTokenSheet = false
-    @State var signInToken = ""
 
     private var cancellables = Set<AnyCancellable>()
 
@@ -75,11 +73,6 @@ struct ContentView: View {
                         })
 
                         Section {
-                            Button(action: {
-                                Rownd.connectAuthenticator(with: .passkey)
-                            }, label: {
-                                Text("Register passkey")
-                            })
                             Button(action: {
                                 Rownd._refreshToken()
                             }, label: {
@@ -145,35 +138,6 @@ struct ContentView: View {
                             Rownd.requestSignIn(RowndSignInOptions(intent: .signUp))
                         }, label: {
                             Text("Sign in")
-                        })
-
-                        Button(action: {
-                            displayTokenSheet = true
-                        }, label: {
-                            Text("Sign in w/ token")
-                        }).sheet(isPresented: $displayTokenSheet, content: {
-                            VStack {
-                                VStack {
-                                    Text("Enter token")
-                                    TextEditor(text: $signInToken)
-                                }.padding()
-
-                                HStack {
-                                    Button(action: {
-                                        Task {
-                                            let token = await Rownd.getAccessToken(
-                                                token: signInToken
-                                            )
-                                            if token != nil {
-                                                displayTokenSheet = false
-                                            }
-
-                                        }
-                                    }, label: {
-                                        Text("Sign in")
-                                    })
-                                }
-                            }
                         })
 
                         Button(action: {

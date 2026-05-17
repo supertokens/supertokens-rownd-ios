@@ -9,12 +9,10 @@ import Foundation
 import UIKit
 import WebKit
 import SwiftUI
-import LocalAuthentication
 import ReSwiftThunk
 
 public enum HubPageSelector {
     case signIn
-    case connectPasskey
     case signOut
     case qrCode
     case manageAccount
@@ -128,8 +126,6 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
 }
 
 extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
-    private static var passkeyCoordinator: PasskeyCoordinator? = PasskeyCoordinator()
-
     private func evaluateJavaScript(code: String, webView: WKWebView) {
         let wrappedJs = """
             if (typeof rownd !== 'undefined') {
@@ -246,8 +242,6 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
             switch targetPage ?? self.hubViewController?.targetPage {
             case .signOut:
                 self.evaluateJavaScript(code: "rownd.signOut({\"show_success\":true})", webView: webView)
-            case .connectPasskey:
-                self.evaluateJavaScript(code: "rownd.connectAuthenticator(\(self.jsFunctionArgsAsJson))", webView: webView)
             case .signIn, .unknown:
                 self.evaluateJavaScript(code: "rownd.requestSignIn(\(self.jsFunctionArgsAsJson))", webView: webView)
             case .qrCode:
@@ -351,13 +345,6 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
                     signInWithGoogleMessage = message
                 }
                 Rownd.requestSignIn(with: RowndSignInHint.googleId, signInOptions: RowndSignInOptions(intent: signInWithGoogleMessage?.intent, hint: signInWithGoogleMessage?.hint))
-
-            case .triggerSignUpWithPasskey:
-                HubWebViewController.passkeyCoordinator?.registerPasskey()
-                break
-
-            case .triggerSignInWithPasskey:
-                Rownd.requestSignIn(with: .passkey)
 
             case .signOut:
                 // Occasionally, the hub may send a sign-out message due to expired token
