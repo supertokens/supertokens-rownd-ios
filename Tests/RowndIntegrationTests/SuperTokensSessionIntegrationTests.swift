@@ -162,6 +162,73 @@ import Testing
         #expect(counters["legacyRefresh"] as? Int == 1)
     }
 
+    @Test func legacyRefreshFailureSignsOutAndDoesNotCallMigrate() async throws {
+        try await TestInfrastructure.prepare()
+        try await setMigrationMode("legacyRefreshFailure")
+
+        try await migrateLegacySession(
+            accessToken: generateJwt(expires: Date(timeIntervalSinceNow: -3600).timeIntervalSince1970),
+            refreshToken: "legacy-refresh-token"
+        )
+
+        #expect(await !SuperTokensSessionBridge.doesSessionExist())
+        #expect(await SuperTokensSessionBridge.getAccessToken() == nil)
+        #expect(await currentAuthAccessToken() == nil)
+        #expect(await currentAuthRefreshToken() == nil)
+
+        let counters = try await getJSON(path: "counters")
+        #expect(counters["legacyRefresh"] as? Int == 1)
+        #expect(counters["migrate"] as? Int == 0)
+    }
+
+    @Test func migrateUnauthorizedSignsOutLocalLegacySession() async throws {
+        try await TestInfrastructure.prepare()
+        try await setMigrationMode("migrate401")
+
+        try await migrateLegacySession(
+            accessToken: generateJwt(expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970),
+            refreshToken: "legacy-refresh-token"
+        )
+
+        #expect(await !SuperTokensSessionBridge.doesSessionExist())
+        #expect(await SuperTokensSessionBridge.getAccessToken() == nil)
+        #expect(await currentAuthAccessToken() == nil)
+        #expect(await currentAuthRefreshToken() == nil)
+
+        let counters = try await getJSON(path: "counters")
+        #expect(counters["legacyRefresh"] as? Int == 0)
+        #expect(counters["migrate"] as? Int == 1)
+
+        let capturedRequests = try await getJSON(path: "captured-requests")
+        let migrateRequest = try #require(capturedRequests["migrate"] as? [String: Any])
+        let authorization = try #require(migrateRequest["authorization"] as? String)
+        #expect(authorization.hasPrefix("Bearer "))
+        #expect(migrateRequest["authorizationCount"] as? Int == 1)
+        #expect(migrateRequest["rowndAppKey"] as? String == nil)
+    }
+
+    @Test func migrationClientMapsConflictToSessionAlreadyExists() async throws {
+        try await TestInfrastructure.prepare()
+        try await setMigrationMode("migrate409")
+
+        let result = try await LegacySessionMigrationClient(
+            apiDomain: TestInfrastructure.supertokensConfig.apiDomain,
+            apiBasePath: TestInfrastructure.supertokensConfig.apiBasePath
+        ).migrate(legacyAccessToken: generateJwt(expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970))
+
+        #expect(result == .sessionAlreadyExists)
+
+        let counters = try await getJSON(path: "counters")
+        #expect(counters["migrate"] as? Int == 1)
+
+        let capturedRequests = try await getJSON(path: "captured-requests")
+        let migrateRequest = try #require(capturedRequests["migrate"] as? [String: Any])
+        let authorization = try #require(migrateRequest["authorization"] as? String)
+        #expect(authorization.hasPrefix("Bearer "))
+        #expect(migrateRequest["authorizationCount"] as? Int == 1)
+        #expect(migrateRequest["rowndAppKey"] as? String == nil)
+    }
+
     private func createHarnessSession(userId: String) async throws {
         let response = try await createHarnessSessionResponse(userId: userId, captureLocally: true)
         #expect(response.statusCode == 200)
@@ -212,6 +279,17 @@ import Testing
         )
     }
 
+    private func setMigrationMode(_ mode: String) async throws {
+        var request = URLRequest(url: TestInfrastructure.backendURL.appendingPathComponent("test/migration-mode"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["mode": mode])
+
+        let (_, response) = try await URLSession.shared.data(for: request)
+        let statusCode = try #require((response as? HTTPURLResponse)?.statusCode)
+        #expect(statusCode == 200)
+    }
+
     private func getJSON(path: String) async throws -> [String: Any] {
         let url = TestInfrastructure.backendURL.appendingPathComponent(path)
         let (data, response) = try await URLSession.shared.data(from: url)
@@ -242,6 +320,14 @@ import Testing
         response.allHeaderFields.first { key, _ in
             (key as? String)?.caseInsensitiveCompare(name) == .orderedSame
         }?.value as? String
+    }
+
+    @MainActor private func currentAuthAccessToken() -> String? {
+        Context.currentContext.store.state.auth.accessToken
+    }
+
+    @MainActor private func currentAuthRefreshToken() -> String? {
+        Context.currentContext.store.state.auth.refreshToken
     }
 
     private func clearLocalSuperTokensSessionArtifacts() {

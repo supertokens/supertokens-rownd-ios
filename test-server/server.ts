@@ -28,6 +28,8 @@ type CapturedRequest = {
   rowndAppKey?: string;
 };
 
+type MigrationMode = 'normal' | 'migrate401' | 'migrate409' | 'legacyRefreshFailure';
+
 type IntegrationHarness = {
   apiUrl: string;
   stop: () => Promise<void>;
@@ -56,6 +58,7 @@ const counters: HarnessCounters = {
 };
 
 const capturedRequests: Record<string, CapturedRequest | undefined> = {};
+let migrationMode: MigrationMode = 'normal';
 
 function captureRequest(name: string, req: express.Request) {
   capturedRequests[name] = {
@@ -77,6 +80,8 @@ function resetCounters() {
   for (const key of Object.keys(capturedRequests)) {
     delete capturedRequests[key];
   }
+
+  migrationMode = 'normal';
 }
 
 export async function startIntegrationHarness(): Promise<IntegrationHarness> {
@@ -225,6 +230,33 @@ export async function startIntegrationHarness(): Promise<IntegrationHarness> {
     next();
   });
 
+  app.post('/test/migration-mode', (req, res) => {
+    const mode = req.body?.mode;
+    if (!['normal', 'migrate401', 'migrate409', 'legacyRefreshFailure'].includes(mode)) {
+      res.status(400).json({ status: 'ERROR', message: 'Invalid migration mode' });
+      return;
+    }
+
+    migrationMode = mode;
+    res.json({ status: 'OK', mode: migrationMode });
+  });
+
+  app.post('/auth/plugin/rownd/migrate', (req, res, next) => {
+    captureRequest('migrate', req);
+
+    if (migrationMode === 'migrate401') {
+      res.status(401).json({ status: 'ERROR', message: 'Legacy Rownd token rejected' });
+      return;
+    }
+
+    if (migrationMode === 'migrate409') {
+      res.status(409).json({ status: 'ERROR', message: 'User already migrated' });
+      return;
+    }
+
+    next();
+  });
+
   app.use(middleware());
 
   app.post('/auth/plugin/rownd/signout', verifySession(), (req, res) => {
@@ -234,6 +266,12 @@ export async function startIntegrationHarness(): Promise<IntegrationHarness> {
 
   app.post('/hub/auth/token', (_req, res) => {
     counters.legacyRefresh += 1;
+
+    if (migrationMode === 'legacyRefreshFailure') {
+      res.status(401).json({ status: 'ERROR', message: 'Legacy refresh failed' });
+      return;
+    }
+
     res.json({
       access_token: 'legacy-refreshed-access-token',
       refresh_token: 'legacy-refreshed-refresh-token',
