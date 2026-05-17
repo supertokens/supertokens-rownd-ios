@@ -14,6 +14,11 @@ import { GenericContainer, Network, type StartedNetwork, type StartedTestContain
 
 type HarnessCounters = {
   createSession: number;
+  appleSignIn: number;
+  googleSignIn: number;
+  userGet: number;
+  userUpdate: number;
+  userMetaUpdate: number;
   signOut: number;
   stRefresh: number;
   legacyRefresh: number;
@@ -26,6 +31,7 @@ type CapturedRequest = {
   authorization?: string;
   authorizationCount: number;
   rowndAppKey?: string;
+  body?: unknown;
 };
 
 type MigrationMode = 'normal' | 'migrate401' | 'migrate409' | 'legacyRefreshFailure';
@@ -49,6 +55,11 @@ let server: Server | undefined;
 
 const counters: HarnessCounters = {
   createSession: 0,
+  appleSignIn: 0,
+  googleSignIn: 0,
+  userGet: 0,
+  userUpdate: 0,
+  userMetaUpdate: 0,
   signOut: 0,
   stRefresh: 0,
   legacyRefresh: 0,
@@ -70,6 +81,11 @@ function captureRequest(name: string, req: express.Request) {
 
 function resetCounters() {
   counters.createSession = 0;
+  counters.appleSignIn = 0;
+  counters.googleSignIn = 0;
+  counters.userGet = 0;
+  counters.userUpdate = 0;
+  counters.userMetaUpdate = 0;
   counters.signOut = 0;
   counters.stRefresh = 0;
   counters.legacyRefresh = 0;
@@ -255,6 +271,77 @@ export async function startIntegrationHarness(): Promise<IntegrationHarness> {
     }
 
     next();
+  });
+
+  app.post('/auth/signinup', async (req: any, res: any, next) => {
+    if (
+      req.body?.thirdPartyId === 'apple' &&
+      req.body?.redirectURIInfo?.redirectURIQueryParams?.code === 'fake-apple-auth-code'
+    ) {
+      counters.appleSignIn += 1;
+      captureRequest('appleSignIn', req);
+      capturedRequests.appleSignIn = {
+        ...capturedRequests.appleSignIn,
+        body: req.body,
+      };
+
+      await Session.createNewSession(req, res, 'public', new RecipeUserId('ios-apple-user'), {}, {}, {});
+      res.json({ status: 'OK', createdNewRecipeUser: true });
+      return;
+    }
+
+    if (req.body?.thirdPartyId !== 'google' || req.body?.oAuthTokens?.id_token !== 'fake-google-id-token') {
+      next();
+      return;
+    }
+
+    counters.googleSignIn += 1;
+    captureRequest('googleSignIn', req);
+    capturedRequests.googleSignIn = {
+      ...capturedRequests.googleSignIn,
+      body: req.body,
+    };
+
+    await Session.createNewSession(req, res, 'public', new RecipeUserId('ios-google-user'), {}, {}, {});
+    res.json({ status: 'OK', createdNewRecipeUser: true });
+  });
+
+  app.get('/auth/plugin/rownd/user', (req, res) => {
+    counters.userGet += 1;
+    captureRequest('userGet', req);
+    res.json({
+      status: 'OK',
+      state: 'enabled',
+      auth_level: 'verified',
+      data: { user_id: 'ios-profile-user', first_name: 'Test' },
+      meta: {},
+    });
+  });
+
+  app.put('/auth/plugin/rownd/user', (req, res) => {
+    counters.userUpdate += 1;
+    captureRequest('userUpdate', req);
+    capturedRequests.userUpdate = {
+      ...capturedRequests.userUpdate,
+      body: req.body,
+    };
+    res.json({
+      status: 'OK',
+      state: 'enabled',
+      auth_level: 'verified',
+      data: req.body?.data ?? {},
+      meta: {},
+    });
+  });
+
+  app.put('/auth/plugin/rownd/user/meta', (req, res) => {
+    counters.userMetaUpdate += 1;
+    captureRequest('userMetaUpdate', req);
+    capturedRequests.userMetaUpdate = {
+      ...capturedRequests.userMetaUpdate,
+      body: req.body,
+    };
+    res.json({ status: 'OK', id: 'ios-profile-user', meta: req.body?.meta ?? {} });
   });
 
   app.use(middleware());

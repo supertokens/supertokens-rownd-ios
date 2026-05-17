@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import AnyCodable
 
 @testable import Rownd
 
@@ -229,6 +230,107 @@ import Testing
         #expect(migrateRequest["rowndAppKey"] as? String == nil)
     }
 
+    @Test func googleSignInCreatesSuperTokensSessionWithoutLegacyRefresh() async throws {
+        try await TestInfrastructure.prepare()
+
+        let response = try await SuperTokensThirdPartySignInClient(
+            apiDomain: TestInfrastructure.supertokensConfig.apiDomain,
+            apiBasePath: TestInfrastructure.supertokensConfig.apiBasePath
+        ).signInWithGoogle(idToken: "fake-google-id-token")
+
+        #expect(response.userType == .NewUser)
+        #expect(await SuperTokensSessionBridge.doesSessionExist())
+        let accessToken = try #require(await SuperTokensSessionBridge.getAccessToken())
+        #expect(!accessToken.isEmpty)
+
+        await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens()
+        #expect(try await Rownd.getAccessToken(throwIfMissing: true) == accessToken)
+
+        let counters = try await getJSON(path: "counters")
+        #expect(counters["googleSignIn"] as? Int == 1)
+        #expect(counters["legacyRefresh"] as? Int == 0)
+
+        let capturedRequests = try await getJSON(path: "captured-requests")
+        let googleRequest = try #require(capturedRequests["googleSignIn"] as? [String: Any])
+        #expect(googleRequest["authorization"] as? String == nil)
+        #expect(googleRequest["authorizationCount"] as? Int == 0)
+        #expect(googleRequest["rowndAppKey"] as? String == nil)
+
+        let body = try #require(googleRequest["body"] as? [String: Any])
+        #expect(body["thirdPartyId"] as? String == "google")
+        let tokens = try #require(body["oAuthTokens"] as? [String: Any])
+        #expect(tokens["id_token"] as? String == "fake-google-id-token")
+    }
+
+    @Test func appleSignInCreatesSuperTokensSessionWithoutLegacyRefresh() async throws {
+        try await TestInfrastructure.prepare()
+
+        let response = try await SuperTokensThirdPartySignInClient(
+            apiDomain: TestInfrastructure.supertokensConfig.apiDomain,
+            apiBasePath: TestInfrastructure.supertokensConfig.apiBasePath
+        ).signInWithApple(authorizationCode: "fake-apple-auth-code")
+
+        #expect(response.userType == .NewUser)
+        #expect(await SuperTokensSessionBridge.doesSessionExist())
+        let accessToken = try #require(await SuperTokensSessionBridge.getAccessToken())
+        #expect(!accessToken.isEmpty)
+
+        await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens()
+        #expect(try await Rownd.getAccessToken(throwIfMissing: true) == accessToken)
+
+        let counters = try await getJSON(path: "counters")
+        #expect(counters["appleSignIn"] as? Int == 1)
+        #expect(counters["legacyRefresh"] as? Int == 0)
+
+        let capturedRequests = try await getJSON(path: "captured-requests")
+        let appleRequest = try #require(capturedRequests["appleSignIn"] as? [String: Any])
+        #expect(appleRequest["authorization"] as? String == nil)
+        #expect(appleRequest["authorizationCount"] as? Int == 0)
+        #expect(appleRequest["rowndAppKey"] as? String == nil)
+
+        let body = try #require(appleRequest["body"] as? [String: Any])
+        #expect(body["thirdPartyId"] as? String == "apple")
+        #expect(body["oAuthTokens"] == nil)
+
+        let redirectURIInfo = try #require(body["redirectURIInfo"] as? [String: Any])
+        let queryParams = try #require(redirectURIInfo["redirectURIQueryParams"] as? [String: Any])
+        #expect(queryParams["code"] as? String == "fake-apple-auth-code")
+    }
+
+    @Test func userProfileRoutesUseSuperTokensPluginHeaders() async throws {
+        try await TestInfrastructure.prepare()
+        try await createHarnessSession(userId: "ios-profile-user")
+        await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens()
+
+        let user = try await UserData.fetchUserData(Context.currentContext.store.state)
+        #expect(user?.data["first_name"]?.value as? String == "Test")
+
+        Context.currentContext.store.dispatch(UserData.save(["first_name": AnyCodable("Updated")]))
+        try await waitForCounter("userUpdate", expectedValue: 1)
+
+        Context.currentContext.store.dispatch(UserData.saveMetaData(["tier": AnyCodable("pro")]))
+        try await waitForCounter("userMetaUpdate", expectedValue: 1)
+
+        let counters = try await getJSON(path: "counters")
+        #expect(counters["userGet"] as? Int == 1)
+        #expect(counters["legacyRefresh"] as? Int == 0)
+
+        let capturedRequests = try await getJSON(path: "captured-requests")
+        try assertSuperTokensOnlyHeaders(capturedRequests["userGet"] as? [String: Any])
+        try assertSuperTokensOnlyHeaders(capturedRequests["userUpdate"] as? [String: Any])
+        try assertSuperTokensOnlyHeaders(capturedRequests["userMetaUpdate"] as? [String: Any])
+
+        let userUpdate = try #require(capturedRequests["userUpdate"] as? [String: Any])
+        let userBody = try #require(userUpdate["body"] as? [String: Any])
+        let userData = try #require(userBody["data"] as? [String: Any])
+        #expect(userData["first_name"] as? String == "Updated")
+
+        let metaUpdate = try #require(capturedRequests["userMetaUpdate"] as? [String: Any])
+        let metaBody = try #require(metaUpdate["body"] as? [String: Any])
+        let meta = try #require(metaBody["meta"] as? [String: Any])
+        #expect(meta["tier"] as? String == "pro")
+    }
+
     private func createHarnessSession(userId: String) async throws {
         let response = try await createHarnessSessionResponse(userId: userId, captureLocally: true)
         #expect(response.statusCode == 200)
@@ -288,6 +390,28 @@ import Testing
         let (_, response) = try await URLSession.shared.data(for: request)
         let statusCode = try #require((response as? HTTPURLResponse)?.statusCode)
         #expect(statusCode == 200)
+    }
+
+    private func waitForCounter(_ name: String, expectedValue: Int) async throws {
+        for _ in 0..<40 {
+            let counters = try await getJSON(path: "counters")
+            if counters[name] as? Int == expectedValue {
+                return
+            }
+
+            try await Task.sleep(nanoseconds: 25_000_000)
+        }
+
+        let counters = try await getJSON(path: "counters")
+        #expect(counters[name] as? Int == expectedValue)
+    }
+
+    private func assertSuperTokensOnlyHeaders(_ request: [String: Any]?) throws {
+        let request = try #require(request)
+        let authorization = try #require(request["authorization"] as? String)
+        #expect(authorization.hasPrefix("Bearer "))
+        #expect(request["authorizationCount"] as? Int == 1)
+        #expect(request["rowndAppKey"] as? String == nil)
     }
 
     private func getJSON(path: String) async throws -> [String: Any] {

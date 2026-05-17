@@ -7,7 +7,6 @@
 
 import AnyCodable
 import Foundation
-import Get
 import OSLog
 import ReSwift
 import ReSwiftThunk
@@ -199,6 +198,35 @@ extension UserStateResponse {
 class UserData {
     private static var fetchTask: Task<UserStateResponse?, Error>?
 
+    private enum PluginRequestError: Error {
+        case statusCode(Int)
+        case nonHTTPResponse
+    }
+
+    private static func sendPluginRequest<Response: Decodable>(
+        path: String,
+        method: String,
+        body: Data? = nil
+    ) async throws -> Response? {
+        var request = URLRequest(url: try SuperTokensPluginRoutes.url(path))
+        request.httpMethod = method
+        request.httpBody = body
+        if body != nil {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw PluginRequestError.nonHTTPResponse
+        }
+
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            throw PluginRequestError.statusCode(httpResponse.statusCode)
+        }
+
+        return try JSONDecoder().decode(Response.self, from: data)
+    }
+
     static func onReceiveUserData(_ action: SetUserData) -> Thunk<RowndState> {
         return Thunk<RowndState> { dispatch, getState in
             guard getState() != nil else { return }
@@ -225,11 +253,7 @@ class UserData {
             }
 
             do {
-                let user = try await Rownd.apiClient.send(
-                    Request<UserStateResponse?>(
-                        path: "/me/applications/\(state.appConfig.id ?? "unknown")/data",
-                        method: .get)
-                ).value
+                let user: UserStateResponse? = try await sendPluginRequest(path: "/user", method: "GET")
 
                 log.debug("Decoded user response: \(String(describing: user))")
 
@@ -242,7 +266,7 @@ class UserData {
                 log.error("Failed to retrieve user: \(String(describing: error))")
 
                 // If the user doesn't exist, sign out (user may have been deleted)
-                if case .unacceptableStatusCode(let statusCode) = error as? APIError,
+                if case .statusCode(let statusCode) = error as? PluginRequestError,
                     statusCode == 404
                 {
                     log.warning(
@@ -338,13 +362,11 @@ class UserData {
                 let userDataPayload = UserDataPayload(data: data)
 
                 do {
-                    let user = try await Rownd.apiClient.send(
-                        Request<UserStateResponse?>(
-                            path: "/me/applications/\(state.appConfig.id ?? "unknown")/data",
-                            method: .put,
-                            body: userDataPayload
-                        )
-                    ).value
+                    let user: UserStateResponse? = try await sendPluginRequest(
+                        path: "/user",
+                        method: "PUT",
+                        body: JSONEncoder().encode(userDataPayload)
+                    )
 
                     logger.debug("Decoded user response: \(String(describing: user))")
 
@@ -380,13 +402,11 @@ class UserData {
                 }
 
                 do {
-                    let response = try await Rownd.apiClient.send(
-                        Request<UserMetaDataResponse?>(
-                            path: "/me/meta",
-                            method: .put,
-                            body: UserMetaDataPayload(meta: meta)
-                        )
-                    ).value
+                    let response: UserMetaDataResponse? = try await sendPluginRequest(
+                        path: "/user/meta",
+                        method: "PUT",
+                        body: JSONEncoder().encode(UserMetaDataPayload(meta: meta))
+                    )
 
                     logger.debug("Saved Rownd meta data: \(String(describing: response))")
                 } catch {
