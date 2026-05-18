@@ -170,6 +170,33 @@ import Testing
         }
     }
 
+    @Test func hubLoaderUrlIncludesRequiredScriptQueryParams() async throws {
+        try await withGlobalTestLock {
+            var config = RowndConfig()
+            config.appKey = "app_test"
+            config.supertokens = RowndSuperTokensConfig(
+                appName: "Example App",
+                apiDomain: "https://api.example.com",
+                apiBasePath: "/custom-auth"
+            )
+
+            let url = try #require(HubViewController.buildHubLoaderUrl(
+                baseUrl: "https://hub.example.com",
+                config: config,
+                base64EncodedConfig: "encoded-config",
+                signInHash: "encoded-sign-in"
+            ))
+            let queryItems = Dictionary(uniqueKeysWithValues: (url.queryItems ?? []).map { ($0.name, $0.value) })
+
+            #expect(url.url?.absoluteString.starts(with: "https://hub.example.com/mobile_app?") == true)
+            #expect(queryItems["config"] == "encoded-config")
+            #expect(queryItems["sign_in"] == "encoded-sign-in")
+            #expect(queryItems["appKey"] == "app_test")
+            #expect(queryItems["apiDomain"] == "https://api.example.com")
+            #expect(queryItems["apiBasePath"] == "/custom-auth")
+        }
+    }
+
     @Test func repeatedConfigureKeepsSuperTokensInitializationGuardSet() async throws {
         try await withGlobalTestLock {
             let originalApiClient = Rownd.apiClient
