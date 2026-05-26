@@ -215,11 +215,7 @@ class AppDelegate: NSObject, UIApplicationDelegate {
     }
 
     func application(_ app: UIApplication, open url: URL, options: [UIApplication.OpenURLOptionsKey: Any] = [:]) -> Bool {
-
-        // TODO: handle URL from here
-        Rownd.handleSignInLink(url: url)
-
-        return true
+        return Rownd.handleSmartLink(url: url)
     }
 
     func application(_ application: UIApplication,

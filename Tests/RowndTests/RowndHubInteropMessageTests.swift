@@ -40,6 +40,13 @@ import Testing
         assertAuthenticationMessageDecodeFails(#"{"type":"authentication","payload":{"access_token":"access-token","refresh_token":"refresh-token","front_token":null}}"#)
     }
 
+    @Test func authenticationMessagesAreHandledForSignInAndDeepLinkPages() {
+        #expect(HubWebViewController.canHandleAuthentication(on: .signIn))
+        #expect(HubWebViewController.canHandleAuthentication(on: .deepLink))
+        #expect(!HubWebViewController.canHandleAuthentication(on: .manageAccount))
+        #expect(!HubWebViewController.canHandleAuthentication(on: nil))
+    }
+
     private func assertAuthenticationMessageDecodeFails(_ json: String) {
         do {
             _ = try RowndHubInteropMessage.fromJson(message: json)

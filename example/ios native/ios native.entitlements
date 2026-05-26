@@ -8,6 +8,7 @@
 	</array>
 	<key>com.apple.developer.associated-domains</key>
 	<array>
+		<string>applinks:staging.supertokens-rownd-hub.pages.dev</string>
 		<string>applinks:mth.dev.rownd.link</string>
 		<string>applinks:mthlandmarks.dev.rownd.link</string>
 		<string>webcredentials:mthshiny.dev.rownd.link</string>

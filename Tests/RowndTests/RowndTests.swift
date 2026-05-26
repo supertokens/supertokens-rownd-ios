@@ -123,15 +123,46 @@ import Get
         }
     }
 
+    @Test func hubUniversalLinksOpenHubDeepLinkPage() async throws {
+        try await withGlobalTestLock {
+            let originalConfig = Rownd.config
+            let originalDisplayHubHandler = Rownd.displayHubHandler
+            defer {
+                Rownd.config = originalConfig
+                Rownd.displayHubHandler = originalDisplayHubHandler
+            }
+
+            var capturedPage: HubPageSelector?
+            Rownd.displayHubHandler = { page, _ in
+                capturedPage = page
+            }
+            Rownd.config.baseUrl = "https://staging.supertokens-rownd-hub.pages.dev"
+
+            let handled = SmartLinks.handleSmartLink(
+                url: URL(string: "https://staging.supertokens-rownd-hub.pages.dev/account/login?preAuthSessionId=pid#abc")
+            )
+
+            #expect(handled)
+            guard case .deepLink = capturedPage else {
+                Issue.record("Expected Hub universal link to open Hub deep-link page")
+                return
+            }
+            #expect(Rownd.config.pendingHubDeepLinkUrl?.absoluteString == "https://staging.supertokens-rownd-hub.pages.dev/account/login?preAuthSessionId=pid#abc")
+        }
+    }
+
     @Test func unsupportedSuperTokensDeepLinksAreIgnored() async throws {
         try await withGlobalTestLock {
             let originalConfig = Rownd.config
             defer { Rownd.config = originalConfig }
 
             Rownd.config.deepLinkScheme = "rowndsupertokens"
+            Rownd.config.baseUrl = "https://staging.supertokens-rownd-hub.pages.dev"
 
             #expect(SmartLinks.handleSmartLink(url: URL(string: "rowndsupertokens://account/unknown")) == false)
             #expect(SmartLinks.handleSmartLink(url: URL(string: "other://account/login")) == false)
+            #expect(SmartLinks.handleSmartLink(url: URL(string: "https://example.com/account/login")) == false)
+            #expect(SmartLinks.handleSmartLink(url: URL(string: "https://staging.supertokens-rownd-hub.pages.dev/account/unknown")) == false)
         }
     }
 

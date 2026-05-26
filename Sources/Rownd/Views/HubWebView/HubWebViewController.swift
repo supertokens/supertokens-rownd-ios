@@ -53,6 +53,10 @@ extension WKWebView {
 
 public class HubWebViewController: UIViewController, WKUIDelegate {
 
+    static func canHandleAuthentication(on targetPage: HubPageSelector?) -> Bool {
+        targetPage == .signIn || targetPage == .deepLink
+    }
+
     let webConfiguration = WKWebViewConfiguration()
     let userController = WKUserContentController()
     lazy var webView: WKWebView = WKWebView(frame: .zero, configuration: webConfiguration)
@@ -289,7 +293,7 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
             switch hubMessage.type {
             case .authentication:
                 guard case .authentication(let authMessage) = hubMessage.payload else { return }
-                guard hubViewController?.targetPage == .signIn  else { return }
+                guard Self.canHandleAuthentication(on: hubViewController?.targetPage) else { return }
                 let initialJsFunctionArgsAsJson = self.jsFunctionArgsAsJson
 
                 Task.detached(priority: .userInitiated) { [weak self] in

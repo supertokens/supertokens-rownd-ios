@@ -91,18 +91,25 @@ class SmartLinks {
     }
 
     private static func hubUrl(for url: URL) -> URL? {
-        guard url.scheme == Rownd.config.deepLinkScheme,
-              let host = url.host?.trimmingCharacters(in: CharacterSet(charactersIn: "/")) else {
-            return nil
-        }
-
-        let path = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let hubPath = path.isEmpty ? "/\(host)" : "/\(host)/\(path)"
-        guard hubPath == "/account/login" || hubPath == "/account/verify-email" else {
+        guard let host = url.host?.trimmingCharacters(in: CharacterSet(charactersIn: "/")) else {
             return nil
         }
 
         guard var components = URLComponents(string: Rownd.config.baseUrl) else {
+            return nil
+        }
+
+        let hubPath: String
+        if url.scheme == Rownd.config.deepLinkScheme {
+            let path = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            hubPath = path.isEmpty ? "/\(host)" : "/\(host)/\(path)"
+        } else if url.scheme == "https", host == components.host {
+            hubPath = url.path
+        } else {
+            return nil
+        }
+
+        guard hubPath == "/account/login" || hubPath == "/account/verify-email" else {
             return nil
         }
 
