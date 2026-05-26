@@ -18,8 +18,12 @@ struct ContentView: View {
     @State private var scenarioStatus = "idle"
     @State private var protectedResult = ""
     @State private var isFetchingProtected = false
+    @State private var isTestingRefresh = false
+    @State private var refreshSimulationCompleted = false
     @State private var presentEditName = false
     @State private var firstName = ""
+
+    private let superTokensRefreshTokenStorageKey = "st-storage-item-st-refresh-token"
 
     private var isAuthenticated: Bool {
         authState.current.isAuthenticated
@@ -138,11 +142,16 @@ struct ContentView: View {
 
                     Spacer()
 
+                    FlowButton("Profile", style: .compact) {
+                        scenarioStatus = "manage_account_requested"
+                        Rownd.manageAccount()
+                    }
+                    .accessibilityIdentifier("e2e-manage-account-button")
+
                     Menu {
                         Button(displayName) {
                             Rownd.manageAccount()
                         }
-                        .accessibilityIdentifier("e2e-manage-account-button")
 
                         Button("Edit name") {
                             firstName = user.current.data["first_name"]?.value as? String ?? ""
@@ -169,6 +178,17 @@ struct ContentView: View {
                     Task { await fetchProtectedResource() }
                 }
                 .disabled(isFetchingProtected)
+
+                FlowButton(refreshSimulationCompleted ? "Reset refresh test" : refreshTestButtonTitle) {
+                    Task {
+                        if refreshSimulationCompleted {
+                            await resetRefreshSimulation()
+                        } else {
+                            await testSessionRefresh()
+                        }
+                    }
+                }
+                .disabled(isTestingRefresh)
 
                 FlowButton("Sign out", style: .secondary) {
                     Rownd.signOut()
@@ -255,6 +275,62 @@ struct ContentView: View {
             scenarioStatus = "protected_failed"
         }
     }
+
+    private var refreshTestButtonTitle: String {
+        isTestingRefresh ? "Testing refresh..." : "Test session refresh"
+    }
+
+    private func testSessionRefresh() async {
+        isTestingRefresh = true
+        scenarioStatus = "refresh_test_requested"
+        defer { isTestingRefresh = false }
+
+        let refreshTokenBefore = UserDefaults.standard.string(forKey: superTokensRefreshTokenStorageKey)
+        let apiURL = E2ESupport.apiURL ?? ExampleAppConfig.apiURL
+        let request = URLRequest(url: apiURL.appendingPathComponent("test/refresh"))
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let body = String(data: data, encoding: .utf8) ?? ""
+            let refreshTokenAfter = UserDefaults.standard.string(forKey: superTokensRefreshTokenStorageKey)
+            let refreshTokenChanged = refreshTokenBefore != nil
+                && refreshTokenAfter != nil
+                && refreshTokenBefore != refreshTokenAfter
+
+            refreshSimulationCompleted = true
+            protectedResult = "HTTP \(statusCode)\nRefresh token changed: \(refreshTokenChanged)\n\(body)"
+            scenarioStatus = (200..<300).contains(statusCode) && refreshTokenChanged
+                ? "refresh_test_passed"
+                : "refresh_test_failed"
+        } catch {
+            protectedResult = String(describing: error)
+            scenarioStatus = "refresh_test_failed"
+        }
+    }
+
+    private func resetRefreshSimulation() async {
+        isTestingRefresh = true
+        scenarioStatus = "refresh_reset_requested"
+        defer { isTestingRefresh = false }
+
+        let apiURL = E2ESupport.apiURL ?? ExampleAppConfig.apiURL
+        var request = URLRequest(url: apiURL.appendingPathComponent("test/refresh/reset"))
+        request.httpMethod = "POST"
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let body = String(data: data, encoding: .utf8) ?? ""
+
+            refreshSimulationCompleted = false
+            protectedResult = "HTTP \(statusCode)\n\(body)"
+            scenarioStatus = (200..<300).contains(statusCode) ? "refresh_reset_complete" : "refresh_reset_failed"
+        } catch {
+            protectedResult = String(describing: error)
+            scenarioStatus = "refresh_reset_failed"
+        }
+    }
 }
 
 private struct Card<Content: View>: View {
@@ -293,6 +369,7 @@ private struct FlowButton: View {
     enum Style {
         case primary
         case secondary
+        case compact
     }
 
     let title: String
@@ -309,13 +386,13 @@ private struct FlowButton: View {
         Button(action: action) {
             Text(title)
                 .fontWeight(.semibold)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 12)
-                .padding(.horizontal, 16)
+                .frame(maxWidth: style == .compact ? nil : .infinity)
+                .padding(.vertical, style == .compact ? 8 : 12)
+                .padding(.horizontal, style == .compact ? 12 : 16)
         }
         .buttonStyle(.plain)
-        .background(style == .primary ? Color(red: 0.067, green: 0.094, blue: 0.153) : Color(red: 0.898, green: 0.906, blue: 0.922))
-        .foregroundStyle(style == .primary ? Color.white : Color(red: 0.067, green: 0.094, blue: 0.153))
+        .background(style == .secondary ? Color(red: 0.898, green: 0.906, blue: 0.922) : Color(red: 0.067, green: 0.094, blue: 0.153))
+        .foregroundStyle(style == .secondary ? Color(red: 0.067, green: 0.094, blue: 0.153) : Color.white)
         .clipShape(Capsule())
     }
 }

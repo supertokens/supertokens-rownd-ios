@@ -77,7 +77,10 @@ extension AuthState: Codable {
             return nil
         }
 
-        let userId: String? = Context.currentContext.store.state.user.get(field: "user_id") as? String ?? nil
+        let jwt = try? decode(jwt: accessToken)
+        let userId: String? = Context.currentContext.store.state.user.get(field: "user_id") as? String
+            ?? jwt?.claim(name: "https://auth.rownd.io/app_user_id").string
+            ?? jwt?.claim(name: "app_user_id").string
 
         let rphInit = RphInit(
             accessToken: accessToken,

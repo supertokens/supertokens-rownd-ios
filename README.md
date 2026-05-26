@@ -274,7 +274,7 @@ Here's a list of events that the Rownd SDK emits and the corresponding data that
 
         ```javascript
         {
-            method: "google" | "apple" | "phone" | "email" | "passkey" | etc;
+            method: "google" | "apple" | "phone" | "email" | "anonymous" | etc;
         }
         ```
         </td>
@@ -287,7 +287,7 @@ Here's a list of events that the Rownd SDK emits and the corresponding data that
 
         ```javascript
         {
-            method: "google" | "apple" | "phone" | "email" | "passkey" | etc,
+            method: "google" | "apple" | "phone" | "email" | "anonymous" | etc,
             user_type: "new_user" | "existing_user",
             app_variant_user_type: "new_user" | "existing_user" | optional
         }
@@ -333,8 +333,9 @@ Supported values:
 
 - `.appleId` - Prompt user to sign in with their Apple ID
 - `.google` - Prompt user to sign in with their Google account
-- `.passkey` - Prompt user to sign in with a passkey if they've previously set one up
 - `.guest` - Sign in the user anonymously as a guest.
+
+Passkeys, Firebase connection actions, legacy Rownd smart-link auth, and public legacy token exchange are not supported by the SuperTokens-backed SDK.
 
 #### RowndSignInOptions
 
@@ -386,29 +387,6 @@ Example:
             // Alert the user that they should try again due to some recoverable error
             print("Server error occurred: \(details)")
         }
-    }
-```
-
-#### Rownd.getAccessToken(\_ token: String) async -> String?
-
-When possible, exchanges a non-Rownd access token for a Rownd access token. This is primarily used in scenarios
-where an app is migrating from some other authentication mechanism to Rownd. Using Rownd integrations,
-the system will accept a third-party token. If it successfully validates, Rownd will sign-in the user and
-return a fresh Rownd access token to the caller.
-
-This API returns `nil` if the token could not be validated and exchanged. If that occurs, it's likely
-that the user should sign-in normally via `Rownd.requestSignIn()`.
-
-> NOTE: This API is typically used once. After a Rownd token is available, other tokens should be discarded.
-> Example:
-
-```swift
-    // Assume `oldToken` was retrieved from some prior authenticator.
-    let accessToken = await Rownd.getAccessToken(oldToken)
-    if (accessToken != nil) {
-        // Navigate to the UI that a user should typically see
-    } else {
-        Rownd.requestSignIn()
     }
 ```
 
