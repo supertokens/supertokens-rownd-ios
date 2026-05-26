@@ -7,164 +7,316 @@
 
 import SwiftUI
 import Rownd
-import Combine
 import AnyCodable
 import WidgetKit
 
 struct ContentView: View {
-    @StateObject var authState = Rownd.getInstance().state().subscribe { $0.auth }
-    @StateObject var user = Rownd.getInstance().state().subscribe { $0.user.data }
-    @StateObject var state = Rownd.getInstance().state().subscribe { $0 }
+    @StateObject private var authState = Rownd.getInstance().state().subscribe { $0.auth }
+    @StateObject private var user = Rownd.getInstance().state().subscribe { $0.user }
+    @StateObject private var state = Rownd.getInstance().state().subscribe { $0 }
 
-    @State var displayCryptSheet = false
-    @State var presentEditName = false
-    @State var firstName = ""
-    @State var plainCryptText = ""
-    @State var cipherCryptText = ""
+    @State private var scenarioStatus = "idle"
+    @State private var protectedResult = ""
+    @State private var isFetchingProtected = false
+    @State private var presentEditName = false
+    @State private var firstName = ""
 
-    private var cancellables = Set<AnyCancellable>()
-
-    init() {
-//        self.user.$current.sink { u in
-//            self.firstName = u["first_name"]?.value as? String ?? ""
-//        }
-//        .store(in: &cancellables)
-        self.state.$current.sink { _ in
-            WidgetCenter.shared.reloadAllTimelines()
-        }
-        .store(in: &cancellables)
+    private var isAuthenticated: Bool {
+        authState.current.isAuthenticated
     }
 
-    @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+    private var userId: String {
+        user.current.data["user_id"]?.value as? String ?? "not loaded"
+    }
+
+    private var displayName: String {
+        let firstName = user.current.data["first_name"]?.value as? String
+        let email = user.current.data["email"]?.value as? String
+        return firstName?.isEmpty == false ? firstName! : email ?? "My account"
+    }
 
     var body: some View {
-        VStack {
-            HStack {
+        ScrollView {
+            VStack(spacing: 16) {
+                heroCard
+                statusCard
 
-                Button("Edit name") {
-                    firstName = user.current["first_name"]?.value as? String ?? ""
-                    presentEditName = true
-                }
-                    .sheet(isPresented: $presentEditName,
-                        content: {
-                        VStack {
-                            Text("Update your name below.")
-                            TextField("First name", text: $firstName)
-                            HStack {
-                                Button("Cancel", action: {
-                                    presentEditName = false
-                                })
-                                Button("Save", action: {
-                                    Rownd.user.set(field: "first_name", value: AnyCodable(firstName))
-                                    presentEditName = false
-                                })
-                            }
-                        }
-                })
-
-                Spacer()
-
-                if authState.current.isAuthenticatedWithUserData {
-                    Menu {
-                        Button(action: {
-                            Rownd.manageAccount()
-                        }, label: {
-                            Text((user.current["first_name"]?.value as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "My account" )
-                        })
-
-                        Section {
-                            Button(action: {
-                                Rownd._refreshToken()
-                            }, label: {
-                                Text("Refresh token")
-                            })
-
-                            Button(action: {
-                                displayCryptSheet = true
-                            }, label: {
-                                Text("Test encryption")
-                            }).sheet(isPresented: $displayCryptSheet, content: {
-                                VStack {
-                                    VStack {
-                                        Text("Plain text")
-                                        TextEditor(text: $plainCryptText)
-                                    }.padding()
-
-                                    VStack {
-                                        Text("Cipher text")
-                                        TextEditor(text: $cipherCryptText)
-                                    }.padding()
-
-                                    HStack {
-                                        Button(action: {
-                                            do {
-                                                let result = try Rownd.user.encrypt(plaintext: plainCryptText)
-//                                                cipherCryptText = result
-                                            } catch {
-                                                cipherCryptText = String(describing: error)
-                                            }
-                                        }, label: {
-                                            Text("Encrypt")
-                                        })
-                                        Spacer()
-                                        Button(action: {
-                                            do {
-                                                let result = try Rownd.user.decrypt(ciphertext: cipherCryptText)
-//                                                plainCryptText = result
-                                            } catch {
-                                                plainCryptText = String(describing: error)
-                                            }
-                                        }, label: {
-                                            Text("Decrypt")
-                                        })
-                                    }
-                                }
-                            })
-                        }
-
-                        Section {
-                            Button(action: {
-                                Rownd.signOut()
-                            }, label: {
-                                Text("Sign out")
-                            })
-                        }
-                    } label: {
-                        Image(systemName: "person.crop.circle")
-                    }
+                if isAuthenticated {
+                    postLoginCard
+                        .accessibilityIdentifier("e2e-home-screen")
                 } else {
-                    VStack {
-                        Button(action: {
-                            Rownd.requestSignIn(RowndSignInOptions(intent: .signUp))
-                        }, label: {
-                            Text("Sign in")
-                        })
+                    loginCard
+                }
 
-                        Button(action: {
-                            Rownd.requestSignIn(
-                                with: .googleId
-                            )
-                        }, label: {
-                            Text("Sign in w/ Google")
-                        })
-
-                        Button(action: {
-                            Rownd.requestSignIn(
-                                with: .appleId,
-                                signInOptions: RowndSignInOptions(
-                                    intent: .signUp
-                                )
-                            )
-                        }, label: {
-                            Text("Sign in w/ Apple")
-                        })
-                    }
+                if E2ESupport.isEnabled {
+                    e2eCard
                 }
             }
-            .padding(.horizontal)
-
-            LandmarkList()
+            .padding(16)
         }
+        .background(Color(red: 0.965, green: 0.969, blue: 0.984))
+        .onChange(of: state.current.lastUpdateTs) { _ in
+            WidgetCenter.shared.reloadAllTimelines()
+        }
+    }
+
+    private var heroCard: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("All authentication methods example")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Text("Try the Hub auth flows")
+                    .font(.largeTitle)
+                    .fontWeight(.bold)
+                Text("This iOS example loads the local Hub and backend to test email magic links, Google login, guest login, protected requests, and sign out.")
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var statusCard: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 10) {
+                StatusRow(label: "Host", value: state.current.isInitialized ? "ready" : "loading")
+                StatusRow(label: "Auth", value: isAuthenticated ? "signed_in" : "signed_out")
+                StatusRow(label: "Example", value: "all-authentication-methods-ios")
+                StatusRow(label: "Scenario", value: scenarioStatus)
+                StatusRow(label: "User", value: userId)
+                E2EStatusView()
+            }
+        }
+    }
+
+    private var loginCard: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Flows")
+                    .font(.title2)
+                    .fontWeight(.semibold)
+                Text("Use these controls to launch each enabled Hub auth method.")
+                    .foregroundStyle(.secondary)
+
+                VStack(spacing: 10) {
+                    FlowButton("Open Rownd auth UI") {
+                        scenarioStatus = "modal_open_requested"
+                        Rownd.requestSignIn()
+                    }
+                    .accessibilityIdentifier("e2e-sign-in-account-button")
+
+                    FlowButton("Sign in with email") {
+                        scenarioStatus = "email_requested"
+                        Rownd.requestSignIn(with: .email)
+                    }
+
+                    FlowButton("Direct Google login") {
+                        scenarioStatus = "direct_google_requested"
+                        Rownd.requestSignIn(with: .googleId)
+                    }
+
+                    FlowButton("Continue as guest", style: .secondary) {
+                        scenarioStatus = "guest_requested"
+                        Rownd.requestSignIn(with: .anonymous)
+                    }
+                    .accessibilityIdentifier("e2e-sign-in-guest-button")
+                }
+            }
+        }
+    }
+
+    private var postLoginCard: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .center) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Post-login page")
+                            .font(.title2)
+                            .fontWeight(.semibold)
+                        Text("Use the protected request to verify the SuperTokens session and claims.")
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Spacer()
+
+                    Menu {
+                        Button(displayName) {
+                            Rownd.manageAccount()
+                        }
+                        .accessibilityIdentifier("e2e-manage-account-button")
+
+                        Button("Edit name") {
+                            firstName = user.current.data["first_name"]?.value as? String ?? ""
+                            presentEditName = true
+                        }
+
+                        Button("Refresh token") {
+                            Rownd._refreshToken()
+                        }
+                        .accessibilityIdentifier("e2e-refresh-token-button")
+
+                        Button("Sign out") {
+                            Rownd.signOut()
+                            scenarioStatus = "signed_out"
+                        }
+                        .accessibilityIdentifier("e2e-sign-out-button")
+                    } label: {
+                        Image(systemName: "person.crop.circle")
+                            .font(.title2)
+                    }
+                }
+
+                FlowButton(isFetchingProtected ? "Fetching..." : "Fetch protected resource") {
+                    Task { await fetchProtectedResource() }
+                }
+                .disabled(isFetchingProtected)
+
+                FlowButton("Sign out", style: .secondary) {
+                    Rownd.signOut()
+                    scenarioStatus = "signed_out"
+                }
+
+                Text(protectedResult.isEmpty ? "Protected response will appear here." : protectedResult)
+                    .font(.system(.footnote, design: .monospaced))
+                    .frame(maxWidth: .infinity, minHeight: 80, alignment: .topLeading)
+                    .padding(12)
+                    .background(Color(red: 0.059, green: 0.09, blue: 0.165))
+                    .foregroundStyle(Color(red: 0.886, green: 0.91, blue: 0.941))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+            .sheet(isPresented: $presentEditName) {
+                VStack(spacing: 16) {
+                    Text("Update your name below.")
+                        .font(.headline)
+                    TextField("First name", text: $firstName)
+                        .textFieldStyle(.roundedBorder)
+                    HStack {
+                        Button("Cancel") {
+                            presentEditName = false
+                        }
+                        Button("Save") {
+                            Rownd.user.set(field: "first_name", value: AnyCodable(firstName))
+                            presentEditName = false
+                        }
+                    }
+                }
+                .padding()
+            }
+        }
+    }
+
+    private var e2eCard: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("E2E controls")
+                    .font(.headline)
+
+                FlowButton("E2E sign in") {
+                    Task {
+                        try? await E2ESupport.resetHarness()
+                        try? await E2ESupport.createSession()
+                        scenarioStatus = "e2e_session_created"
+                    }
+                }
+                .accessibilityIdentifier("e2e-create-session-button")
+
+                FlowButton("E2E update profile") {
+                    Task {
+                        try? await E2ESupport.updateProfile()
+                        scenarioStatus = "e2e_profile_updated"
+                    }
+                }
+                .accessibilityIdentifier("e2e-update-profile-button")
+
+                FlowButton("E2E sign out all", style: .secondary) {
+                    try? Rownd.signOut(scope: .all)
+                    scenarioStatus = "e2e_sign_out_all_requested"
+                }
+                .accessibilityIdentifier("e2e-sign-out-all-button")
+            }
+        }
+    }
+
+    private func fetchProtectedResource() async {
+        isFetchingProtected = true
+        scenarioStatus = "protected_requested"
+        defer { isFetchingProtected = false }
+
+        let apiURL = E2ESupport.apiURL ?? ExampleAppConfig.apiURL
+        let request = URLRequest(url: apiURL.appendingPathComponent("test/protected"))
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let body = String(data: data, encoding: .utf8) ?? ""
+            protectedResult = "HTTP \(statusCode)\n\(body)"
+            scenarioStatus = (200..<300).contains(statusCode) ? "protected_loaded" : "protected_failed"
+        } catch {
+            protectedResult = String(describing: error)
+            scenarioStatus = "protected_failed"
+        }
+    }
+}
+
+private struct Card<Content: View>: View {
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        content
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(20)
+            .background(Color.white)
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(Color(red: 0.859, green: 0.882, blue: 0.918), lineWidth: 1)
+            )
+            .shadow(color: Color.black.opacity(0.06), radius: 20, x: 0, y: 10)
+    }
+}
+
+private struct StatusRow: View {
+    let label: String
+    let value: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text("\(label):")
+                .fontWeight(.semibold)
+            Text(value)
+                .textSelection(.enabled)
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+private struct FlowButton: View {
+    enum Style {
+        case primary
+        case secondary
+    }
+
+    let title: String
+    let style: Style
+    let action: () -> Void
+
+    init(_ title: String, style: Style = .primary, action: @escaping () -> Void) {
+        self.title = title
+        self.style = style
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .fontWeight(.semibold)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+                .padding(.horizontal, 16)
+        }
+        .buttonStyle(.plain)
+        .background(style == .primary ? Color(red: 0.067, green: 0.094, blue: 0.153) : Color(red: 0.898, green: 0.906, blue: 0.922))
+        .foregroundStyle(style == .primary ? Color.white : Color(red: 0.067, green: 0.094, blue: 0.153))
+        .clipShape(Capsule())
     }
 }
 

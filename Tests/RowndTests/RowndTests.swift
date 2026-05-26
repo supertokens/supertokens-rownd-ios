@@ -94,6 +94,47 @@ import Get
         }
     }
 
+    @Test func superTokensDeepLinksOpenHubDeepLinkPage() async throws {
+        try await withGlobalTestLock {
+            let originalConfig = Rownd.config
+            let originalDisplayHubHandler = Rownd.displayHubHandler
+            defer {
+                Rownd.config = originalConfig
+                Rownd.displayHubHandler = originalDisplayHubHandler
+            }
+
+            var capturedPage: HubPageSelector?
+            Rownd.displayHubHandler = { page, _ in
+                capturedPage = page
+            }
+            Rownd.config.baseUrl = "https://hub.example.com"
+            Rownd.config.deepLinkScheme = "rowndsupertokens"
+
+            let handled = SmartLinks.handleSmartLink(
+                url: URL(string: "rowndsupertokens://account/login?preAuthSessionId=pid#abc")
+            )
+
+            #expect(handled)
+            guard case .deepLink = capturedPage else {
+                Issue.record("Expected SuperTokens deep link to open Hub deep-link page")
+                return
+            }
+            #expect(Rownd.config.pendingHubDeepLinkUrl?.absoluteString == "https://hub.example.com/account/login?preAuthSessionId=pid#abc")
+        }
+    }
+
+    @Test func unsupportedSuperTokensDeepLinksAreIgnored() async throws {
+        try await withGlobalTestLock {
+            let originalConfig = Rownd.config
+            defer { Rownd.config = originalConfig }
+
+            Rownd.config.deepLinkScheme = "rowndsupertokens"
+
+            #expect(SmartLinks.handleSmartLink(url: URL(string: "rowndsupertokens://account/unknown")) == false)
+            #expect(SmartLinks.handleSmartLink(url: URL(string: "other://account/login")) == false)
+        }
+    }
+
     @Test func apiDelegatesSkipLegacyHeadersForSuperTokensDomain() async throws {
         try await withGlobalTestLock {
             let originalConfig = Rownd.config

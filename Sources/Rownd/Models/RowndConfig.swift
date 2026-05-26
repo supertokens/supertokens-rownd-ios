@@ -28,10 +28,11 @@ public struct RowndConfig: Encodable {
     }
 
     // These are encoded for the hub to read
-    public var apiUrl = "https://api.rownd.io"
-    public var baseUrl = "https://hub.rownd.io"
+    public var apiUrl = ""
+    public var baseUrl = "https://rownd-hub.supertokens.com"
     public var subdomainExtension = ".rownd.link"
     public var appKey = ""
+    public var deepLinkScheme = "rowndsupertokens"
     public var forceDarkMode = false
     public var postSignInRedirect: String? = "NATIVE_APP"
     public var googleClientId: String = ""
@@ -43,6 +44,7 @@ public struct RowndConfig: Encodable {
     public var signInLinkPattern: String = ".*\\.rownd\\.link$"
     public var deepLinkHandler: RowndDeepLinkHandlerDelegate?
     public var forceInstantUserConversion: Bool = false
+    internal var pendingHubDeepLinkUrl: URL?
     private var superTokensConfigState: SuperTokensConfigState = .missing
 
     public var supertokens: RowndSuperTokensConfig {
@@ -71,9 +73,10 @@ public struct RowndConfig: Encodable {
     private enum CodingKeys: String, CodingKey {
         case apiUrl,
              baseUrl,
-             subdomainExtension,
-             appKey,
-             forceDarkMode,
+              subdomainExtension,
+              appKey,
+              deepLinkScheme,
+              forceDarkMode,
              postSignInRedirect,
              googleClientId,
              customizations,
@@ -96,12 +99,13 @@ public struct RowndConfig: Encodable {
         try container.encode(baseUrl, forKey: .baseUrl)
         try container.encode(subdomainExtension, forKey: .subdomainExtension)
         try container.encode(appKey, forKey: .appKey)
+        try container.encode(deepLinkScheme, forKey: .deepLinkScheme)
         try container.encode(forceDarkMode, forKey: .forceDarkMode)
         try container.encodeIfPresent(postSignInRedirect, forKey: .postSignInRedirect)
         try container.encode(googleClientId, forKey: .googleClientId)
         try container.encode(customizations, forKey: .customizations)
 
-        let supertokens = try Rownd.requireSuperTokensConfig()
+        let supertokens = try requireSuperTokensConfig()
         try container.encode(
             HubSuperTokensConfig(
                 appInfo: HubSuperTokensAppInfo(
@@ -123,5 +127,11 @@ public struct RowndConfig: Encodable {
         } catch {
             fatalError("Couldn't encode Rownd Config as \(self):\n\(error)")
         }
+    }
+
+    internal mutating func consumePendingHubDeepLinkUrl() -> URL? {
+        let url = pendingHubDeepLinkUrl
+        pendingHubDeepLinkUrl = nil
+        return url
     }
 }

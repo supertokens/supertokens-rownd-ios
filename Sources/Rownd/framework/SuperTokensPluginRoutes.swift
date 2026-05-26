@@ -10,7 +10,7 @@ enum SuperTokensPluginRoutes {
 
         let basePath = supertokens.apiBasePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let pluginPath = path.hasPrefix("/") ? path : "/\(path)"
-        components.path = "/\(basePath)/plugin/rownd\(pluginPath)"
+        components.path = basePath.isEmpty ? "/plugin/rownd\(pluginPath)" : "/\(basePath)/plugin/rownd\(pluginPath)"
         components.queryItems = queryItems.isEmpty ? nil : queryItems
 
         guard let url = components.url else {

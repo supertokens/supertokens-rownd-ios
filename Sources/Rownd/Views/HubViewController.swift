@@ -75,6 +75,12 @@ public class HubViewController: UIViewController, HubViewProtocol, BottomSheetHo
     public func loadNewPage(targetPage: HubPageSelector, jsFnOptions: Encodable?) {
         DispatchQueue.main.async {
             self.targetPage = targetPage
+
+            if targetPage == .deepLink, let url = Rownd.config.consumePendingHubDeepLinkUrl() {
+                self.hubWebController.setUrl(url: url)
+                return
+            }
+
             if let jsFnOptions = jsFnOptions {
                 do {
                     self.hubWebController.jsFunctionArgsAsJson = try jsFnOptions.asJsonString()
@@ -97,6 +103,17 @@ public class HubViewController: UIViewController, HubViewProtocol, BottomSheetHo
             .base64EncodedString(options: Data.Base64EncodingOptions(rawValue: 0)) ?? ""
 
         let store = Context.currentContext.store
+        if targetPage == .deepLink, let pendingHubDeepLinkUrl = Rownd.config.consumePendingHubDeepLinkUrl() {
+            view = UIView()
+            view.backgroundColor = Rownd.config.customizations.sheetBackgroundColor
+            initLoadingIndicator(view)
+            hubWebController.setUrl(url: pendingHubDeepLinkUrl)
+            addChild(hubWebController)
+            view.addSubview(hubWebController.view)
+            setupConstraints()
+            return
+        }
+
         guard let hubLoaderUrl = HubViewController.buildHubLoaderUrl(
             baseUrl: Rownd.config.baseUrl,
             config: Rownd.config,

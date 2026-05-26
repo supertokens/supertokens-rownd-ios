@@ -12,6 +12,7 @@
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>rowndlandmarks</string>
+				<string>rowndsupertokens</string>
 			</array>
 		</dict>
 		<dict>
@@ -19,6 +20,7 @@
 			<string>Editor</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
+				<string>com.googleusercontent.apps.302008722349-2nfsfen021niadaf10kvb7p1sb8t2grm</string>
 				<string>com.googleusercontent.apps.518170712115-s1fbgoo423ggmartt165cehisoo3vipc</string>
 			</array>
 		</dict>

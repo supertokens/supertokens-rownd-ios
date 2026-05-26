@@ -16,6 +16,7 @@ public enum HubPageSelector {
     case signOut
     case qrCode
     case manageAccount
+    case deepLink
     case unknown
 }
 
@@ -130,8 +131,8 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
         let wrappedJs = """
             if (typeof rownd !== 'undefined') {
                 \(code)
-            } else {
-                _rphConfig.push(['onLoaded', () => {
+            } else if (typeof window !== 'undefined' && Array.isArray(window._rphConfig)) {
+                window._rphConfig.push(['onLoaded', () => {
                     \(code)
                 }]);
             }
@@ -220,15 +221,15 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
             webView.backgroundColor = UIColor.clear
             webView.scrollView.backgroundColor = UIColor.clear
 
-            let webViewOrigin = (webView.url?.absoluteURL.scheme ?? "") + "://" + (webView.url?.absoluteURL.host ?? "")
-            if webViewOrigin != Rownd.config.baseUrl {
-                // Only disable loading if webView is not from hub
+            guard webView.url?.absoluteString.starts(with: Rownd.config.baseUrl) == true else {
                 self.animateInContent()
-            } else {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 6.0) {
-                    self.animateInContent()
-                }
+                return
             }
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 6.0) {
+                self.animateInContent()
+            }
+
             self.setFeatureFlagsJS()
 
             if let jsFnOptions = jsFnOptions {
@@ -248,6 +249,8 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
                 self.evaluateJavaScript(code: "rownd.generateQrCode(\(self.jsFunctionArgsAsJson))", webView: webView)
             case .manageAccount:
                 self.evaluateJavaScript(code: "rownd.user.manageAccount()", webView: webView)
+            case .deepLink:
+                break
             case .none:
                 return
             }
@@ -262,8 +265,8 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
     private func setFeatureFlagsJS() {
         let frameworkFeaturesString = String(describing: getFrameworkFeatures())
         let code = """
-            if (rownd?.setSessionStorage) {
-                rownd.setSessionStorage("rph_feature_flags\",`\(frameworkFeaturesString)`)
+            if (typeof rownd !== 'undefined' && rownd.setSessionStorage) {
+                rownd.setSessionStorage("rph_feature_flags", `\(frameworkFeaturesString)`)
             }
         """
         evaluateJavaScript(code: code, webView: webView)

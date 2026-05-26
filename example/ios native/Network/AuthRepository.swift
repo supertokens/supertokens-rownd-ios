@@ -85,7 +85,6 @@ final class AuthRepository: AuthRepositoryProtocol {
     var userPublisher: Published<RowndUser?>.Publisher { $rowndUser }
 
     private var cancellables = Set<AnyCancellable>()
-    private var shouldRetry: Bool = true
     private var isRowndStateInitialized = false
 
     init() {
@@ -110,12 +109,8 @@ final class AuthRepository: AuthRepositoryProtocol {
 
                 guard self.isRowndStateInitialized, state.isAuthenticatedWithUserData else { return }
                 self.internalAuthState = .loading
-                if let accessToken = state.accessToken,
-                   state.isAccessTokenValid {
-                    Task {
-                        await self.exchangeRowndToken(idToken: accessToken)
-                        self.internalAuthState = .loggedIn
-                    }
+                if state.isAccessTokenValid {
+                    self.internalAuthState = .loggedIn
                 } else {
                     self.getAccessToken()
                 }
@@ -183,21 +178,4 @@ final class AuthRepository: AuthRepositoryProtocol {
         }
     }
 
-    @MainActor func exchangeRowndToken(idToken: String) async {
-        do {
-            let resp = try await apiExchangeRowndToken(body: TokenExchangeBody( idToken: idToken ))
-            log.debug("Token response: \(String(describing: resp))")
-        } catch {
-            log.error("Error exchanging token: \(String(describing: error))")
-            if shouldRetry {
-                self.shouldRetry = false
-                // Only try once if the query timesout or fails
-                Task { @MainActor in
-                    await self.exchangeRowndToken(idToken: idToken)
-                }
-            } else {
-                self.internalAuthState = .error
-            }
-        }
-    }
 }

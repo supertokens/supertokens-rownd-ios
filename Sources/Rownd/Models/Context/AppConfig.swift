@@ -145,13 +145,21 @@ extension AppHubConfigState: Codable {
 public struct AppHubAuthConfigState: Hashable {
     public var signInMethods: SignInMethods?
     public var useExplicitSignUpFlow: Bool?
+    public var showAppIcon: Bool?
+    public var instantUser: InstantUserConfig?
 }
 
 extension AppHubAuthConfigState: Codable {
     enum CodingKeys: String, CodingKey {
         case signInMethods = "sign_in_methods"
         case useExplicitSignUpFlow = "use_explicit_sign_up_flow"
+        case showAppIcon = "show_app_icon"
+        case instantUser = "instant_user"
     }
+}
+
+public struct InstantUserConfig: Hashable, Codable {
+    public var enabled: Bool?
 }
 
 public struct AppCustomizationsConfigState: Hashable {
@@ -191,12 +199,45 @@ extension AppHubCustomStylesConfigState: Codable {
 }
 
 public struct SignInMethods: Hashable {
+    public var email: BasicSignInMethodConfig?
+    public var phone: BasicSignInMethodConfig?
     public var google: GoogleSignInMethodConfig?
+    public var apple: AppleSignInMethodConfig?
+    public var anonymous: AnonymousSignInMethodConfig?
 }
 
 extension SignInMethods: Codable {
     enum CodingKeys: String, CodingKey {
-        case google
+        case email, phone, google, apple, anonymous
+    }
+}
+
+public struct BasicSignInMethodConfig: Hashable, Codable {
+    public var enabled: Bool?
+}
+
+public struct AppleSignInMethodConfig: Hashable {
+    public var enabled: Bool?
+    public var clientId: String?
+}
+
+extension AppleSignInMethodConfig: Codable {
+    enum CodingKeys: String, CodingKey {
+        case enabled
+        case clientId = "client_id"
+    }
+}
+
+public struct AnonymousSignInMethodConfig: Hashable {
+    public var enabled: Bool?
+    public var type: String?
+    public var displayName: String?
+}
+
+extension AnonymousSignInMethodConfig: Codable {
+    enum CodingKeys: String, CodingKey {
+        case enabled, type
+        case displayName = "display_name"
     }
 }
 
@@ -204,6 +245,7 @@ public struct GoogleSignInMethodConfig: Hashable {
     public var enabled: Bool?
     public var serverClientId: String?
     public var iosClientId: String?
+    public var scopes: [String]?
 }
 
 extension GoogleSignInMethodConfig: Codable {
@@ -211,6 +253,7 @@ extension GoogleSignInMethodConfig: Codable {
         case enabled
         case serverClientId = "client_id"
         case iosClientId = "ios_client_id"
+        case scopes
     }
 }
 
@@ -291,7 +334,7 @@ class AppConfig {
         let configured = try Rownd.requireSuperTokensConfig()
 
         guard let serverConfig = appConfig.app.config?.supertokens?.appInfo else {
-            throw RowndError("App config is missing required SuperTokens configuration")
+            return
         }
 
         if serverConfig.apiDomain != configured.apiDomain {

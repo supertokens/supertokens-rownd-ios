@@ -90,6 +90,48 @@ import Testing
             #expect(response.userType == .ExistingUser)
         }
     }
+
+    @Test func exchangeNormalizesBasePathSlashes() async throws {
+        try await withGlobalTestLock {
+            ThirdPartySignInURLProtocol.reset()
+            ThirdPartySignInURLProtocol.responseBody = #"{"status":"OK","createdNewRecipeUser":true}"#.data(using: .utf8)!
+
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.protocolClasses = [ThirdPartySignInURLProtocol.self]
+            let session = URLSession(configuration: configuration)
+            let client = SuperTokensThirdPartySignInClient(
+                apiDomain: "https://auth.example.com",
+                apiBasePath: "/custom-auth/",
+                session: session
+            )
+
+            _ = try await client.signInWithGoogle(idToken: "google-id-token")
+
+            let request = try #require(ThirdPartySignInURLProtocol.lastRequest)
+            #expect(request.url?.absoluteString == "https://auth.example.com/custom-auth/signinup")
+        }
+    }
+
+    @Test func exchangeHandlesRootBasePath() async throws {
+        try await withGlobalTestLock {
+            ThirdPartySignInURLProtocol.reset()
+            ThirdPartySignInURLProtocol.responseBody = #"{"status":"OK","createdNewRecipeUser":true}"#.data(using: .utf8)!
+
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.protocolClasses = [ThirdPartySignInURLProtocol.self]
+            let session = URLSession(configuration: configuration)
+            let client = SuperTokensThirdPartySignInClient(
+                apiDomain: "https://auth.example.com",
+                apiBasePath: "/",
+                session: session
+            )
+
+            _ = try await client.signInWithGoogle(idToken: "google-id-token")
+
+            let request = try #require(ThirdPartySignInURLProtocol.lastRequest)
+            #expect(request.url?.absoluteString == "https://auth.example.com/signinup")
+        }
+    }
 }
 
 private final class ThirdPartySignInURLProtocol: URLProtocol {

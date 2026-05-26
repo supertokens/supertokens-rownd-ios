@@ -67,15 +67,16 @@ struct SuperTokensThirdPartySignInClient {
     }
 
     private func signIn(_ body: SuperTokensThirdPartySignInRequest) async throws -> SuperTokensThirdPartySignInResponse {
-        let supertokens = try Rownd.requireSuperTokensConfig()
-        let apiDomain = apiDomainOverride ?? supertokens.apiDomain
-        let apiBasePath = apiBasePathOverride ?? supertokens.apiBasePath
+        let supertokens = apiDomainOverride == nil || apiBasePathOverride == nil ? try Rownd.requireSuperTokensConfig() : nil
+        let apiDomain = apiDomainOverride ?? supertokens!.apiDomain
+        let apiBasePath = apiBasePathOverride ?? supertokens!.apiBasePath
 
         guard var components = URLComponents(string: apiDomain) else {
             throw RowndError("Invalid SuperTokens apiDomain")
         }
 
-        components.path = apiBasePath + "/signinup"
+        let normalizedBasePath = apiBasePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        components.path = normalizedBasePath.isEmpty ? "/signinup" : "/\(normalizedBasePath)/signinup"
         guard let url = components.url else {
             throw RowndError("Invalid SuperTokens signinup URL")
         }

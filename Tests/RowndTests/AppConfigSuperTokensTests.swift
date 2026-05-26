@@ -34,6 +34,32 @@ import Testing
         }
     }
 
+    @Test func pluginRoutesHandleRootBasePath() throws {
+        try withSuperTokensConfig(
+            RowndSuperTokensConfig(
+                appName: "Example App",
+                apiDomain: "https://api.example.com",
+                apiBasePath: "/"
+            )
+        ) {
+            let url = try SuperTokensPluginRoutes.url("/user")
+            #expect(url.absoluteString == "https://api.example.com/plugin/rownd/user")
+        }
+    }
+
+    @Test func pluginRoutesNormalizeBasePathSlashes() throws {
+        try withSuperTokensConfig(
+            RowndSuperTokensConfig(
+                appName: "Example App",
+                apiDomain: "https://api.example.com",
+                apiBasePath: "/custom-auth/"
+            )
+        ) {
+            let url = try SuperTokensPluginRoutes.url("user")
+            #expect(url.absoluteString == "https://api.example.com/custom-auth/plugin/rownd/user")
+        }
+    }
+
     @Test func decodeAppConfigWithMatchingSuperTokensConfig() throws {
         try withSuperTokensConfig(
             RowndSuperTokensConfig(
@@ -68,7 +94,7 @@ import Testing
         }
     }
 
-    @Test func decodeAppConfigWithoutSuperTokensConfigFailsValidation() throws {
+    @Test func decodeAppConfigWithoutSuperTokensConfigUsesSdkBootstrapConfig() throws {
         try withSuperTokensConfig(
             RowndSuperTokensConfig(
                 appName: "Example App",
@@ -90,12 +116,79 @@ import Testing
             )
 
             #expect(appConfig.app.config?.supertokens == nil)
-            do {
+            #expect(throws: Never.self) {
                 try AppConfig.validateSuperTokensConfig(appConfig)
-                Issue.record("Expected missing SuperTokens config validation to fail")
-            } catch let error as RowndError {
-                #expect(error.description == "App config is missing required SuperTokens configuration")
             }
+        }
+    }
+
+    @Test func decodePluginAppConfigGoogleMethodShape() throws {
+        try withSuperTokensConfig(
+            RowndSuperTokensConfig(
+                appName: "Example App",
+                apiDomain: "https://api.example.com",
+                apiBasePath: "/auth"
+            )
+        ) {
+            let appConfig = try decodeAppConfig(
+                from: """
+                {
+                  "status": "OK",
+                  "config_type": "app",
+                  "app": {
+                    "id": "key_test",
+                    "name": "Rownd iOS Example",
+                    "schema": {
+                      "email": { "display_name": "Email", "type": "string", "owned_by": "user" },
+                      "google_id": { "display_name": "Google ID", "type": "string", "owned_by": "app" }
+                    },
+                    "config": {
+                      "customizations": { "primary_color": "#5b5bd6" },
+                      "hub": {
+                        "customizations": {
+                          "rounded_corners": true,
+                          "visual_swoops": true,
+                          "blur_background": true,
+                          "dark_mode": "auto"
+                        },
+                        "auth": {
+                          "sign_in_methods": {
+                            "email": { "enabled": true },
+                            "phone": { "enabled": true },
+                            "google": {
+                              "enabled": true,
+                              "client_id": "web-client.apps.googleusercontent.com",
+                              "ios_client_id": "ios-client.apps.googleusercontent.com",
+                              "scopes": []
+                            },
+                            "apple": { "enabled": false, "client_id": "" },
+                            "anonymous": { "enabled": true, "type": "guest", "display_name": "Continue as guest" }
+                          },
+                          "additional_fields": [],
+                          "show_app_icon": false
+                        }
+                      }
+                    }
+                  }
+                }
+                """
+            )
+
+            #expect(throws: Never.self) {
+                try AppConfig.validateSuperTokensConfig(appConfig)
+            }
+
+            let methods = try #require(appConfig.app.config?.hub?.auth?.signInMethods)
+            #expect(methods.email?.enabled == true)
+            #expect(methods.phone?.enabled == true)
+            #expect(methods.google?.enabled == true)
+            #expect(methods.google?.serverClientId == "web-client.apps.googleusercontent.com")
+            #expect(methods.google?.iosClientId == "ios-client.apps.googleusercontent.com")
+            #expect(methods.google?.scopes == [])
+            #expect(methods.apple?.enabled == false)
+            #expect(methods.anonymous?.enabled == true)
+            #expect(methods.anonymous?.type == "guest")
+            #expect(methods.anonymous?.displayName == "Continue as guest")
         }
     }
 

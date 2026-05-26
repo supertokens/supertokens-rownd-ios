@@ -91,14 +91,11 @@ public class Rownd: NSObject {
                 }
             }
 
-            // Check to see if we're handling an existing auth challenge
-            if store.state.auth.challengeId != nil && store.state.auth.userIdentifier != nil {
-                Rownd.requestSignIn(
-                    jsFnOptions: RowndSignInJsOptions(
-                        loginStep: .completing,
-                        challengeId: store.state.auth.challengeId,
-                        userIdentifier: store.state.auth.userIdentifier
-                    ))
+            if store.state.auth.challengeId != nil || store.state.auth.userIdentifier != nil {
+                var authState = store.state.auth
+                authState.challengeId = nil
+                authState.userIdentifier = nil
+                store.dispatch(SetAuthState(payload: authState))
             }
 
         }
@@ -172,6 +169,11 @@ public class Rownd: NSObject {
 
     internal static func requestSignIn(jsFnOptions: Encodable?) {
         inst.displayHub(.signIn, jsFnOptions: jsFnOptions)
+    }
+
+    internal static func openHubDeepLink(_ url: URL) {
+        config.pendingHubDeepLinkUrl = url
+        inst.displayHub(.deepLink, jsFnOptions: nil)
     }
 
     public static func signOut(scope: RowndSignoutScope) throws {
