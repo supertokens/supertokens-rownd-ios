@@ -339,11 +339,25 @@ public class Rownd: NSObject {
         }
 
         let supertokens = try requireSuperTokensConfig()
+        let debugEventHandler: ((EventType) -> Void)? = config.enableDebugMode ? { event in
+            logger.debug("SuperTokens event: \(String(describing: event))")
+        } : nil
+        let debugPreAPIHook: ((APIAction, URLRequest) -> URLRequest)? = config.enableDebugMode ? { action, request in
+            logger.debug("SuperTokens request: \(String(describing: action)) \(request.httpMethod ?? "GET") \(request.url?.absoluteString ?? "")")
+            return request
+        } : nil
+        let debugPostAPIHook: ((APIAction, URLRequest, URLResponse?) -> Void)? = config.enableDebugMode ? { action, request, response in
+            let statusCode = (response as? HTTPURLResponse)?.statusCode
+            logger.debug("SuperTokens response: \(String(describing: action)) \(request.url?.absoluteString ?? "") status=\(String(describing: statusCode))")
+        } : nil
 
         try SuperTokens.initialize(
             apiDomain: supertokens.apiDomain,
             apiBasePath: supertokens.apiBasePath,
-            tokenTransferMethod: .header
+            tokenTransferMethod: .header,
+            eventHandler: debugEventHandler,
+            preAPIHook: debugPreAPIHook,
+            postAPIHook: debugPostAPIHook
         )
 
         URLProtocol.registerClass(SuperTokensURLProtocol.self)

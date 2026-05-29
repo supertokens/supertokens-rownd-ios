@@ -47,10 +47,6 @@ enum ExampleAppConfig {
         ProcessInfo.processInfo.environment["ROWND_EXAMPLE_API_BASE_PATH"] ?? "/auth"
     }
 
-    static var deepLinkScheme: String {
-        ProcessInfo.processInfo.environment["ROWND_EXAMPLE_DEEP_LINK_SCHEME"] ?? "rowndsupertokens"
-    }
-
     static var apiURL: URL {
         URL(string: apiDomain)!
     }
@@ -83,8 +79,8 @@ enum E2ESupport {
             Rownd.config.baseUrl = config.hubBaseUrl
             Rownd.config.apiUrl = config.apiUrl
             Rownd.config.subdomainExtension = ".rownd.link"
-            Rownd.config.deepLinkScheme = ExampleAppConfig.deepLinkScheme
             Rownd.config.appGroupPrefix = "group.rowndexample"
+            Rownd.config.enableDebugMode = true
             Rownd.config.customizations = AppCustomizations()
             Rownd.config.customizations.loadingAnimation = LottieAnimation.named("loading")
             Rownd.addEventHandler(RowndEventHandler())
@@ -188,8 +184,8 @@ class AppDelegate: NSObject, UIApplicationDelegate {
         Rownd.config.baseUrl = ExampleAppConfig.hubBaseUrl
         Rownd.config.apiUrl = ExampleAppConfig.apiDomain
         Rownd.config.subdomainExtension = ".rownd.link"
-        Rownd.config.deepLinkScheme = ExampleAppConfig.deepLinkScheme
         Rownd.config.appGroupPrefix = "group.rowndexample"
+        Rownd.config.enableDebugMode = true
 
         Rownd.config.customizations = AppCustomizations()
 //        Rownd.config.customizations.loadingAnimationUiView = CustomLoadingAnimationView()

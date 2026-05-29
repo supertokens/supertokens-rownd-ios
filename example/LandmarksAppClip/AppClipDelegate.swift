@@ -8,8 +8,8 @@ class AppDelegate: NSObject, UIApplicationDelegate {
         Rownd.config.baseUrl = "https://staging.supertokens-rownd-hub.pages.dev"
         Rownd.config.apiUrl = "http://127.0.0.1:3137"
         Rownd.config.subdomainExtension = ".rownd.link"
-        Rownd.config.deepLinkScheme = "rowndsupertokens"
         Rownd.config.appGroupPrefix = "group.rowndexample"
+        Rownd.config.enableDebugMode = true
 
         Task {
             await Rownd.configure(

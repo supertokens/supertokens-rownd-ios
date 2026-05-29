@@ -39,6 +39,7 @@ public struct RowndConfig: Encodable {
     public var customizations: RowndCustomizations = RowndCustomizations()
 
     // These will not be encoded
+    public var enableDebugMode: Bool = false
     public var appGroupPrefix: String?
     public var enableSmartLinkPasteBehavior: Bool = true
     public var signInLinkPattern: String = ".*\\.rownd\\.link$"

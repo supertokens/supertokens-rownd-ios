@@ -153,6 +153,7 @@ import Testing
     @Test func rowndConfigEncodesSuperTokensAppInfoForHub() async throws {
         try await withGlobalTestLock {
             var config = RowndConfig()
+            config.enableDebugMode = true
             config.supertokens = RowndSuperTokensConfig(
                 appName: "Example App",
                 apiDomain: "https://api.example.com",
@@ -167,6 +168,7 @@ import Testing
             #expect(appInfo["apiDomain"] as? String == "https://api.example.com")
             #expect(appInfo["apiBasePath"] as? String == "/custom-auth")
             #expect(supertokens["appName"] == nil)
+            #expect(decoded["enableDebugMode"] == nil)
         }
     }
 
