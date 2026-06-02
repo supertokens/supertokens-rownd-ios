@@ -12,7 +12,6 @@ import Combine
 
 struct Provider: TimelineProvider {
     func initRownd () async -> RowndState {
-        Rownd.config.apiUrl = ExampleAppConfig.apiDomain
         Rownd.config.baseUrl = ExampleAppConfig.hubBaseUrl
         Rownd.config.appGroupPrefix = ExampleAppConfig.appGroupPrefix
         Rownd.config.enableDebugMode = ExampleAppConfig.enableDebugMode

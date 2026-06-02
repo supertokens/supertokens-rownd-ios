@@ -32,11 +32,6 @@ func application(_ application: UIApplication, didFinishLaunchingWithOptions lau
     let apiDomain = "https://api.example.com"
     let apiBasePath = "/auth"
 
-    Rownd.config.baseUrl = "https://your-subdomain.rownd-hub.supertokens.com"
-    Rownd.config.apiUrl = apiDomain
-    Rownd.config.subdomainExtension = ".rownd-hub.supertokens.com"
-    Rownd.config.enableDebugMode = true // Optional during development
-
     Task {
         await Rownd.configure(
             launchOptions: launchOptions,
@@ -56,27 +51,10 @@ func application(_ application: UIApplication, didFinishLaunchingWithOptions lau
 Configuration notes:
 
 - `Rownd.config.baseUrl` should be the Rownd hub URL for your app. It must match the host used by Rownd sign-in universal links.
-- `Rownd.config.apiUrl` and `RowndSuperTokensConfig.apiDomain` should point at the backend that hosts your SuperTokens plugin routes.
+- `RowndSuperTokensConfig.apiDomain` should point at the backend that hosts your SuperTokens plugin routes. `Rownd.configure()` also assigns this value to `Rownd.config.apiUrl`.
 - `RowndSuperTokensConfig.apiBasePath` must match your backend SuperTokens API base path, usually `/auth`.
-- `Rownd.config.subdomainExtension` defaults to `.rownd-hub.supertokens.com`; set it explicitly if your Rownd app uses that domain pattern.
 
 #### Handling deep links and universal links
-
-Add a custom URL scheme to your app's `Info.plist` so the SDK can handle native fallback links:
-
-```xml
-<key>CFBundleURLTypes</key>
-<array>
-    <dict>
-        <key>CFBundleTypeRole</key>
-        <string>Editor</string>
-        <key>CFBundleURLSchemes</key>
-        <array>
-            <string>rowndsupertokens</string>
-        </array>
-    </dict>
-</array>
-```
 
 Add an Associated Domains entitlement for the Rownd hub host used by your app:
 
@@ -266,15 +244,18 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 ```
 
 ### Usage within app extensions
+
 It's possible to access the Rownd state from within an app extension, like a widget. You'll need to include the Rownd package in the extension's dependencies and set up an app group for data sharing between the app and the extension. Without the app group, extensions will not be able to sync with your app's authentication state.
 
 Follow these steps to configure your app and extension to work with Rownd:
+
 1. Add an [app group](https://developer.apple.com/documentation/xcode/configuring-app-groups) entitlement to both your app and any extensions that will use Rownd.
    This app group **must** be named like this: `<prefix>.io.rownd.sdk`. For example, if you work at a company with the acme.com domain, your app group might look like this: `com.acme.app.io.rownd.sdk`. Rownd will store its data in this app group. Your app should store data in a separate app group to prevent any collisions.
 
 2. In your app's `AppDelegate` file as well as your extension's entry point, set the app group prefix you defined above via `Rownd.config.appGroupPrefix = "<prefix>"` (e.g., `Rownd.config.appGroupPrefix = "com.acme.app"`)
 
 3. In your extension, call `Rownd.configure()` prior to accessing authentication state. Here's an example:
+
    ```swift
     Task {
         Rownd.config.appGroupPrefix = "group.rowndexample"
@@ -303,8 +284,8 @@ import WidgetKit
 import Rownd
 
 class SomeClass {
-    private var authState = Rownd.getInstance().state().subscribe { $0.auth }
-    private var cancellables = Set<AnyCancellable>()
+private var authState = Rownd.getInstance().state().subscribe { $0.auth }
+private var cancellables = Set<AnyCancellable>()
 
     init() {
         self.authState
@@ -314,8 +295,10 @@ class SomeClass {
             }
             .store(in: &cancellables)
     }
+
 }
-```
+
+````
 </Note>
 
 ### Events
@@ -341,7 +324,7 @@ class RowndEventHandler: RowndEventHandlerDelegate {
         }
     }
 }
-```
+````
 
 Next, register the event handler delegate with the Rownd SDK:
 
@@ -403,6 +386,7 @@ Here's a list of events that the Rownd SDK emits and the corresponding data that
 
         </td>
     </tr>
+
 </table>
 
 ### API reference
@@ -414,11 +398,13 @@ In addition to the state observable APIs, Rownd provides imperative APIs that yo
 Opens the Rownd sign-in dialog for authentication.
 
 #### Rownd.requestSignIn(RowndSignInOptions(postSignInRedirect: "https://my-domain.com")) -> Void
+
 #### Rownd.requestSignIn(RowndSignInOptions(postSignInRedirect: "https://my-domain.com", intent: .signIn)) -> Void
 
 Opens the Rownd sign-in dialog for authentication, as above. When the user completes the authentication challenge via email or SMS, they'll be redirected to the URL set for `postSignInRedirect`. If this is a [Universal Link](https://developer.apple.com/ios/universal-links/), it will redirect the user back to your app.
 
 #### Rownd.requestSignIn(with: RowndSignInHint) -> Void
+
 #### Rownd.requestSignIn(with: RowndSignInHint, signInOptions: RowndSignInOptions?) -> Void
 
 Requests a sign-in, but with a specific authentication provider (e.g., Sign in with Apple). Rownd treats this information as a hint. If the specified authentication provider is enabled within your Rownd app configuration, it will be honored. If not, Rownd will fall back to the default flow.

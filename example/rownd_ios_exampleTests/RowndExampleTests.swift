@@ -28,7 +28,6 @@ final class RowndExampleTests: XCTestCase {
         let config = try await harnessConfig()
 
         Rownd.config.baseUrl = config.hubBaseUrl
-        Rownd.config.apiUrl = config.apiUrl
         _ = await Rownd.configure(
             appKey: config.appKey,
             supertokens: RowndSuperTokensConfig(

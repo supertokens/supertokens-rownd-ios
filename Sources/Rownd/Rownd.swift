@@ -46,7 +46,9 @@ public class Rownd: NSObject {
         supertokens: RowndSuperTokensConfig
     ) async -> RowndState {
         do {
-            config.supertokens = try validateSuperTokensConfig(supertokens)
+            let validatedConfig = try validateSuperTokensConfig(supertokens)
+            config.supertokens = validatedConfig
+            config.apiUrl = validatedConfig.apiDomain
         } catch {
             fatalError("Invalid Rownd SuperTokens configuration: \(error)")
         }

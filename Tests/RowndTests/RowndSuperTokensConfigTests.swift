@@ -84,6 +84,7 @@ import Testing
             """.data(using: .utf8)!
 
             Rownd.config = RowndConfig()
+            Rownd.config.enableSmartLinkPasteBehavior = false
             AppConfigRequestURLProtocol.responseData = responseData
             AppConfig.testingProtocolClasses = [AppConfigRequestURLProtocol.self]
             Rownd.apiClient = APIClient(baseURL: URL(string: "https://ignored.example.com")!) {
@@ -96,6 +97,7 @@ import Testing
 
             let appConfigURL = try AppConfig.appConfigURL().absoluteString
             #expect(Rownd.config.supertokens == expectedConfig)
+            #expect(Rownd.config.apiUrl == expectedConfig.apiDomain)
             #expect(appConfigURL == "https://api.example.com/auth/plugin/rownd/app-config")
         }
     }
@@ -226,6 +228,8 @@ import Testing
             }
 
             Rownd.config = RowndConfig()
+            Rownd.config.apiUrl = "https://stale.example.com"
+            Rownd.config.enableSmartLinkPasteBehavior = false
             Rownd.isSuperTokensInitialized = false
 
             _ = await Rownd.configure(
@@ -248,6 +252,7 @@ import Testing
 
             #expect(Rownd.isSuperTokensInitialized)
             #expect(Rownd.config.supertokens.apiDomain == "https://second.example.com")
+            #expect(Rownd.config.apiUrl == "https://second.example.com")
         }
     }
 

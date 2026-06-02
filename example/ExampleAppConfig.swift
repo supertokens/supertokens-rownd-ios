@@ -41,11 +41,11 @@ enum ExampleAppConfig {
     }
 
     private static func stringValue(_ key: String, fallback: String) -> String {
-        if let value = Bundle.main.object(forInfoDictionaryKey: key) as? String, isUsable(value) {
+        if let value = ProcessInfo.processInfo.environment[key], isUsable(value) {
             return value
         }
 
-        if let value = ProcessInfo.processInfo.environment[key], isUsable(value) {
+        if let value = Bundle.main.object(forInfoDictionaryKey: key) as? String, isUsable(value) {
             return value
         }
 

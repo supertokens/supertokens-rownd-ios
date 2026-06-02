@@ -53,7 +53,6 @@ enum E2ESupport {
             UserDefaults.standard.set(config.apiUrl, forKey: "ROWND_E2E_API_URL")
 
             Rownd.config.baseUrl = config.hubBaseUrl
-            Rownd.config.apiUrl = config.apiUrl
             Rownd.config.subdomainExtension = ExampleAppConfig.subdomainExtension
             Rownd.config.appGroupPrefix = ExampleAppConfig.appGroupPrefix
             Rownd.config.enableDebugMode = ExampleAppConfig.enableDebugMode
@@ -158,7 +157,6 @@ class AppDelegate: NSObject, UIApplicationDelegate {
         }
 
         Rownd.config.baseUrl = ExampleAppConfig.hubBaseUrl
-        Rownd.config.apiUrl = ExampleAppConfig.apiDomain
         Rownd.config.subdomainExtension = ExampleAppConfig.subdomainExtension
         Rownd.config.appGroupPrefix = ExampleAppConfig.appGroupPrefix
         Rownd.config.enableDebugMode = ExampleAppConfig.enableDebugMode
