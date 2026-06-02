@@ -89,8 +89,8 @@ import Get
 
             Rownd.config.signInLinkPattern = ".*\\.rownd\\.link$"
 
-            #expect(SmartLinks.handleSmartLink(url: URL(string: "https://example.rownd.link/sign-in-token")) == false)
-            #expect(SmartLinks.handleSmartLink(url: URL(string: "https://example.rownd.link/verified/email")) == false)
+            #expect(SmartLinks.handleSmartLink(url: URL(string: "https://example.rownd-hub.supertokens.com/sign-in-token")) == false)
+            #expect(SmartLinks.handleSmartLink(url: URL(string: "https://example.rownd-hub.supertokens.com/verified/email")) == false)
         }
     }
 

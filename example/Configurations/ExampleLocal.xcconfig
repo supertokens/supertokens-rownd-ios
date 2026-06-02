@@ -1,0 +1,7 @@
+ROWND_EXAMPLE_API_DOMAIN = http:/$()/127.0.0.1:3137
+ROWND_EXAMPLE_HUB_BASE_URL = https:/$()/staging.supertokens-rownd-hub.pages.dev
+ROWND_EXAMPLE_APP_KEY = test_app_key
+ROWND_EXAMPLE_API_BASE_PATH = /auth
+ROWND_EXAMPLE_APP_GROUP_PREFIX = group.rowndexample
+ROWND_EXAMPLE_SUBDOMAIN_EXTENSION = .rownd-hub.supertokens.com
+ROWND_EXAMPLE_ENABLE_DEBUG_MODE = YES

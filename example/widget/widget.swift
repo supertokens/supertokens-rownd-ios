@@ -12,16 +12,16 @@ import Combine
 
 struct Provider: TimelineProvider {
     func initRownd () async -> RowndState {
-        Rownd.config.apiUrl = "http://127.0.0.1:3137"
-        Rownd.config.baseUrl = "https://staging.supertokens-rownd-hub.pages.dev"
-        Rownd.config.appGroupPrefix = "group.rowndexample"
-        Rownd.config.enableDebugMode = true
+        Rownd.config.apiUrl = ExampleAppConfig.apiDomain
+        Rownd.config.baseUrl = ExampleAppConfig.hubBaseUrl
+        Rownd.config.appGroupPrefix = ExampleAppConfig.appGroupPrefix
+        Rownd.config.enableDebugMode = ExampleAppConfig.enableDebugMode
         return await Rownd.configure(
-            appKey: "test_app_key",
+            appKey: ExampleAppConfig.appKey,
             supertokens: RowndSuperTokensConfig(
                 appName: "Rownd iOS All Authentication Methods",
-                apiDomain: "http://127.0.0.1:3137",
-                apiBasePath: "/auth"
+                apiDomain: ExampleAppConfig.apiDomain,
+                apiBasePath: ExampleAppConfig.apiBasePath
             )
         )
     }

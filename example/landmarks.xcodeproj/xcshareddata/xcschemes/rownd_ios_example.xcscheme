@@ -77,33 +77,6 @@
             isEnabled = "YES">
          </CommandLineArgument>
       </CommandLineArguments>
-      <EnvironmentVariables>
-         <EnvironmentVariable
-            key = "ROWND_EXAMPLE_APP_KEY"
-            value = "key_neararrumhj5vnsunt6wi92v"
-            isEnabled = "YES">
-         </EnvironmentVariable>
-         <EnvironmentVariable
-            key = "ROWND_EXAMPLE_API_BASE_PATH"
-            value = "/auth"
-            isEnabled = "YES">
-         </EnvironmentVariable>
-         <EnvironmentVariable
-            key = "ROWND_EXAMPLE_DEEP_LINK_SCHEME"
-            value = "rowndsupertokens"
-            isEnabled = "YES">
-         </EnvironmentVariable>
-         <EnvironmentVariable
-            key = "ROWND_EXAMPLE_API_DOMAIN"
-            value = "https://trout-uncouple-geriatric.ngrok-free.dev"
-            isEnabled = "YES">
-         </EnvironmentVariable>
-         <EnvironmentVariable
-            key = "ROWND_EXAMPLE_HUB_BASE_URL"
-            value = "https://staging.supertokens-rownd-hub.pages.dev"
-            isEnabled = "YES">
-         </EnvironmentVariable>
-      </EnvironmentVariables>
    </LaunchAction>
    <ProfileAction
       buildConfiguration = "Release"

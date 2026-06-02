@@ -28,30 +28,6 @@ struct E2EHarnessConfig: Decodable {
     let supertokens: SuperTokens
 }
 
-enum ExampleAppConfig {
-    static let defaultHubBaseUrl = "https://staging.supertokens-rownd-hub.pages.dev"
-
-    static var apiDomain: String {
-        ProcessInfo.processInfo.environment["ROWND_EXAMPLE_API_DOMAIN"] ?? "http://127.0.0.1:3137"
-    }
-
-    static var hubBaseUrl: String {
-        ProcessInfo.processInfo.environment["ROWND_EXAMPLE_HUB_BASE_URL"] ?? defaultHubBaseUrl
-    }
-
-    static var appKey: String {
-        ProcessInfo.processInfo.environment["ROWND_EXAMPLE_APP_KEY"] ?? "test_app_key"
-    }
-
-    static var apiBasePath: String {
-        ProcessInfo.processInfo.environment["ROWND_EXAMPLE_API_BASE_PATH"] ?? "/auth"
-    }
-
-    static var apiURL: URL {
-        URL(string: apiDomain)!
-    }
-}
-
 enum E2ESupport {
     static var isEnabled: Bool {
         ProcessInfo.processInfo.environment["ROWND_E2E"] == "1"
@@ -78,9 +54,9 @@ enum E2ESupport {
 
             Rownd.config.baseUrl = config.hubBaseUrl
             Rownd.config.apiUrl = config.apiUrl
-            Rownd.config.subdomainExtension = ".rownd.link"
-            Rownd.config.appGroupPrefix = "group.rowndexample"
-            Rownd.config.enableDebugMode = true
+            Rownd.config.subdomainExtension = ExampleAppConfig.subdomainExtension
+            Rownd.config.appGroupPrefix = ExampleAppConfig.appGroupPrefix
+            Rownd.config.enableDebugMode = ExampleAppConfig.enableDebugMode
             Rownd.config.customizations = AppCustomizations()
             Rownd.config.customizations.loadingAnimation = LottieAnimation.named("loading")
             Rownd.addEventHandler(RowndEventHandler())
@@ -183,9 +159,9 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 
         Rownd.config.baseUrl = ExampleAppConfig.hubBaseUrl
         Rownd.config.apiUrl = ExampleAppConfig.apiDomain
-        Rownd.config.subdomainExtension = ".rownd.link"
-        Rownd.config.appGroupPrefix = "group.rowndexample"
-        Rownd.config.enableDebugMode = true
+        Rownd.config.subdomainExtension = ExampleAppConfig.subdomainExtension
+        Rownd.config.appGroupPrefix = ExampleAppConfig.appGroupPrefix
+        Rownd.config.enableDebugMode = ExampleAppConfig.enableDebugMode
 
         Rownd.config.customizations = AppCustomizations()
 //        Rownd.config.customizations.loadingAnimationUiView = CustomLoadingAnimationView()

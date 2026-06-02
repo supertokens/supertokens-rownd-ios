@@ -30,7 +30,7 @@ public struct RowndConfig: Encodable {
     // These are encoded for the hub to read
     public var apiUrl = ""
     public var baseUrl = "https://rownd-hub.supertokens.com"
-    public var subdomainExtension = ".rownd.link"
+    public var subdomainExtension = ".rownd-hub.supertokens.com"
     public var appKey = ""
     public var deepLinkScheme = "rowndsupertokens"
     public var forceDarkMode = false
@@ -42,7 +42,7 @@ public struct RowndConfig: Encodable {
     public var enableDebugMode: Bool = false
     public var appGroupPrefix: String?
     public var enableSmartLinkPasteBehavior: Bool = true
-    public var signInLinkPattern: String = ".*\\.rownd\\.link$"
+    public var signInLinkPattern: String = ".*\\.rownd-hub\\.supertokens\\.com$"
     public var deepLinkHandler: RowndDeepLinkHandlerDelegate?
     public var forceInstantUserConversion: Bool = false
     internal var pendingHubDeepLinkUrl: URL?
