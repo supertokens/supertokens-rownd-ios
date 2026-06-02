@@ -1,5 +1,17 @@
 {
   "scripts": {
+    "example:server": "tsx example-server/server.ts",
+    "build:example": "xcodebuild -workspace rownd.xcworkspace -scheme rownd_ios_example -destination 'platform=iOS Simulator,name=iPhone 17' build",
+    "test:example": "xcodebuild -workspace rownd.xcworkspace -scheme rownd_ios_example -destination 'platform=iOS Simulator,name=iPhone 17' test",
+    "test:package:auth": "xcodebuild -workspace .swiftpm/xcode/package.xcworkspace -scheme Rownd -destination 'platform=iOS Simulator,name=iPhone 17' -only-testing:RowndTests/AuthTests test",
+    "test:package:rownd": "xcodebuild -workspace .swiftpm/xcode/package.xcworkspace -scheme Rownd -destination 'platform=iOS Simulator,name=iPhone 17' -only-testing:RowndTests/RowndTests test",
+    "test:package:shared": "xcodebuild -workspace .swiftpm/xcode/package.xcworkspace -scheme Rownd -destination 'platform=iOS Simulator,name=iPhone 17' -skip-testing:RowndTests/AuthTests -skip-testing:RowndTests/RowndTests -skip-testing:RowndIntegrationTests test",
+    "test:integration:harness": "tsx test-server/run-harness.ts",
+    "test:integration": "TEST_BACKEND_URL=http://127.0.0.1:3100 xcodebuild -workspace .swiftpm/xcode/package.xcworkspace -scheme Rownd -destination 'platform=iOS Simulator,name=iPhone 17' -only-testing:RowndIntegrationTests test",
+    "test:e2e:example": "TEST_BACKEND_URL=http://127.0.0.1:3100 ROWND_E2E=1 ROWND_E2E_CONFIG_URL=http://127.0.0.1:3100/config xcodebuild -workspace rownd.xcworkspace -scheme rownd_ios_example -destination 'platform=iOS Simulator,name=iPhone 17' -only-testing:rownd_ios_exampleTests/RowndExampleTests/testExampleAppCanUseHarnessBackedSuperTokensSession test",
+    "test:e2e": "E2E_HUB_PORT=8788 IOS_HUB_BASE_URL=http://127.0.0.1:8788 npm run test:integration:harness & HARNESS_PID=$!; cleanup() { kill $HARNESS_PID 2>/dev/null || true; }; trap cleanup EXIT; until curl -sf http://127.0.0.1:3100/health >/dev/null && curl -sf http://127.0.0.1:8788/health >/dev/null; do sleep 0.5; done; npm run test:e2e:example",
+    "test:package": "npm run test:package:auth && npm run test:package:rownd && npm run test:package:shared",
+    "test:all": "npm run test:package && npm run test:example",
     "release": "release-it"
   },
   "devDependencies": {
@@ -8,8 +20,17 @@
     "@release-it/bumper": "^6.0.1",
     "@release-it/conventional-changelog": "^9.0.2",
     "@release-it/keep-a-changelog": "^5.0.0",
+    "@supertokens-plugins/rownd-nodejs": "file:../../../supertokens-plugins/packages/rownd-nodejs",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
     "husky": "^9.1.6",
     "podspec-bump": "^0.4.2",
-    "release-it": "^17.10.0"
+    "release-it": "^17.10.0",
+    "supertokens-node": "^24.0.2",
+    "testcontainers": "^11.14.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
   }
 }

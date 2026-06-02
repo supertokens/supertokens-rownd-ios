@@ -72,9 +72,24 @@ extension AuthState: Codable {
     }
 
     func toRphInitHash() -> String? {
-        let userId: String? = Context.currentContext.store.state.user.get(field: "user_id") as? String ?? nil
+        guard let accessToken = self.accessToken, !accessToken.isEmpty,
+              let refreshToken = self.refreshToken ?? SuperTokensSessionBridge.getRefreshToken(), !refreshToken.isEmpty else {
+            return nil
+        }
 
-        let rphInit = RphInit(accessToken: self.accessToken, refreshToken: self.refreshToken, appId: Context.currentContext.store.state.appConfig.id, appUserId: userId)
+        let jwt = try? decode(jwt: accessToken)
+        let userId: String? = Context.currentContext.store.state.user.get(field: "user_id") as? String
+            ?? jwt?.claim(name: "https://auth.rownd.io/app_user_id").string
+            ?? jwt?.claim(name: "app_user_id").string
+
+        let rphInit = RphInit(
+            accessToken: accessToken,
+            refreshToken: refreshToken,
+            frontToken: SuperTokensSessionBridge.getFrontToken(),
+            antiCSRF: SuperTokensSessionBridge.getAntiCSRF(),
+            appId: Context.currentContext.store.state.appConfig.id,
+            appUserId: userId
+        )
         
         do {
             return try rphInit.valueForURLFragment()
@@ -120,7 +135,6 @@ func onReceiveAuthTokens(_ newAuthState: AuthState) -> Thunk<RowndState> {
                 DispatchQueue.main.async {
                     dispatch(SetAuthState(payload: newAuthState))
                     dispatch(UserData.fetch())
-                    dispatch(PasskeyData.fetchPasskeyRegistration())
                 }
             }
 
@@ -138,7 +152,6 @@ func onReceiveAuthTokens(_ newAuthState: AuthState) -> Thunk<RowndState> {
 
                 DispatchQueue.main.async {
                     dispatch(SetAuthState(payload: newAuthState))
-                    dispatch(PasskeyData.fetchPasskeyRegistration())
                 }
             }
 
@@ -189,23 +202,13 @@ public enum UserType: String, Codable {
     }
 }
 
-struct SignOutRequest: Codable {
-    var signOutAll: Bool
-
-    enum CodingKeys: String, CodingKey {
-        case signOutAll = "sign_out_all"
-    }
-}
-
-typealias TokenRequestUserData = [String: AnyCodable?]
-
 struct TokenRequest: Codable {
     var refreshToken: String?
     var idToken: String?
     var appId: String?
     var intent: RowndSignInIntent?
     var intentMismatchBehavior: String?
-    var userData: TokenRequestUserData?
+    var userData: [String: AnyCodable?]?
     var instantUserId: String?
 
     enum CodingKeys: String, CodingKey {
@@ -233,59 +236,30 @@ struct TokenResponse: Codable {
     }
 }
 
-struct TokenResource: APIResource {
-
-    var headers: [String: String]?
-
-    typealias ModelType = TokenResponse
-
-    var methodPath: String {
-        return "/hub/auth/token"
-    }
-}
-
 class Auth {
-    static func fetchToken(_ token: String) async throws -> TokenResponse? {
-        return try await fetchToken(idToken: token, userData: nil, intent: nil)
-    }
+    static func signOutUser() async throws {
+        let supertokens = try Rownd.requireSuperTokensConfig()
 
-    static func fetchToken(idToken: String, userData: TokenRequestUserData?, intent: RowndSignInIntent?) async throws -> TokenResponse? {
-        guard let appId = Context.currentContext.store.state.appConfig.id else { return nil }
-        let tokenRequest = TokenRequest(
-            idToken: idToken,
-            appId: appId,
-            intent: intent,
-            intentMismatchBehavior: "throw",
-            userData: userData
-        )
-        return try await fetchToken(tokenRequest: tokenRequest)
-    }
+        guard var components = URLComponents(string: supertokens.apiDomain) else {
+            throw RowndError("Invalid SuperTokens apiDomain")
+        }
+        components.path = supertokens.apiBasePath + "/plugin/rownd/signout"
 
-    static func fetchToken(tokenRequest: TokenRequest) async throws -> TokenResponse {
-        var tokenRequest = tokenRequest
-        if Context.currentContext.store.state.user.authLevel == .instant {
-            tokenRequest.instantUserId = Context.currentContext.store.state.user.data["user_id"]?.value as? String
+        guard let url = components.url else {
+            throw RowndError("Invalid SuperTokens signout URL")
         }
 
-        let tokenResp: Response<TokenResponse> = try await rowndApi.send(Request(
-            path: "/hub/auth/token",
-            method: .post,
-            body: tokenRequest
-        ))
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
 
-        return tokenResp.value
-    }
-    
-    static func signOutUser(signOutRequest: SignOutRequest) async throws {
+        let (_, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw RowndError("SuperTokens signout returned a non-HTTP response")
+        }
 
-        guard let appId = Context.currentContext.store.state.appConfig.id else {  throw RowndError("AppId not found") }
-        
-        try await Rownd.apiClient.send(Request(
-            path: "/me/applications/\(appId)/signout",
-            method: .post,
-            body: signOutRequest
-        ))
-        
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            throw RowndError("SuperTokens signout failed with status code \(httpResponse.statusCode)")
+        }
     }
 }
 

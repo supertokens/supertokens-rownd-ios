@@ -28,6 +28,24 @@ public class HubViewController: UIViewController, HubViewProtocol, BottomSheetHo
     var targetPage = HubPageSelector.unknown
     var hostController: BottomSheetViewController?
     var isBottomSheetDismissing: Bool = false
+
+    static func buildHubLoaderUrl(
+        baseUrl: String,
+        config: RowndConfig,
+        base64EncodedConfig: String,
+        signInHash: String?
+    ) -> URLComponents? {
+        var hubLoaderUrl = URLComponents(string: "\(baseUrl)/mobile_app")
+        hubLoaderUrl?.queryItems = [
+            URLQueryItem(name: "config", value: base64EncodedConfig),
+            URLQueryItem(name: "sign_in", value: signInHash ?? ""),
+            URLQueryItem(name: "appKey", value: config.appKey),
+            URLQueryItem(name: "apiDomain", value: config.supertokens.apiDomain),
+            URLQueryItem(name: "apiBasePath", value: config.supertokens.apiBasePath)
+        ]
+
+        return hubLoaderUrl
+    }
     
     public override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
@@ -57,6 +75,12 @@ public class HubViewController: UIViewController, HubViewProtocol, BottomSheetHo
     public func loadNewPage(targetPage: HubPageSelector, jsFnOptions: Encodable?) {
         DispatchQueue.main.async {
             self.targetPage = targetPage
+
+            if targetPage == .deepLink, let url = Rownd.config.consumePendingHubDeepLinkUrl() {
+                self.hubWebController.setUrl(url: url)
+                return
+            }
+
             if let jsFnOptions = jsFnOptions {
                 do {
                     self.hubWebController.jsFunctionArgsAsJson = try jsFnOptions.asJsonString()
@@ -79,7 +103,23 @@ public class HubViewController: UIViewController, HubViewProtocol, BottomSheetHo
             .base64EncodedString(options: Data.Base64EncodingOptions(rawValue: 0)) ?? ""
 
         let store = Context.currentContext.store
-        guard let hubLoaderUrl = URLComponents(string: "\(Rownd.config.baseUrl)/mobile_app?config=\(base64EncodedConfig)&sign_in=\(store.state.signIn.toSignInHash() ?? "")") else {
+        if targetPage == .deepLink, let pendingHubDeepLinkUrl = Rownd.config.consumePendingHubDeepLinkUrl() {
+            view = UIView()
+            view.backgroundColor = Rownd.config.customizations.sheetBackgroundColor
+            initLoadingIndicator(view)
+            hubWebController.setUrl(url: pendingHubDeepLinkUrl)
+            addChild(hubWebController)
+            view.addSubview(hubWebController.view)
+            setupConstraints()
+            return
+        }
+
+        guard let hubLoaderUrl = HubViewController.buildHubLoaderUrl(
+            baseUrl: Rownd.config.baseUrl,
+            config: Rownd.config,
+            base64EncodedConfig: base64EncodedConfig,
+            signInHash: store.state.signIn.toSignInHash()
+        ) else {
             return
         }
 

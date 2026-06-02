@@ -22,14 +22,13 @@ public struct RowndState: Codable, Hashable {
     public var appConfig = AppConfigState()
     public var auth = AuthState()
     public var user = UserState()
-    public var passkeys = PasskeyState()
     public var signIn = SignInState()
     public var lastUpdateTs = Date()
 }
 
 extension RowndState {
     enum CodingKeys: String, CodingKey {
-        case appConfig, auth, user, signIn, passkeys, lastUpdateTs
+        case appConfig, auth, user, signIn, lastUpdateTs
     }
 
     public var isInitialized: Bool {
@@ -41,7 +40,6 @@ extension RowndState {
         appConfig = try container.decode(AppConfigState.self, forKey: .appConfig)
         auth = try container.decode(AuthState.self, forKey: .auth)
         user = try container.decode(UserState.self, forKey: .user)
-        passkeys = try container.decodeIfPresent(PasskeyState.self, forKey: .passkeys) ?? PasskeyState()
         signIn = try container.decodeIfPresent(SignInState.self, forKey: .signIn) ?? SignInState()
         lastUpdateTs = try container.decodeIfPresent(Date.self, forKey: .lastUpdateTs) ?? Date()
     }
@@ -187,7 +185,6 @@ func rowndStateReducer(action: Action, state: RowndState?) -> RowndState {
             appConfig: appConfigReducer(action: action, state: state?.appConfig),
             auth: authReducer(action: action, state: state?.auth),
             user: userReducer(action: action, state: state?.user),
-            passkeys: passkeyReducer(action: action, state: state?.passkeys),
             signIn: signInReducer(action: action, state: state?.signIn)
         )
 

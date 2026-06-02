@@ -12,15 +12,10 @@ import Rownd
 struct LandmarksApp: App {
     @UIApplicationDelegateAdaptor var delegate: AppDelegate
 
-    @StateObject var authState = Rownd.getInstance().state().subscribe { $0.auth }
-
     var body: some Scene {
         WindowGroup {
-            if authState.current.isAuthenticatedWithUserData {
-                ContentView()
-            } else {
-                SplashView()
-            }
+            ContentView()
+                .rowndDeepLinkHandler()
         }
     }
 }

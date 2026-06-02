@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import Rownd
 
 @main
 struct LandmarksAppClipApp: App {
@@ -14,6 +15,7 @@ struct LandmarksAppClipApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .rowndDeepLinkHandler()
         }
     }
 }

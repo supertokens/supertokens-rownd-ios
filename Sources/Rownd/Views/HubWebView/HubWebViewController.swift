@@ -9,15 +9,14 @@ import Foundation
 import UIKit
 import WebKit
 import SwiftUI
-import LocalAuthentication
 import ReSwiftThunk
 
 public enum HubPageSelector {
     case signIn
-    case connectPasskey
     case signOut
     case qrCode
     case manageAccount
+    case deepLink
     case unknown
 }
 
@@ -53,6 +52,10 @@ extension WKWebView {
 }
 
 public class HubWebViewController: UIViewController, WKUIDelegate {
+
+    static func canHandleAuthentication(on targetPage: HubPageSelector?) -> Bool {
+        targetPage == .signIn || targetPage == .deepLink
+    }
 
     let webConfiguration = WKWebViewConfiguration()
     let userController = WKUserContentController()
@@ -128,14 +131,12 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
 }
 
 extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
-    private static var passkeyCoordinator: PasskeyCoordinator? = PasskeyCoordinator()
-
     private func evaluateJavaScript(code: String, webView: WKWebView) {
         let wrappedJs = """
             if (typeof rownd !== 'undefined') {
                 \(code)
-            } else {
-                _rphConfig.push(['onLoaded', () => {
+            } else if (typeof window !== 'undefined' && Array.isArray(window._rphConfig)) {
+                window._rphConfig.push(['onLoaded', () => {
                     \(code)
                 }]);
             }
@@ -224,15 +225,15 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
             webView.backgroundColor = UIColor.clear
             webView.scrollView.backgroundColor = UIColor.clear
 
-            let webViewOrigin = (webView.url?.absoluteURL.scheme ?? "") + "://" + (webView.url?.absoluteURL.host ?? "")
-            if webViewOrigin != Rownd.config.baseUrl {
-                // Only disable loading if webView is not from hub
+            guard webView.url?.absoluteString.starts(with: Rownd.config.baseUrl) == true else {
                 self.animateInContent()
-            } else {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 6.0) {
-                    self.animateInContent()
-                }
+                return
             }
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 6.0) {
+                self.animateInContent()
+            }
+
             self.setFeatureFlagsJS()
 
             if let jsFnOptions = jsFnOptions {
@@ -246,14 +247,14 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
             switch targetPage ?? self.hubViewController?.targetPage {
             case .signOut:
                 self.evaluateJavaScript(code: "rownd.signOut({\"show_success\":true})", webView: webView)
-            case .connectPasskey:
-                self.evaluateJavaScript(code: "rownd.connectAuthenticator(\(self.jsFunctionArgsAsJson))", webView: webView)
             case .signIn, .unknown:
                 self.evaluateJavaScript(code: "rownd.requestSignIn(\(self.jsFunctionArgsAsJson))", webView: webView)
             case .qrCode:
                 self.evaluateJavaScript(code: "rownd.generateQrCode(\(self.jsFunctionArgsAsJson))", webView: webView)
             case .manageAccount:
                 self.evaluateJavaScript(code: "rownd.user.manageAccount()", webView: webView)
+            case .deepLink:
+                break
             case .none:
                 return
             }
@@ -268,8 +269,8 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
     private func setFeatureFlagsJS() {
         let frameworkFeaturesString = String(describing: getFrameworkFeatures())
         let code = """
-            if (rownd?.setSessionStorage) {
-                rownd.setSessionStorage("rph_feature_flags\",`\(frameworkFeaturesString)`)
+            if (typeof rownd !== 'undefined' && rownd.setSessionStorage) {
+                rownd.setSessionStorage("rph_feature_flags", `\(frameworkFeaturesString)`)
             }
         """
         evaluateJavaScript(code: code, webView: webView)
@@ -292,21 +293,30 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
             switch hubMessage.type {
             case .authentication:
                 guard case .authentication(let authMessage) = hubMessage.payload else { return }
-                guard hubViewController?.targetPage == .signIn  else { return }
+                guard Self.canHandleAuthentication(on: hubViewController?.targetPage) else { return }
                 let initialJsFunctionArgsAsJson = self.jsFunctionArgsAsJson
-                DispatchQueue.main.async {
-                    // Ensure user.isLoading = false so that the data is fetched properly
-                    store.dispatch(SetUserLoading(isLoading: false))
-                    // Then set our tokens
-                    store.dispatch(store.state.auth.onReceiveAuthTokens(
-                        AuthState(accessToken: authMessage.accessToken, refreshToken: authMessage.refreshToken)
-                    ))
-                    store.dispatch(ResetSignInState())
-                }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in // .now() + num_seconds
-                    // Close the hub as long as no other rownd api was called
-                    if initialJsFunctionArgsAsJson == self?.jsFunctionArgsAsJson {
-                        self?.hubViewController?.hide()
+
+                Task.detached(priority: .userInitiated) { [weak self] in
+                    SuperTokensSessionBridge.bootstrapSession(
+                        accessToken: authMessage.accessToken,
+                        refreshToken: authMessage.refreshToken,
+                        frontToken: authMessage.frontToken,
+                        antiCSRF: authMessage.antiCSRF
+                    )
+                    await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens()
+
+                    await MainActor.run {
+                        // Ensure user.isLoading = false so that the data is fetched properly
+                        store.dispatch(SetUserLoading(isLoading: false))
+                        store.dispatch(UserData.fetch())
+                        store.dispatch(ResetSignInState())
+                    }
+
+                    await MainActor.run { [weak self] in
+                        // Close the hub as long as no other rownd api was called
+                        if initialJsFunctionArgsAsJson == self?.jsFunctionArgsAsJson {
+                            self?.hubViewController?.hide()
+                        }
                     }
                 }
             case .closeHubViewController:
@@ -342,13 +352,6 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
                     signInWithGoogleMessage = message
                 }
                 Rownd.requestSignIn(with: RowndSignInHint.googleId, signInOptions: RowndSignInOptions(intent: signInWithGoogleMessage?.intent, hint: signInWithGoogleMessage?.hint))
-
-            case .triggerSignUpWithPasskey:
-                HubWebViewController.passkeyCoordinator?.registerPasskey()
-                break
-
-            case .triggerSignInWithPasskey:
-                Rownd.requestSignIn(with: .passkey)
 
             case .signOut:
                 // Occasionally, the hub may send a sign-out message due to expired token

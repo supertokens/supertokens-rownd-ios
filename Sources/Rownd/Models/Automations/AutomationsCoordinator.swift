@@ -13,7 +13,6 @@ public struct AutomationStoreState {
     var user: UserState
     var automations: [RowndAutomation]?
     var auth: AuthState
-    var passkeys: PasskeyState
 }
 
 func computeLastRunId(_ automation: RowndAutomation) -> String {
@@ -51,8 +50,7 @@ public class AutomationsCoordinator: NSObject, StoreSubscriber {
         Context.currentContext.store.subscribe(self) {
             $0.select {
                 AutomationStoreState(
-                    user: $0.user, automations: $0.appConfig.config?.automations, auth: $0.auth,
-                    passkeys: $0.passkeys)
+                    user: $0.user, automations: $0.appConfig.config?.automations, auth: $0.auth)
             }
         }
     }
@@ -143,18 +141,9 @@ public class AutomationsCoordinator: NSObject, StoreSubscriber {
     public func determineAutomationMetaData(_ state: AutomationStoreState) -> [String: AnyCodable] {
         var automationMeta = state.user.meta ?? [:]
 
-        var hasPasskeys = false
-        if let passkeyCount = state.passkeys.registration?.count {
-            hasPasskeys = passkeyCount > 0
-        }
-
         let additionalAutomationMeta: [String: AnyCodable] = [
             "is_authenticated": AnyCodable(state.auth.isAccessTokenValid),
             "is_verified": AnyCodable(state.auth.isVerifiedUser ?? false),
-            "are_passkeys_initialized": AnyCodable(state.passkeys.isInitialized),
-            "has_prompted_for_passkey": AnyCodable(
-                state.user.meta?["last_passkey_registration_prompt"] != nil),
-            "has_passkeys": AnyCodable(hasPasskeys),
         ]
 
         additionalAutomationMeta.forEach { (k, v) in automationMeta[k] = v }

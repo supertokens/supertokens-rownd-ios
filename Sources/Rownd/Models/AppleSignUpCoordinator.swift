@@ -48,6 +48,7 @@ class AppleSignUpCoordinator: NSObject, ASAuthorizationControllerDelegate, ASAut
     var parent: Rownd?
     var intent: RowndSignInIntent?
     var cancellables = Set<AnyCancellable>()
+    var signInClient = SuperTokensThirdPartySignInClient()
 
     init(_ parent: Rownd) {
         self.parent = parent
@@ -96,7 +97,7 @@ class AppleSignUpCoordinator: NSObject, ASAuthorizationControllerDelegate, ASAut
             // let userIdentifier = appleIDCredential.user
             let fullName = appleIDCredential.fullName
             let email = appleIDCredential.email
-            let identityToken = appleIDCredential.identityToken
+            let authorizationCode = appleIDCredential.authorizationCode
             var userAppleSignInData: AppleSignInData? = nil
 
             if let email = email {
@@ -114,26 +115,20 @@ class AppleSignUpCoordinator: NSObject, ASAuthorizationControllerDelegate, ASAut
                 }
             }
 
-            if let identityToken = identityToken,
-               let urlContent = NSString(data: identityToken, encoding: String.Encoding.ascii.rawValue) {
-                let idToken = urlContent as String
+            if let authorizationCode = authorizationCode,
+               let authCode = String(data: authorizationCode, encoding: .utf8) {
 
                 Task { [userAppleSignInData] in
                     do {
-                        let userData = userAppleSignInData?.toDictionary()
-
-                        let tokenResponse = try await Auth.fetchToken(
-                            idToken: idToken,
-                            userData: userData,
-                            intent: intent
-                        )
+                        let signInResponse = try await signInClient.signInWithApple(authorizationCode: authCode)
+                        await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens()
 
                         Task { @MainActor in
                             Rownd.requestSignIn(jsFnOptions: RowndSignInJsOptions(
                                 loginStep: RowndSignInLoginStep.success,
                                 intent: self.intent,
-                                userType: tokenResponse?.userType,
-                                appVariantUserType: tokenResponse?.appVariantUserType
+                                userType: signInResponse.userType,
+                                appVariantUserType: signInResponse.userType
                             ))
                         }
 
@@ -141,48 +136,17 @@ class AppleSignUpCoordinator: NSObject, ASAuthorizationControllerDelegate, ASAut
                         try await Task.sleep(nanoseconds: UInt64(2 * Double(NSEC_PER_SEC)))
 
                         DispatchQueue.main.async {
-                            Context.currentContext.store.dispatch(Context.currentContext.store.state.auth.onReceiveAppleAuthTokens(
-                                AuthState(
-                                    accessToken: tokenResponse?.accessToken,
-                                    refreshToken: tokenResponse?.refreshToken
-                                )
-                            ))
-
                             Context.currentContext.store.dispatch(SetLastSignInMethod(payload: SignInMethodTypes.apple))
 
-                            let subscriber = Context.currentContext.store.subscribe { $0.auth.isAccessTokenValid }
-                            subscriber.$current.sink { isAccessTokenValid in
-                                if isAccessTokenValid {
-                                    subscriber.unsubscribe()
-                                    self.updateUserDataWithAppleData(fullName: fullName, email: email)
-                                    
-                                    RowndEventEmitter.emit(RowndEvent(
-                                        event: .signInCompleted,
-                                        data: [
-                                            "method": AnyCodable(SignInType.apple.rawValue),
-                                            "user_type": AnyCodable(tokenResponse?.userType?.rawValue),
-                                            "app_variant_user_type": AnyCodable(tokenResponse?.appVariantUserType?.rawValue)
-                                        ]
-                                    ))
-                                }
-                            }.store(in: &self.cancellables)
-                        }
-                    } catch ApiError.generic(let errorInfo) {
-                        if errorInfo.code == "E_SIGN_IN_USER_NOT_FOUND" {
-                            Task { @MainActor in
-                                Rownd.requestSignIn(jsFnOptions: RowndSignInJsOptions(
-                                    token: idToken,
-                                    loginStep: .noAccount,
-                                    intent: .signIn
-                                ))
-                            }
-                        } else {
-                            DispatchQueue.main.async {
-                                Rownd.requestSignIn(jsFnOptions: RowndSignInJsOptions(
-                                    loginStep: .error,
-                                    signInType: .apple
-                                ))
-                            }
+                            self.updateUserDataWithAppleData(fullName: fullName, email: email)
+                            RowndEventEmitter.emit(RowndEvent(
+                                event: .signInCompleted,
+                                data: [
+                                    "method": AnyCodable(SignInType.apple.rawValue),
+                                    "user_type": AnyCodable(signInResponse.userType.rawValue),
+                                    "app_variant_user_type": AnyCodable(signInResponse.userType.rawValue)
+                                ]
+                            ))
                         }
                     } catch {
                         DispatchQueue.main.async {

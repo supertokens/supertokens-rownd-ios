@@ -5,10 +5,9 @@
 //  Created by Matt Hamann on 10/16/22.
 //
 
-import Combine
-import Factory
 import Foundation
 import Get
+import JWTDecode
 import OSLog
 import ReSwift
 
@@ -128,12 +127,11 @@ class AuthenticatorSubscription: NSObject {
 }
 
 actor Authenticator: AuthenticatorProtocol {
-    private let tokenApi = Container.tokenApi()
+    private let sessionBridge: SuperTokensSessionBridgeClient
     private var refreshTask: Task<AuthState, Error>?
-    private var cancellables = Set<AnyCancellable>()
 
-    private func storeCancellable(_ cancellable: AnyCancellable) {
-        self.cancellables.insert(cancellable)
+    init(sessionBridge: SuperTokensSessionBridgeClient = .live) {
+        self.sessionBridge = sessionBridge
     }
 
     func getValidToken() async throws -> AuthState {
@@ -141,30 +139,15 @@ actor Authenticator: AuthenticatorProtocol {
             return try await handle.value
         }
 
-        guard let authState = AuthenticatorSubscription.currentAuthState,
-            authState.accessToken != nil
-        else {
+        guard let accessToken = await sessionBridge.getAccessToken() else {
             throw AuthenticationError.noAccessTokenPresent
         }
 
-        if authState.isAccessTokenValid {
-            return authState
+        guard isAccessTokenValid(accessToken) else {
+            return try await refreshToken()
         }
 
-        // authState.isAccessTokenValid could return false if state.clockSyncState is .waiting
-        // even when the access token is valid. We should wait for the clock sync to complete
-        // before proceeding with a token exchange.
-        if Context.currentContext.store.state.clockSyncState == .waiting {
-            do {
-                try await waitForClockSync()
-            } catch {
-                logger.error(
-                    "Error encountered while waiting for clock sync \(String(describing: error))")
-            }
-            return try await getValidToken()
-        }
-
-        return try await refreshToken()
+        return await syncCompatibilityAuthState(accessToken: accessToken)
     }
 
     func refreshToken() async throws -> AuthState {
@@ -176,68 +159,20 @@ actor Authenticator: AuthenticatorProtocol {
         let task = Task { () throws -> AuthState in
             defer { refreshTask = nil }
 
-            do {
-                log.debug("Refreshing auth tokens...")
-                let newAuthState: AuthState = try await tokenApi.send(
-                    Request(
-                        path: "/hub/auth/token",
-                        method: .post,
-                        body: TokenRequest(
-                            refreshToken: AuthenticatorSubscription.currentAuthState?.refreshToken)
-                    )
-                ).value
+            log.debug("Refreshing SuperTokens session...")
 
-                log.debug("Successfully refreshed auth tokens.")
-
-                // Store the new token response here for immediate use outside of the state lifecycle
-                AuthenticatorSubscription.currentAuthState = newAuthState
-
-                // Update the auth state - this really should be abstracted out elsewhere
-                DispatchQueue.main.async {
-                    Context.currentContext.store.dispatch(
-                        SetAuthState(
-                            payload: AuthState(
-                                accessToken: newAuthState.accessToken,
-                                refreshToken: newAuthState.refreshToken,
-                                isVerifiedUser: Context.currentContext.store.state.auth
-                                    .isVerifiedUser,
-                                hasPreviouslySignedIn: Context.currentContext.store.state.auth
-                                    .hasPreviouslySignedIn
-                            )))
-                }
-
-                return newAuthState
-            } catch {
-                log.error("Token refresh failed: \(String(describing: error))")
-
-                if case .unacceptableStatusCode(let statusCode) = error as? APIError,
-                    statusCode != 400
-                {
-                    throw AuthenticationError.serverError(details: "\(String(describing: error))")
-                }
-
-                switch (error as? URLError)?.code {
-                case .some(.notConnectedToInternet),
-                    .some(.timedOut),
-                    .some(.cannotFindHost),
-                    .some(.cannotConnectToHost),
-                    .some(.networkConnectionLost),
-                    .some(.dnsLookupFailed):
-                    throw
-                        AuthenticationError
-                        .networkConnectionFailure(
-                            details: "\(String(describing: error))"
-                        )
-                default: break
-                }
-
-                // Sign the user out b/c they need to get a new refresh token - this really should be abstracted out elsewhere
-                Rownd.signOut()
-
-                throw
-                    AuthenticationError
-                    .invalidRefreshToken(details: (String(describing: error)))
+            let refreshed = await sessionBridge.attemptRefresh()
+            let sessionExists = await sessionBridge.doesSessionExist()
+            guard refreshed || sessionExists else {
+                throw AuthenticationError.noAccessTokenPresent
             }
+
+            guard let accessToken = await sessionBridge.getAccessToken(), isAccessTokenValid(accessToken) else {
+                throw AuthenticationError.noAccessTokenPresent
+            }
+
+            log.debug("Successfully refreshed SuperTokens session.")
+            return await syncCompatibilityAuthState(accessToken: accessToken)
         }
 
         self.refreshTask = task
@@ -245,48 +180,40 @@ actor Authenticator: AuthenticatorProtocol {
         return try await task.value
     }
 
-    private func waitForClockSync() async throws {
-        try await withThrowingTaskGroup(of: Void.self) { group in
-            let continuationID = UUID()
-            var didResume = false
+    private func syncCompatibilityAuthState(accessToken: String) async -> AuthState {
+        let currentAuthState = AuthenticatorSubscription.currentAuthState
+            ?? Context.currentContext.store.state.auth
+        let isSameAccessToken = currentAuthState.accessToken == accessToken
+        let newAuthState = AuthState(
+            accessToken: accessToken,
+            refreshToken: nil,
+            isVerifiedUser: isSameAccessToken ? currentAuthState.isVerifiedUser : nil,
+            hasPreviouslySignedIn: currentAuthState.hasPreviouslySignedIn
+        )
 
-            // Task 1: Wait for the clock sync
-            group.addTask { @MainActor [weak self] in
-                try await withCheckedThrowingContinuation {
-                    (continuation: CheckedContinuation<Void, Error>) in
-                    let subscriber = Context.currentContext.store.subscribe { $0.clockSyncState }
-                    var cancellable: AnyCancellable?
+        AuthenticatorSubscription.currentAuthState = newAuthState
 
-                    cancellable = subscriber.$current.sink { clockSyncState in
-                        if clockSyncState != .waiting && !didResume {
-                            didResume = true
-                            continuation.resume()
-                            // Defer cleanup to next runloop to avoid mutating subscriber set during notification
-                            DispatchQueue.main.async {
-                                cancellable?.cancel()
-                                subscriber.unsubscribe()
-                            }
-                        }
-                    }
+        await MainActor.run {
+            // Keep Rownd's compatibility auth state in sync with the SuperTokens session.
+            Context.currentContext.store.dispatch(SetAuthState(payload: newAuthState))
+        }
 
-                    Task { [weak self] in
-                        if let cancellable = cancellable {
-                            await self?.storeCancellable(cancellable)
-                        }
-                    }
-                }
+        return newAuthState
+    }
+
+    private func isAccessTokenValid(_ accessToken: String) -> Bool {
+        do {
+            let jwt = try decode(jwt: accessToken)
+            let currentDate = NetworkTimeManager.shared.currentTime ?? Date()
+            guard let expiresAt = jwt.expiresAt,
+                let currentDateWithMargin = Calendar.current.date(byAdding: .second, value: 60, to: currentDate)
+            else {
+                return false
             }
 
-            // Task 2: Timeout after half a second
-            group.addTask {
-                try await Task.sleep(nanoseconds: 500_000_000)
-                if !didResume {
-                    log.warning("Authenticator timed out waiting for clock sync. Proceeding...")
-                }
-            }
-
-            try await group.next()
-            group.cancelAll()
+            return !jwt.ntpExpired && currentDateWithMargin < expiresAt
+        } catch {
+            return false
         }
     }
 }

@@ -34,11 +34,21 @@ public struct AppConfigConfig: Hashable {
     public var hub: AppHubConfigState?
     public var customizations: AppCustomizationsConfigState?
     public var subdomain: String?
+    var supertokens: SuperTokensConfig?
+}
+
+struct SuperTokensConfig: Hashable, Codable {
+    var appInfo: SuperTokensAppInfo
+}
+
+struct SuperTokensAppInfo: Hashable, Codable {
+    var apiDomain: String
+    var apiBasePath: String?
 }
 
 extension AppConfigConfig: Codable {
     enum CodingKeys: String, CodingKey {
-        case hub, customizations, subdomain, automations
+        case hub, customizations, subdomain, automations, supertokens
     }
 
     public init(from decoder: Decoder) throws {
@@ -64,6 +74,7 @@ extension AppConfigConfig: Codable {
         self.hub = try? container.decode(AppHubConfigState.self, forKey: .hub)
         self.customizations = try? container.decode(AppCustomizationsConfigState.self, forKey: .customizations)
         self.subdomain = try? container.decode(String.self, forKey: .subdomain)
+        self.supertokens = try? container.decode(SuperTokensConfig.self, forKey: .supertokens)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -84,6 +95,7 @@ extension AppConfigConfig: Codable {
         try container.encodeIfPresent(hub, forKey: .hub)
         try container.encodeIfPresent(customizations, forKey: .customizations)
         try container.encodeIfPresent(subdomain, forKey: .subdomain)
+        try container.encodeIfPresent(supertokens, forKey: .supertokens)
     }
 
     public func toDictionary() throws -> [String: Any?] {
@@ -133,13 +145,21 @@ extension AppHubConfigState: Codable {
 public struct AppHubAuthConfigState: Hashable {
     public var signInMethods: SignInMethods?
     public var useExplicitSignUpFlow: Bool?
+    public var showAppIcon: Bool?
+    public var instantUser: InstantUserConfig?
 }
 
 extension AppHubAuthConfigState: Codable {
     enum CodingKeys: String, CodingKey {
         case signInMethods = "sign_in_methods"
         case useExplicitSignUpFlow = "use_explicit_sign_up_flow"
+        case showAppIcon = "show_app_icon"
+        case instantUser = "instant_user"
     }
+}
+
+public struct InstantUserConfig: Hashable, Codable {
+    public var enabled: Bool?
 }
 
 public struct AppCustomizationsConfigState: Hashable {
@@ -179,13 +199,45 @@ extension AppHubCustomStylesConfigState: Codable {
 }
 
 public struct SignInMethods: Hashable {
+    public var email: BasicSignInMethodConfig?
+    public var phone: BasicSignInMethodConfig?
     public var google: GoogleSignInMethodConfig?
-    public var passkeys: PasskeysSignInMethodConfig?
+    public var apple: AppleSignInMethodConfig?
+    public var anonymous: AnonymousSignInMethodConfig?
 }
 
 extension SignInMethods: Codable {
     enum CodingKeys: String, CodingKey {
-        case google, passkeys
+        case email, phone, google, apple, anonymous
+    }
+}
+
+public struct BasicSignInMethodConfig: Hashable, Codable {
+    public var enabled: Bool?
+}
+
+public struct AppleSignInMethodConfig: Hashable {
+    public var enabled: Bool?
+    public var clientId: String?
+}
+
+extension AppleSignInMethodConfig: Codable {
+    enum CodingKeys: String, CodingKey {
+        case enabled
+        case clientId = "client_id"
+    }
+}
+
+public struct AnonymousSignInMethodConfig: Hashable {
+    public var enabled: Bool?
+    public var type: String?
+    public var displayName: String?
+}
+
+extension AnonymousSignInMethodConfig: Codable {
+    enum CodingKeys: String, CodingKey {
+        case enabled, type
+        case displayName = "display_name"
     }
 }
 
@@ -193,6 +245,7 @@ public struct GoogleSignInMethodConfig: Hashable {
     public var enabled: Bool?
     public var serverClientId: String?
     public var iosClientId: String?
+    public var scopes: [String]?
 }
 
 extension GoogleSignInMethodConfig: Codable {
@@ -200,17 +253,7 @@ extension GoogleSignInMethodConfig: Codable {
         case enabled
         case serverClientId = "client_id"
         case iosClientId = "ios_client_id"
-    }
-}
-
-public struct PasskeysSignInMethodConfig: Hashable {
-    public var enabled: Bool?
-    public var domains: [String]?
-}
-
-extension PasskeysSignInMethodConfig: Codable {
-    enum CodingKeys: String, CodingKey {
-        case enabled, domains
+        case scopes
     }
 }
 
@@ -246,6 +289,69 @@ struct AppConfigResponse: Decodable {
 }
 
 class AppConfig {
+    static var testingProtocolClasses: [AnyClass]?
+
+    static func appConfigPath(apiBasePath: String) -> String {
+        let normalizedBasePath = apiBasePath == "/" ? "" : apiBasePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+
+        if normalizedBasePath.isEmpty {
+            return "/plugin/rownd/app-config"
+        }
+
+        return "/\(normalizedBasePath)/plugin/rownd/app-config"
+    }
+
+    static func appConfigURL() throws -> URL {
+        let supertokens = try Rownd.requireSuperTokensConfig()
+
+        guard let apiDomain = URL(string: supertokens.apiDomain) else {
+            throw RowndError("Invalid SuperTokens apiDomain: \(supertokens.apiDomain)")
+        }
+
+        guard let url = URL(string: appConfigPath(apiBasePath: supertokens.apiBasePath), relativeTo: apiDomain)?.absoluteURL else {
+            throw RowndError("Failed to build app config URL from SuperTokens configuration")
+        }
+
+        return url
+    }
+
+    static func makeAppConfigClient() throws -> APIClient {
+        let supertokens = try Rownd.requireSuperTokensConfig()
+
+        guard let apiDomain = URL(string: supertokens.apiDomain) else {
+            throw RowndError("Invalid SuperTokens apiDomain: \(supertokens.apiDomain)")
+        }
+
+        return APIClient(baseURL: apiDomain) {
+            $0.delegate = AppConfigApiClientDelegate()
+            if let testingProtocolClasses = testingProtocolClasses {
+                $0.sessionConfiguration.protocolClasses = testingProtocolClasses
+            }
+        }
+    }
+
+    static func validateSuperTokensConfig(_ appConfig: AppConfigResponse) throws {
+        let configured = try Rownd.requireSuperTokensConfig()
+
+        guard let serverConfig = appConfig.app.config?.supertokens?.appInfo else {
+            return
+        }
+
+        if serverConfig.apiDomain != configured.apiDomain {
+            throw RowndError(
+                "App config SuperTokens apiDomain \(serverConfig.apiDomain) does not match configured value \(configured.apiDomain)"
+            )
+        }
+
+        if let serverBasePath = serverConfig.apiBasePath,
+            serverBasePath != configured.apiBasePath
+        {
+            throw RowndError(
+                "App config SuperTokens apiBasePath \(serverBasePath) does not match configured value \(configured.apiBasePath)"
+            )
+        }
+    }
+
     static func requestAppState() -> Thunk<RowndState> {
         return Thunk<RowndState> { dispatch, getState in
             guard let state = getState() else { return }
@@ -267,12 +373,27 @@ class AppConfig {
 
     static func fetch() async -> AppConfigResponse? {
         do {
-            let appConfig: AppConfigResponse = try await Rownd.apiClient.send(Get.Request(url: URL(string: "/hub/app-config")!, method: "get")).value
+            let requestURL = try appConfigURL()
+            let client = try makeAppConfigClient()
+            let appConfig: AppConfigResponse = try await client.send(Get.Request(url: requestURL, method: "get")).value
+            try validateSuperTokensConfig(appConfig)
 
             return appConfig
         } catch {
             logger.error("Failed to fetch app config: \(String(describing: error), privacy: .auto)")
             return nil
         }
+    }
+}
+
+private final class AppConfigApiClientDelegate: APIClientDelegate {
+    func client(_ client: APIClient, willSendRequest request: inout URLRequest) async throws {
+        request.setValue(Constants.TIME_META_HEADER, forHTTPHeaderField: Constants.TIME_META_HEADER_NAME)
+        request.setValue(Constants.DEFAULT_API_USER_AGENT, forHTTPHeaderField: "User-Agent")
+
+        let localRequest = request
+        logger.debug(
+            "Making request to: \(String(describing: localRequest.httpMethod?.uppercased())) \(String(describing: localRequest.url))"
+        )
     }
 }

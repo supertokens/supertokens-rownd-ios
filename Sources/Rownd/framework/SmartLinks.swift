@@ -9,28 +9,14 @@ import Foundation
 import Get
 import UIKit
 
-struct SignInLinkResp: Hashable, Codable {
-    public var accessToken: String?
-    public var refreshToken: String?
-    public var appId: String?
-    public var appUserId: String?
-    public var redirectUrl: String?
-
-    enum CodingKeys: String, CodingKey {
-        case accessToken = "access_token"
-        case refreshToken = "refresh_token"
-        case appId = "app_id"
-        case appUserId = "app_user_id"
-        case redirectUrl = "redirect_url"
-    }
-}
-
 public protocol RowndDeepLinkHandlerDelegate {
     @discardableResult
     func handle(linkUrl url: URL) -> Bool
 }
 
 class SmartLinks {
+    private static var lastHandledDeepLink: URL?
+
     static func handleSmartLinkLaunchBehavior(launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) {
         if !Bundle.main.bundlePath.hasSuffix(".appex") {
             var launchUrl: URL?
@@ -38,6 +24,13 @@ class SmartLinks {
                 launchUrl = _launchUrl
                 handleSmartLink(url: launchUrl)
             } else if Rownd.config.enableSmartLinkPasteBehavior && UIPasteboard.general.hasStrings {
+                if let clipboardString = UIPasteboard.general.string,
+                   clipboardString.starts(with: "\(Rownd.config.deepLinkScheme)://") {
+                    handleSmartLink(url: URL(string: clipboardString))
+                    UIPasteboard.general.string = ""
+                    return
+                }
+
                 UIPasteboard.general.detectPatterns(for: [UIPasteboard.DetectionPattern.probableWebURL]) { result in
                     switch result {
                     case .success(let detectedPatterns):
@@ -60,10 +53,23 @@ class SmartLinks {
 
     @discardableResult
     public static func handleSmartLink(url: URL?) -> Bool {
+        guard let url = url else {
+            return false
+        }
+
+        if let hubUrl = hubUrl(for: url) {
+            if lastHandledDeepLink == url {
+                return true
+            }
+
+            lastHandledDeepLink = url
+            Rownd.openHubDeepLink(hubUrl)
+            return true
+        }
 
         let matcher = NSPredicate(format: "SELF MATCHES %@", Rownd.config.signInLinkPattern)
 
-        if let host = url?.host, matcher.evaluate(with: host), let url = url {
+        if let host = url.host, matcher.evaluate(with: host) {
             logger.trace("handling url: \(String(describing: url.absoluteString))")
 
             if url.path.starts(with: "/verified") {
@@ -77,87 +83,39 @@ class SmartLinks {
                 return false
             }
 
-            Task {
-                do {
-                    try await SmartLinks.signInWithLink(url)
-                } catch {
-                    logger.error("Sign-in attempt failed during launch: \(String(describing: error))")
-                }
-            }
-
-            return true
+            logger.warning("Legacy Rownd smart links are not supported by the SuperTokens-backed iOS SDK: \(url.absoluteString)")
+            return false
         }
 
         return false
     }
 
-    static func signInWithLink(_ url: URL) async throws {
-        do {
-            var signInUrl = url
-            if let fragment = signInUrl.fragment {
-                signInUrl = URL(string: signInUrl.absoluteString.replacingOccurrences(of: "#\(fragment)", with: "")) ?? signInUrl
-            }
-
-            Task { @MainActor in
-                if Rownd.isDisplayingHub() {
-                    Rownd.requestSignIn(jsFnOptions: RowndSignInJsOptions(
-                        loginStep: .completing
-                    ))
-                }
-            }
-            let authResp: SignInLinkResp = try await Rownd.apiClient.send(Request(
-                url: signInUrl,
-                headers: [
-                    "x-rownd-magic-allow-exp" : "true"
-                ]
-            )).value
-
-            Task { @MainActor in
-                if let accessToken = authResp.accessToken, let refreshToken = authResp.refreshToken {
-                    Context.currentContext.store.dispatch(SetAuthState(payload: AuthState(
-                        accessToken: accessToken,
-                        refreshToken: refreshToken
-                    )))
-
-                    Context.currentContext.store.dispatch(UserData.fetch())
-
-                    Context.currentContext.store.dispatch(PasskeyData.fetchPasskeyRegistration())
-
-                    if Rownd.isDisplayingHub() {
-                        Rownd.requestSignIn(jsFnOptions: RowndSignInJsOptions(
-                            loginStep: .success
-                        ))
-                    }
-                }
-
-                guard let strRedirectUrl = authResp.redirectUrl, let redirectUrl = URL(string: strRedirectUrl) else {
-                    return
-                }
-
-                Rownd.config.deepLinkHandler?.handle(linkUrl: redirectUrl)
-            }
-        } catch {
-            Task { @MainActor in
-                if Rownd.isDisplayingHub() {
-                    Rownd.requestSignIn(jsFnOptions: RowndSignInJsOptions(
-                        loginStep: .error
-                    ))
-                }
-            }
-            logger.error("Auto sign-in failed: \(String(describing: error))")
-            throw SignInError("Auto sign-in failed: \(error.localizedDescription)")
+    private static func hubUrl(for url: URL) -> URL? {
+        guard let host = url.host?.trimmingCharacters(in: CharacterSet(charactersIn: "/")) else {
+            return nil
         }
-    }
-}
 
-struct SignInError: Error, CustomStringConvertible {
-    var message: String
+        guard var components = URLComponents(string: Rownd.config.baseUrl) else {
+            return nil
+        }
 
-    init(_ message: String) {
-        self.message = message
-    }
+        let hubPath: String
+        if url.scheme == Rownd.config.deepLinkScheme {
+            let path = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            hubPath = path.isEmpty ? "/\(host)" : "/\(host)/\(path)"
+        } else if url.scheme == "https", host == components.host {
+            hubPath = url.path
+        } else {
+            return nil
+        }
 
-    public var description: String {
-        return message
+        guard hubPath == "/account/login" || hubPath == "/account/verify-email" else {
+            return nil
+        }
+
+        components.path = hubPath
+        components.query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.query
+        components.fragment = url.fragment
+        return components.url
     }
 }

@@ -5,13 +5,21 @@ import Rownd
 class AppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey : Any]? = nil) -> Bool {
 
-        Rownd.config.baseUrl = "https://hub.dev.rownd.io"
-        Rownd.config.apiUrl = "https://api.dev.rownd.io"
-        Rownd.config.subdomainExtension = ".dev.rownd.link"
-        Rownd.config.appGroupPrefix = "group.rowndexample"
+        Rownd.config.baseUrl = ExampleAppConfig.hubBaseUrl
+        Rownd.config.subdomainExtension = ExampleAppConfig.subdomainExtension
+        Rownd.config.appGroupPrefix = ExampleAppConfig.appGroupPrefix
+        Rownd.config.enableDebugMode = ExampleAppConfig.enableDebugMode
 
         Task {
-            await Rownd.configure(launchOptions: launchOptions, appKey: "key_pko8eul59xz33hr21jgxvx6s")
+            await Rownd.configure(
+                launchOptions: launchOptions,
+                appKey: ExampleAppConfig.appKey,
+                supertokens: RowndSuperTokensConfig(
+                    appName: "Rownd iOS All Authentication Methods",
+                    apiDomain: ExampleAppConfig.apiDomain,
+                    apiBasePath: ExampleAppConfig.apiBasePath
+                )
+            )
         }
 
         return true

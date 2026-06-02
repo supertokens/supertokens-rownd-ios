@@ -11,9 +11,9 @@ import Foundation
 import Get
 import GoogleSignIn
 import LBBottomSheet
-import LocalAuthentication
 import ReSwift
 import SwiftUI
+import SuperTokensIOS
 import UIKit
 import WebKit
 
@@ -26,14 +26,13 @@ public class Rownd: NSObject {
     private static var appleSignUpCoordinator: AppleSignUpCoordinator = AppleSignUpCoordinator(inst)
     internal static var googleSignInCoordinator: GoogleSignInCoordinator = GoogleSignInCoordinator(
         inst)
-    @MainActor internal var bottomSheetController: BottomSheetViewController =
-        BottomSheetViewController()
-    internal static var passkeyCoordinator: PasskeyCoordinator = PasskeyCoordinator()
+    @MainActor private var _bottomSheetController: BottomSheetViewController?
     internal static var apiClient = RowndApi().client
     internal static let automationsCoordinator = AutomationsCoordinator()
-    internal static var connectionAction = ConnectionAction()
     internal static var customerWebViews = CustomerWebViewManager()
     @MainActor private static var instantUsers: InstantUsers?
+    internal static var isSuperTokensInitialized = false
+    internal static var displayHubHandler: ((HubPageSelector, Encodable?) -> Void)?
 
     // Run processAutomations() every second to support time-based automations
     internal var automationTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
@@ -42,13 +41,30 @@ public class Rownd: NSObject {
 
     @discardableResult
     public static func configure(
-        launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil, appKey: String?
+        launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil,
+        appKey: String?,
+        supertokens: RowndSuperTokensConfig
     ) async -> RowndState {
+        do {
+            let validatedConfig = try validateSuperTokensConfig(supertokens)
+            config.supertokens = validatedConfig
+            config.apiUrl = validatedConfig.apiDomain
+        } catch {
+            fatalError("Invalid Rownd SuperTokens configuration: \(error)")
+        }
+
         if let _appKey = appKey {
             config.appKey = _appKey
         }
 
+        do {
+            try initializeSuperTokensIfNeeded()
+        } catch {
+            fatalError("Failed to initialize SuperTokens: \(error)")
+        }
+
         let state = await inst.inflateStoreCache()
+        await LegacySessionMigrator.migrateIfNeeded(authState: state.auth)
 
         // Skip the rest within app extensions
         if Bundle.main.bundlePath.hasSuffix(".appex") {
@@ -77,14 +93,11 @@ public class Rownd: NSObject {
                 }
             }
 
-            // Check to see if we're handling an existing auth challenge
-            if store.state.auth.challengeId != nil && store.state.auth.userIdentifier != nil {
-                Rownd.requestSignIn(
-                    jsFnOptions: RowndSignInJsOptions(
-                        loginStep: .completing,
-                        challengeId: store.state.auth.challengeId,
-                        userIdentifier: store.state.auth.userIdentifier
-                    ))
+            if store.state.auth.challengeId != nil || store.state.auth.userIdentifier != nil {
+                var authState = store.state.auth
+                authState.challengeId = nil
+                authState.userIdentifier = nil
+                store.dispatch(SetAuthState(payload: authState))
             }
 
         }
@@ -94,7 +107,6 @@ public class Rownd: NSObject {
             if store.state.auth.isAuthenticated && UIApplication.shared.applicationState == .active
             {
                 store.dispatch(UserData.fetch())
-                store.dispatch(PasskeyData.fetchPasskeyRegistration())
             }
 
             instantUsers = InstantUsers(context: Context.currentContext)
@@ -113,21 +125,6 @@ public class Rownd: NSObject {
     @discardableResult
     public static func handleSmartLink(url: URL?) -> Bool {
         return SmartLinks.handleSmartLink(url: url)
-    }
-
-    public class auth {
-        public class passkeys {
-            public static func register() {
-                inst.displayHub(
-                    .connectPasskey,
-                    jsFnOptions: RowndConnectPasskeySignInOptions(
-                        biometricType: LAContext().biometricType.rawValue
-                    ).dictionary())
-            }
-            public static func authenticate() {
-                passkeyCoordinator.authenticate(nil)
-            }
-        }
     }
 
     public static func getInstance() -> Rownd {
@@ -153,8 +150,6 @@ public class Rownd: NSObject {
             requestSignIn(determineSignInOptions(signInOptions, signInType: SignInType.email))
         case .appleId:
             appleSignUpCoordinator.signIn(signInOptions?.intent)
-        case .passkey:
-            passkeyCoordinator.authenticate(signInOptions?.intent)
         case .googleId:
             Task {
                 await googleSignInCoordinator.signIn(
@@ -178,30 +173,9 @@ public class Rownd: NSObject {
         inst.displayHub(.signIn, jsFnOptions: jsFnOptions)
     }
 
-    @MainActor
-    public static func connectAuthenticator(
-        with: RowndConnectSignInHint, completion: (() -> Void)? = nil
-    ) {
-        connectAuthenticator(with: with, completion: completion, args: nil)
-    }
-
-    internal static func connectAuthenticator(
-        with: RowndConnectSignInHint, completion: (() -> Void)? = nil, args: [String: AnyCodable]?
-    ) {
-        switch with {
-        case .passkey:
-            let store = Context.currentContext.store
-            if store.state.auth.accessToken != nil {
-                var passkeySignInOptions = RowndConnectPasskeySignInOptions(
-                    biometricType: LAContext().biometricType.rawValue
-                ).dictionary()
-                args?.forEach { (k, v) in passkeySignInOptions[k] = v }
-                inst.displayHub(.connectPasskey, jsFnOptions: passkeySignInOptions)
-            } else {
-                logger.log("Need to be authenticated to Connect another method")
-                requestSignIn()
-            }
-        }
+    internal static func openHubDeepLink(_ url: URL) {
+        config.pendingHubDeepLinkUrl = url
+        inst.displayHub(.deepLink, jsFnOptions: nil)
     }
 
     public static func signOut(scope: RowndSignoutScope) throws {
@@ -209,15 +183,11 @@ public class Rownd: NSObject {
         case .all:
             Task {
                 do {
-                    let signOutRequest = SignOutRequest(signOutAll: true)
-                    try await Auth.signOutUser(signOutRequest: signOutRequest)
-                    // sign out of current session
-                    signOut()
+                    try await Auth.signOutUser()
+                    await performLocalSignOut()
                 } catch {
                     logger.error(
                         "Failed to sign out user from all sessions: \(String(describing: error))")
-                    throw RowndError(
-                        "Failed to sign out user from all sessions: \(error.localizedDescription)")
                 }
             }
         }
@@ -225,16 +195,25 @@ public class Rownd: NSObject {
     }
 
     public static func signOut() {
-        Task { @MainActor in
+        Task {
+            await performLocalSignOut()
+        }
+    }
+
+    internal static func signOutForMigrationFailure() async {
+        await performLocalSignOut()
+    }
+
+    private static func performLocalSignOut() async {
+        if isSuperTokensInitialized {
+            // Keep the compatibility session from resurrecting Rownd auth on later syncs.
+            await SuperTokensSessionBridge.signOut()
+        }
+
+        await MainActor.run {
             let store = Context.currentContext.store
             store.dispatch(SetAuthState(payload: AuthState()))
-
-            Task {
-                RowndEventEmitter.emit(
-                    RowndEvent(
-                        event: .signOut
-                    ))
-            }
+            RowndEventEmitter.emit(RowndEvent(event: .signOut))
         }
     }
 
@@ -253,34 +232,11 @@ public class Rownd: NSObject {
         return customerWebViews.register(webView)
     }
 
-    public class firebase {
-        public static func getIdToken() async throws -> String {
-            return try await connectionAction.getFirebaseIdToken()
-        }
-    }
-
     @discardableResult public static func getAccessToken(throwIfMissing: Bool = false) async throws
         -> String?
     {
         let store = Context.currentContext.store
         return try await store.state.auth.getAccessToken(throwIfMissing: throwIfMissing)
-    }
-
-    @discardableResult public static func getAccessToken(token: String) async -> String? {
-        guard let tokenResponse = try? await Auth.fetchToken(token) else { return nil }
-
-        Task { @MainActor in
-            let store = Context.currentContext.store
-            store.dispatch(
-                SetAuthState(
-                    payload: AuthState(
-                        accessToken: tokenResponse.accessToken,
-                        refreshToken: tokenResponse.refreshToken)))
-            store.dispatch(UserData.fetch())
-        }
-
-        return tokenResponse.accessToken
-
     }
 
     public func state() -> Store<RowndState> {
@@ -356,6 +312,71 @@ public class Rownd: NSObject {
         return signInOptions
     }
 
+    internal static func validateSuperTokensConfig(_ config: RowndSuperTokensConfig) throws
+        -> RowndSuperTokensConfig
+    {
+        if config.appName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw RowndError("SuperTokens appName must not be empty")
+        }
+
+        if config.apiDomain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw RowndError("SuperTokens apiDomain must not be empty")
+        }
+
+        if config.apiBasePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw RowndError("SuperTokens apiBasePath must not be empty")
+        }
+
+        return config
+    }
+
+    internal static func requireSuperTokensConfig() throws -> RowndSuperTokensConfig {
+        try config.requireSuperTokensConfig()
+    }
+
+    @discardableResult
+    internal static func initializeSuperTokensIfNeeded() throws -> Bool {
+        guard !isSuperTokensInitialized else {
+            return false
+        }
+
+        let supertokens = try requireSuperTokensConfig()
+        let debugEventHandler: ((EventType) -> Void)? = config.enableDebugMode ? { event in
+            logger.debug("SuperTokens event: \(String(describing: event))")
+        } : nil
+        let debugPreAPIHook: ((APIAction, URLRequest) -> URLRequest)? = config.enableDebugMode ? { action, request in
+            logger.debug("SuperTokens request: \(String(describing: action)) \(request.httpMethod ?? "GET") \(request.url?.absoluteString ?? "")")
+            return request
+        } : nil
+        let debugPostAPIHook: ((APIAction, URLRequest, URLResponse?) -> Void)? = config.enableDebugMode ? { action, request, response in
+            let statusCode = (response as? HTTPURLResponse)?.statusCode
+            logger.debug("SuperTokens response: \(String(describing: action)) \(request.url?.absoluteString ?? "") status=\(String(describing: statusCode))")
+        } : nil
+
+        try SuperTokens.initialize(
+            apiDomain: supertokens.apiDomain,
+            apiBasePath: supertokens.apiBasePath,
+            tokenTransferMethod: .header,
+            eventHandler: debugEventHandler,
+            preAPIHook: debugPreAPIHook,
+            postAPIHook: debugPostAPIHook
+        )
+
+        URLProtocol.registerClass(SuperTokensURLProtocol.self)
+        isSuperTokensInitialized = true
+        return true
+    }
+
+    @MainActor internal var bottomSheetController: BottomSheetViewController {
+        if let controller = _bottomSheetController {
+            return controller
+        }
+
+        let controller = BottomSheetViewController()
+        _bottomSheetController = controller
+        return controller
+    }
+
     // MARK: Internal methods
     private func loadAppleSignIn() {
         // If we want to check if the AppleId userIdentifier is still valid
@@ -392,6 +413,11 @@ public class Rownd: NSObject {
     }
 
     private func displayHub(_ page: HubPageSelector, jsFnOptions: Encodable?) {
+        if let displayHubHandler = Rownd.displayHubHandler {
+            displayHubHandler(page, jsFnOptions)
+            return
+        }
+
         Task { @MainActor in
             let hubController = getHubViewController()
             displayViewControllerOnTop(hubController)
@@ -493,12 +519,8 @@ public enum UserFieldAccessType {
 }
 
 public enum RowndSignInHint {
-    case appleId, googleId, passkey, email, phone,
+    case appleId, googleId, email, phone,
         guest, anonymous  // these two do the same thing
-}
-
-public enum RowndConnectSignInHint {
-    case passkey
 }
 
 public struct RowndSignInOptions: Encodable {
@@ -538,7 +560,6 @@ public enum SignInType: String, Codable {
     case phone = "phone"
     case apple = "apple"
     case google = "google"
-    case passkey = "passkey"
     case anonymous = "anonymous"
 }
 
@@ -568,26 +589,6 @@ internal struct RowndSignInJsOptions: Encodable {
         case signInType = "sign_in_type"
         case challengeId = "request_id"
         case userIdentifier = "identifier"
-    }
-}
-
-public struct RowndConnectPasskeySignInOptions: Encodable {
-    public var status: Status?
-    public var biometricType: String? = ""
-    public var type: String = "passkey"
-    public var error: String?
-    internal func dictionary() -> [String: AnyCodable] {
-        return [
-            "status": AnyCodable(status),
-            "biometric_type": AnyCodable(biometricType),
-            "type": AnyCodable(type),
-            "error": AnyCodable(error),
-        ]
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case status, type, error
-        case biometricType = "biometric_type"
     }
 }
 

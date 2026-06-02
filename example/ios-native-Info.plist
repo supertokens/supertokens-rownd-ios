@@ -2,23 +2,28 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>ROWND_EXAMPLE_API_BASE_PATH</key>
+	<string>$(ROWND_EXAMPLE_API_BASE_PATH)</string>
+	<key>ROWND_EXAMPLE_API_DOMAIN</key>
+	<string>$(ROWND_EXAMPLE_API_DOMAIN)</string>
+	<key>ROWND_EXAMPLE_APP_GROUP_PREFIX</key>
+	<string>$(ROWND_EXAMPLE_APP_GROUP_PREFIX)</string>
+	<key>ROWND_EXAMPLE_APP_KEY</key>
+	<string>$(ROWND_EXAMPLE_APP_KEY)</string>
+	<key>ROWND_EXAMPLE_ENABLE_DEBUG_MODE</key>
+	<string>$(ROWND_EXAMPLE_ENABLE_DEBUG_MODE)</string>
+	<key>ROWND_EXAMPLE_HUB_BASE_URL</key>
+	<string>$(ROWND_EXAMPLE_HUB_BASE_URL)</string>
+	<key>ROWND_EXAMPLE_SUBDOMAIN_EXTENSION</key>
+	<string>$(ROWND_EXAMPLE_SUBDOMAIN_EXTENSION)</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
 			<key>CFBundleTypeRole</key>
 			<string>Editor</string>
-			<key>CFBundleURLName</key>
-			<string>io.rownd.landmarks</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>rowndlandmarks</string>
-			</array>
-		</dict>
-		<dict>
-			<key>CFBundleTypeRole</key>
-			<string>Editor</string>
-			<key>CFBundleURLSchemes</key>
-			<array>
+				<string>com.googleusercontent.apps.302008722349-2nfsfen021niadaf10kvb7p1sb8t2grm</string>
 				<string>com.googleusercontent.apps.518170712115-s1fbgoo423ggmartt165cehisoo3vipc</string>
 			</array>
 		</dict>

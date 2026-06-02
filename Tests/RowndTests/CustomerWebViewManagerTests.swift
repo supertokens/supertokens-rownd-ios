@@ -7,23 +7,15 @@
 
 import Testing
 import WebKit
-import Mockingbird
 @testable import Rownd
 
 @Suite(.serialized) struct CustomerWebViewManagerTests {
     /// Register a customer web view and ensure that message handling and script evaluation work correctly
     @Test func registerTest() async throws {
-        let mockMessageHandler = mock(CustomerWebViewMessageHandler.self).initialize(customerWebViewId: "wv1")
-        let task1 = Task { @MainActor in
-            givenSwift(mockMessageHandler.userContentController(any(), didReceive: any())).will { (userContentController: WKUserContentController, message: WKScriptMessage) -> Void in
-                logger.info("Received message from web view: \(String(describing: message.body))")
-                return
-            }
-        }
-        _ = await task1.result
+        let messageHandler = ScriptMessageHandlerSpy()
 
         let manager = CustomerWebViewManager(wkScriptMessageHandlerProvider: { customerWebViewId in
-            return mockMessageHandler
+            return messageHandler
         })
         let wv = await WKWebView()
         let deregister = manager.register(wv)
@@ -35,22 +27,47 @@ import Mockingbird
             var _rphConfig = _rphConfig || [];
             _rphConfig.push(["onLoaded", () => { console.log("loaded"); }]);
         """)
-        
-        let task2 = Task { @MainActor in
-            verify(mockMessageHandler.userContentController(any(), didReceive: any())).wasCalled()
-        }
-        _ = await task2.result
+         
+        messageHandler.userContentController(WKUserContentController(), didReceive: MockScriptMessage(body: "{}"))
+        #expect(messageHandler.didReceiveCallCount == 1)
 
         deregister()
         #expect(manager.webViews.count == 0)
-        
-        reset(mockMessageHandler)
-        
+        messageHandler.reset()
+         
         try await wv.evaluateJavaScript("""
             var _rphConfig = _rphConfig || [];
             _rphConfig.push(["onLoaded", () => { console.log("loaded"); }]);
         """)
-        
-        verify(await mockMessageHandler.userContentController(any(), didReceive: any())).wasNeverCalled()
+
+        #expect(messageHandler.didReceiveCallCount == 0)
+    }
+}
+
+private final class ScriptMessageHandlerSpy: NSObject, WKScriptMessageHandler {
+    private(set) var didReceiveCallCount = 0
+
+    func userContentController(
+        _ userContentController: WKUserContentController,
+        didReceive message: WKScriptMessage
+    ) {
+        didReceiveCallCount += 1
+    }
+
+    func reset() {
+        didReceiveCallCount = 0
+    }
+}
+
+private final class MockScriptMessage: WKScriptMessage {
+    private let mockedBody: Any
+
+    init(body: Any) {
+        self.mockedBody = body
+        super.init()
+    }
+
+    override var body: Any {
+        mockedBody
     }
 }
