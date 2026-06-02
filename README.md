@@ -13,25 +13,104 @@ In Xcode, select your project file, select the main target, then scroll down to 
 Enter this as the package repository url:
 
 ```
-https://github.com/rownd/ios.git
+https://github.com/supertokens/supertokens-rownd-ios.git
 ```
+
+Select the `Rownd` package product and add it to your app target.
 
 ## Usage
 
-### Initializing the Rownd SDK
+### Integrating the Rownd SDK
 
-In your `AppDelegate` file, call the `Rownd.configure()` method during application launch:
+The SuperTokens-backed Rownd SDK requires both Rownd and SuperTokens configuration during application launch. In your `AppDelegate`, set the Rownd runtime config first, then call `Rownd.configure()`:
 
 ```swift
+import Rownd
+import UIKit
+
 func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey : Any]? = nil) -> Bool {
+    let apiDomain = "https://api.example.com"
+    let apiBasePath = "/auth"
+
+    Rownd.config.baseUrl = "https://your-subdomain.rownd-hub.supertokens.com"
+    Rownd.config.apiUrl = apiDomain
+    Rownd.config.subdomainExtension = ".rownd-hub.supertokens.com"
+    Rownd.config.enableDebugMode = true // Optional during development
 
     Task {
-        await Rownd.configure(launchOptions: launchOptions, appKey: "YOUR_API_KEY")
+        await Rownd.configure(
+            launchOptions: launchOptions,
+            appKey: "YOUR_ROWND_APP_KEY",
+            supertokens: RowndSuperTokensConfig(
+                appName: "Your App",
+                apiDomain: apiDomain,
+                apiBasePath: apiBasePath
+            )
+        )
     }
 
     return true
 }
 ```
+
+Configuration notes:
+
+- `Rownd.config.baseUrl` should be the Rownd hub URL for your app. It must match the host used by Rownd sign-in universal links.
+- `Rownd.config.apiUrl` and `RowndSuperTokensConfig.apiDomain` should point at the backend that hosts your SuperTokens plugin routes.
+- `RowndSuperTokensConfig.apiBasePath` must match your backend SuperTokens API base path, usually `/auth`.
+- `Rownd.config.subdomainExtension` defaults to `.rownd-hub.supertokens.com`; set it explicitly if your Rownd app uses that domain pattern.
+
+#### Handling deep links and universal links
+
+Add a custom URL scheme to your app's `Info.plist` so the SDK can handle native fallback links:
+
+```xml
+<key>CFBundleURLTypes</key>
+<array>
+    <dict>
+        <key>CFBundleTypeRole</key>
+        <string>Editor</string>
+        <key>CFBundleURLSchemes</key>
+        <array>
+            <string>rowndsupertokens</string>
+        </array>
+    </dict>
+</array>
+```
+
+Add an Associated Domains entitlement for the Rownd hub host used by your app:
+
+```xml
+<key>com.apple.developer.associated-domains</key>
+<array>
+    <string>applinks:your-subdomain.rownd-hub.supertokens.com</string>
+</array>
+```
+
+The universal-link domain must also serve a valid Apple App Site Association file that includes your app's Team ID and bundle ID. Without that server-side AASA entry, iOS will open the link in the browser instead of delivering it to your app.
+
+Finally, forward custom URL scheme links and universal links to Rownd:
+
+```swift
+func application(_ app: UIApplication, open url: URL, options: [UIApplication.OpenURLOptionsKey: Any] = [:]) -> Bool {
+    Rownd.handleSmartLink(url: url)
+}
+
+func application(
+    _ application: UIApplication,
+    continue userActivity: NSUserActivity,
+    restorationHandler: @escaping ([UIUserActivityRestoring]?) -> Void
+) -> Bool {
+    guard userActivity.activityType == NSUserActivityTypeBrowsingWeb,
+          let url = userActivity.webpageURL else {
+        return false
+    }
+
+    return Rownd.handleSmartLink(url: url)
+}
+```
+
+If you configure values through Xcode scheme environment variables, remember those variables are only present when launching from Xcode. Universal links that launch an already installed app will use values from code defaults, build settings, or `Info.plist`.
 
 After initialization, your app will typically call `Rownd.requestSignIn()` at some point, if the user is not already authenticated. This will display the Rownd interface for authenticating the user. Once they complete the sign-in process, an access token and the user's profile information will be available to your app.
 
@@ -170,7 +249,15 @@ class AppDelegate: NSObject, UIApplicationDelegate {
         Rownd.config.customizations = AppCustomizations()   // Apply the customizations
 
         Task {
-            await Rownd.configure(launchOptions: launchOptions, appKey: "YOUR_API_KEY")
+            await Rownd.configure(
+                launchOptions: launchOptions,
+                appKey: "YOUR_ROWND_APP_KEY",
+                supertokens: RowndSuperTokensConfig(
+                    appName: "Your App",
+                    apiDomain: "https://api.example.com",
+                    apiBasePath: "/auth"
+                )
+            )
         }
 
         return true
@@ -191,7 +278,14 @@ Follow these steps to configure your app and extension to work with Rownd:
    ```swift
     Task {
         Rownd.config.appGroupPrefix = "group.rowndexample"
-        let rowndState = await Rownd.configure(appKey: "key_pko8eul59xz33hr21jgxvx6s")
+        let rowndState = await Rownd.configure(
+            appKey: "YOUR_ROWND_APP_KEY",
+            supertokens: RowndSuperTokensConfig(
+                appName: "Your App",
+                apiDomain: "https://api.example.com",
+                apiBasePath: "/auth"
+            )
+        )
 
         var authStatus: String = "You are not authenticated. ☹️"
         if rowndState.auth.isAuthenticated == true {
