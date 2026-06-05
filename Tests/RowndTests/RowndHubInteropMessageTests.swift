@@ -1,4 +1,5 @@
 import Testing
+import Foundation
 
 @testable import Rownd
 
@@ -47,10 +48,86 @@ import Testing
         #expect(!HubWebViewController.canHandleAuthentication(on: nil))
     }
 
+    @Test func authenticationCompletionEmitsSignInCompletedEvent() async throws {
+        try await withGlobalTestLock {
+            let originalContext = Context.currentContext
+            let isolatedStore = createStore()
+            _ = Context(isolatedStore)
+            defer {
+                Context.currentContext = originalContext
+            }
+
+            await MainActor.run {
+                RowndEventEmitter.resetForTests()
+                Context.currentContext.eventListeners.removeAll()
+                Context.currentContext.store.dispatch(SetClockSync(clockSyncState: .synced))
+                Context.currentContext.store.dispatch(SetAuthState(payload: AuthState(
+                    accessToken: generateJwt(expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970)
+                )))
+            }
+
+            let eventHandler = RecordingRowndEventHandler()
+            Rownd.addEventHandler(eventHandler)
+
+            await HubWebViewController.completeAuthentication(
+                store: Context.currentContext.store,
+                initialJsFunctionArgsAsJson: "{}",
+                currentJsFunctionArgsAsJson: { "{}" },
+                hideHub: {}
+            )
+
+            #expect(eventHandler.events.map(\.event) == [.signInCompleted])
+        }
+    }
+
+    @Test func signInCompletedEventOnlyFiresOnceForSameAccessToken() async throws {
+        try await withGlobalTestLock {
+            let originalContext = Context.currentContext
+            let isolatedStore = createStore()
+            _ = Context(isolatedStore)
+            defer {
+                Context.currentContext = originalContext
+            }
+
+            await MainActor.run {
+                RowndEventEmitter.resetForTests()
+                Context.currentContext.eventListeners.removeAll()
+                Context.currentContext.store.dispatch(SetClockSync(clockSyncState: .synced))
+                Context.currentContext.store.dispatch(SetAuthState(payload: AuthState(
+                    accessToken: generateJwt(expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970)
+                )))
+            }
+
+            let eventHandler = RecordingRowndEventHandler()
+            Rownd.addEventHandler(eventHandler)
+
+            await HubWebViewController.completeAuthentication(
+                store: Context.currentContext.store,
+                initialJsFunctionArgsAsJson: "{}",
+                currentJsFunctionArgsAsJson: { "{}" },
+                hideHub: {}
+            )
+
+            await MainActor.run {
+                RowndEventEmitter.emit(RowndEvent(event: .signInCompleted))
+            }
+
+            #expect(eventHandler.events.map(\.event) == [.signInCompleted])
+        }
+    }
+
     private func assertAuthenticationMessageDecodeFails(_ json: String) {
         do {
             _ = try RowndHubInteropMessage.fromJson(message: json)
             Issue.record("Expected authentication payload decode to fail")
         } catch {}
+    }
+}
+
+private final class RecordingRowndEventHandler: RowndEventHandlerDelegate {
+    private(set) var events: [RowndEvent] = []
+
+    func handleRowndEvent(_ event: RowndEvent) {
+        events.append(event)
     }
 }
