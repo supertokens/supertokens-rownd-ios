@@ -113,7 +113,7 @@ public class Rownd: NSObject {
             instantUsers?.tmpForceInstantUserConversionIfRequested()
         }
 
-        return state
+        return Context.currentContext.store.state
     }
 
     @available(*, deprecated, renamed: "handleSmartLink")

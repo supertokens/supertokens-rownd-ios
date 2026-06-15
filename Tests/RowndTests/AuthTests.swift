@@ -188,6 +188,36 @@ import Testing
         #expect(accessToken55secs.isAccessTokenValid == false)
     }
 
+    @Test func superTokensBackedAuthStateRejectsValidLegacyRowndAccessToken() async throws {
+        try await withGlobalTestLock {
+            let originalConfig = Rownd.config
+            defer { Rownd.config = originalConfig }
+
+            Rownd.config.supertokens = RowndSuperTokensConfig(
+                appName: "Example App",
+                apiDomain: "https://api.example.com",
+                apiBasePath: "/auth"
+            )
+
+            let legacyAccessToken = AuthState(
+                accessToken: generateJwt(
+                    expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+                    appUserId: "app-user-id"
+                ),
+                refreshToken: "legacy-refresh-token"
+            )
+            let superTokensAccessToken = AuthState(
+                accessToken: generateJwt(
+                    expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+                    sessionHandle: "session-handle"
+                )
+            )
+
+            #expect(!legacyAccessToken.isAccessTokenValid)
+            #expect(superTokensAccessToken.isAccessTokenValid)
+        }
+    }
+
     @Test func alwaysThrowWhenAccessTokenCannotBeRetrieved() async throws {
         let store = Context.currentContext.store
 
@@ -258,9 +288,20 @@ struct Payload: Encodable {
     var name = "John Doe"
     var iat = 1516239022
     var exp = Int(Date.init().timeIntervalSince1970)
+    var sessionHandle: String?
+    var appUserId: String?
+
+    enum CodingKeys: String, CodingKey {
+        case sub, name, iat, exp, sessionHandle
+        case appUserId = "app_user_id"
+    }
 }
 
-internal func generateJwt(expires: TimeInterval) -> String {
+internal func generateJwt(
+    expires: TimeInterval,
+    sessionHandle: String? = nil,
+    appUserId: String? = nil
+) -> String {
     let secret = "your-256-bit-secret"
     let privateKey = SymmetricKey(data: Data(secret.utf8))
     
@@ -269,6 +310,8 @@ internal func generateJwt(expires: TimeInterval) -> String {
     
     var payload = Payload()
     payload.exp = Int(expires)
+    payload.sessionHandle = sessionHandle
+    payload.appUserId = appUserId
     let payloadJSONData = try! JSONEncoder().encode(payload)
     let payloadBase64String = payloadJSONData.urlSafeBase64EncodedString()
     
