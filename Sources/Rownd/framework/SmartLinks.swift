@@ -67,9 +67,7 @@ class SmartLinks {
             return true
         }
 
-        let matcher = NSPredicate(format: "SELF MATCHES %@", Rownd.config.signInLinkPattern)
-
-        if let host = url.host, matcher.evaluate(with: host) {
+        if let host = url.host, matchesSignInLinkPattern(host) {
             logger.trace("handling url: \(String(describing: url.absoluteString))")
 
             if url.path.starts(with: "/verified") {
@@ -103,7 +101,7 @@ class SmartLinks {
         if url.scheme == Rownd.config.deepLinkScheme {
             let path = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             hubPath = path.isEmpty ? "/\(host)" : "/\(host)/\(path)"
-        } else if url.scheme == "https", host == components.host {
+        } else if url.scheme == "https", host == components.host || matchesSignInLinkPattern(host) {
             hubPath = url.path
         } else {
             return nil
@@ -117,5 +115,10 @@ class SmartLinks {
         components.query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.query
         components.fragment = url.fragment
         return components.url
+    }
+
+    private static func matchesSignInLinkPattern(_ host: String) -> Bool {
+        let matcher = NSPredicate(format: "SELF MATCHES %@", Rownd.config.signInLinkPattern)
+        return matcher.evaluate(with: host)
     }
 }

@@ -33,6 +33,8 @@ public protocol RowndEventHandlerDelegate: AnyObject {
 @MainActor
 class RowndEventEmitter {
     static private var cancellables = Set<AnyCancellable>()
+    static private var signInCompletedAccessToken: String?
+
     static func emit(_ event: RowndEvent) {
         if event.event == .signInCompleted {
             // Check if the access token is already valid — if so, fire immediately
@@ -40,7 +42,7 @@ class RowndEventEmitter {
             // already settled before the sink is attached.
             let authState = Context.currentContext.store.state.auth
             if authState.isAccessTokenValid {
-                Self.notifyListeners(event)
+                Self.notifySignInCompletedListeners(event, authState: authState)
                 return
             }
 
@@ -49,17 +51,36 @@ class RowndEventEmitter {
             subscription.$current.sink { isAccessTokenValid in
                 if isAccessTokenValid {
                     subscription.unsubscribe()
-                    Self.notifyListeners(event)
+                    Self.notifySignInCompletedListeners(
+                        event,
+                        authState: Context.currentContext.store.state.auth
+                    )
                 }
             }.store(in: &Self.cancellables)
         } else {
+            if event.event == .signOut {
+                signInCompletedAccessToken = nil
+            }
             Self.notifyListeners(event)
         }
+    }
+
+    private static func notifySignInCompletedListeners(_ event: RowndEvent, authState: AuthState) {
+        guard let accessToken = authState.accessToken else { return }
+        guard signInCompletedAccessToken != accessToken else { return }
+
+        signInCompletedAccessToken = accessToken
+        Self.notifyListeners(event)
     }
 
     private static func notifyListeners(_ event: RowndEvent) {
         Context.currentContext.eventListeners.forEach { listener in
             listener.handleRowndEvent(event)
         }
+    }
+
+    static func resetForTests() {
+        cancellables.removeAll()
+        signInCompletedAccessToken = nil
     }
 }

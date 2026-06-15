@@ -9,6 +9,7 @@ import Foundation
 import UIKit
 import WebKit
 import SwiftUI
+import ReSwift
 import ReSwiftThunk
 
 public enum HubPageSelector {
@@ -55,6 +56,28 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
 
     static func canHandleAuthentication(on targetPage: HubPageSelector?) -> Bool {
         targetPage == .signIn || targetPage == .deepLink
+    }
+
+    static func completeAuthentication(
+        store: Store<RowndState>,
+        initialJsFunctionArgsAsJson: String,
+        currentJsFunctionArgsAsJson: @escaping @MainActor () -> String?,
+        hideHub: @escaping @MainActor () -> Void
+    ) async {
+        await MainActor.run {
+            // Ensure user.isLoading = false so that the data is fetched properly
+            store.dispatch(SetUserLoading(isLoading: false))
+            store.dispatch(UserData.fetch())
+            store.dispatch(ResetSignInState())
+            RowndEventEmitter.emit(RowndEvent(event: .signInCompleted))
+        }
+
+        await MainActor.run {
+            // Close the hub as long as no other rownd api was called
+            if initialJsFunctionArgsAsJson == currentJsFunctionArgsAsJson() {
+                hideHub()
+            }
+        }
     }
 
     let webConfiguration = WKWebViewConfiguration()
@@ -305,19 +328,12 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
                     )
                     await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens()
 
-                    await MainActor.run {
-                        // Ensure user.isLoading = false so that the data is fetched properly
-                        store.dispatch(SetUserLoading(isLoading: false))
-                        store.dispatch(UserData.fetch())
-                        store.dispatch(ResetSignInState())
-                    }
-
-                    await MainActor.run { [weak self] in
-                        // Close the hub as long as no other rownd api was called
-                        if initialJsFunctionArgsAsJson == self?.jsFunctionArgsAsJson {
-                            self?.hubViewController?.hide()
-                        }
-                    }
+                    await Self.completeAuthentication(
+                        store: store,
+                        initialJsFunctionArgsAsJson: initialJsFunctionArgsAsJson,
+                        currentJsFunctionArgsAsJson: { [weak self] in self?.jsFunctionArgsAsJson },
+                        hideHub: { [weak self] in self?.hubViewController?.hide() }
+                    )
                 }
             case .closeHubViewController:
                 DispatchQueue.main.async {

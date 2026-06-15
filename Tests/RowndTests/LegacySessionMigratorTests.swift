@@ -184,6 +184,44 @@ import Testing
         }
     }
 
+    @Test func migratesLegacyTokenEvenWhenCompatibilityAuthStateRejectsIt() async throws {
+        try await withIsolatedStore {
+            let originalConfig = Rownd.config
+            defer { Rownd.config = originalConfig }
+
+            Rownd.config.supertokens = RowndSuperTokensConfig(
+                appName: "Example App",
+                apiDomain: "https://api.example.com",
+                apiBasePath: "/auth"
+            )
+
+            let legacyAuthState = AuthState(accessToken: validLegacyToken(), refreshToken: "legacy-refresh-token")
+            let migratedAccessToken = validSuperTokensToken()
+            var calls = MigrationCalls()
+            calls.migrateResults = [.migrated(SuperTokensSessionTokens(
+                accessToken: migratedAccessToken,
+                refreshToken: "st-refresh-token",
+                frontToken: nil,
+                antiCSRF: nil
+            ))]
+
+            var bootstrappedTokens: SuperTokensSessionTokens?
+            var dependencies = makeDependencies(calls: calls)
+            dependencies.bootstrapSession = { tokens in bootstrappedTokens = tokens }
+
+            #expect(!legacyAuthState.isAccessTokenValid)
+
+            await LegacySessionMigrator.migrateIfNeeded(
+                authState: legacyAuthState,
+                dependencies: dependencies
+            )
+
+            let legacyAccessToken = try #require(legacyAuthState.accessToken)
+            #expect(calls.migrateAccessTokens == [legacyAccessToken])
+            #expect(bootstrappedTokens?.accessToken == migratedAccessToken)
+        }
+    }
+
     private func makeDependencies(calls: MigrationCalls) -> LegacySessionMigrationDependencies {
         LegacySessionMigrationDependencies(
             doesSuperTokensSessionExist: { false },
@@ -233,11 +271,21 @@ import Testing
     }
 
     private func validLegacyToken() -> String {
-        generateJwt(expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970)
+        generateJwt(
+            expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+            appUserId: "app-user-id"
+        )
     }
 
     private func expiredLegacyToken() -> String {
         generateJwt(expires: Date(timeIntervalSinceNow: -3600).timeIntervalSince1970)
+    }
+
+    private func validSuperTokensToken() -> String {
+        generateJwt(
+            expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+            sessionHandle: "session-handle"
+        )
     }
 }
 

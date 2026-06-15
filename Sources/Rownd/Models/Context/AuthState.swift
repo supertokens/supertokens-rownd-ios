@@ -56,10 +56,26 @@ extension AuthState: Codable {
                 return false
             }
 
+            if (try? Rownd.config.requireSuperTokensConfig()) != nil,
+               !Self.isSuperTokensAccessToken(jwt),
+               Self.isLegacyRowndAccessToken(jwt) {
+                return false
+            }
+
             return !jwt.ntpExpired && (currentDateWithMargin < expiresAt)
         } catch {
             return false
         }
+    }
+
+    private static func isSuperTokensAccessToken(_ jwt: JWT) -> Bool {
+        jwt.claim(name: "sessionHandle").string != nil
+            || jwt.claim(name: "tId").string != nil
+    }
+
+    private static func isLegacyRowndAccessToken(_ jwt: JWT) -> Bool {
+        jwt.claim(name: "https://auth.rownd.io/app_user_id").string != nil
+            || jwt.claim(name: "app_user_id").string != nil
     }
 
     enum CodingKeys: String, CodingKey {

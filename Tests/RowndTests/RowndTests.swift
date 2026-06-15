@@ -87,8 +87,6 @@ import Get
             let originalConfig = Rownd.config
             defer { Rownd.config = originalConfig }
 
-            Rownd.config.signInLinkPattern = ".*\\.rownd\\.link$"
-
             #expect(SmartLinks.handleSmartLink(url: URL(string: "https://example.rownd-hub.supertokens.com/sign-in-token")) == false)
             #expect(SmartLinks.handleSmartLink(url: URL(string: "https://example.rownd-hub.supertokens.com/verified/email")) == false)
         }
@@ -148,6 +146,38 @@ import Get
                 return
             }
             #expect(Rownd.config.pendingHubDeepLinkUrl?.absoluteString == "https://staging.supertokens-rownd-hub.pages.dev/account/login?preAuthSessionId=pid#abc")
+        }
+    }
+
+    @Test func deepLinkUniversalLinksCanUseSeparateHubIngressDomain() async throws {
+        try await withGlobalTestLock {
+            let originalConfig = Rownd.config
+            let originalDisplayHubHandler = Rownd.displayHubHandler
+            defer {
+                Rownd.config = originalConfig
+                Rownd.displayHubHandler = originalDisplayHubHandler
+            }
+
+            var capturedPage: HubPageSelector?
+            Rownd.displayHubHandler = { page, _ in
+                capturedPage = page
+            }
+            Rownd.config.baseUrl = "https://rownd-hub.supertokens.com"
+            Rownd.config.signInLinkPattern = ".*\\.rownd-hub\\.supertokens\\.com$"
+
+            let handled = SmartLinks.handleSmartLink(
+                url: URL(string: "https://sandbox.rownd-hub.supertokens.com/account/login?preAuthSessionId=pid#abc")
+            )
+
+            #expect(handled)
+            guard case .deepLink = capturedPage else {
+                Issue.record("Expected deep-link universal link to open Hub deep-link page")
+                return
+            }
+            #expect(
+                Rownd.config.pendingHubDeepLinkUrl?.absoluteString ==
+                    "https://rownd-hub.supertokens.com/account/login?preAuthSessionId=pid#abc"
+            )
         }
     }
 
