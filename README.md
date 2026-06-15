@@ -50,11 +50,19 @@ func application(_ application: UIApplication, didFinishLaunchingWithOptions lau
 
 Configuration notes:
 
-- `Rownd.config.baseUrl` should be the Rownd hub URL for your app. It must match the host used by Rownd sign-in universal links.
+- `Rownd.config.baseUrl` should be the Rownd Hub base URL used by the SDK, usually `https://rownd-hub.supertokens.com`.
+- `Rownd.config.deepLinkScheme` should be the custom URL scheme your app registers and the SDK accepts, for example `rowndsupertokens` or your app-specific scheme.
 - `RowndSuperTokensConfig.apiDomain` should point at the backend that hosts your SuperTokens plugin routes. `Rownd.configure()` also assigns this value to `Rownd.config.apiUrl`.
 - `RowndSuperTokensConfig.apiBasePath` must match your backend SuperTokens API base path, usually `/auth`.
 
 #### Handling deep links and universal links
+
+There are two deep-link values to configure:
+
+- Deep link scheme: the custom URL scheme your app registers and the SDK accepts, for example `rowndsupertokens`.
+- Deep link: the verified Universal Link on your custom Hub subdomain, for example `https://your-hub-subdomain.rownd-hub.supertokens.com`.
+
+The Hub can derive the custom scheme fallback from your custom Hub subdomain, so make sure your app's custom URL scheme matches the scheme the Hub will generate.
 
 Add an Associated Domains entitlement for the Rownd hub host used by your app:
 
@@ -62,6 +70,20 @@ Add an Associated Domains entitlement for the Rownd hub host used by your app:
 <key>com.apple.developer.associated-domains</key>
 <array>
     <string>applinks:your-subdomain.rownd-hub.supertokens.com</string>
+</array>
+```
+
+Register the custom URL scheme in your app's `Info.plist`:
+
+```xml
+<key>CFBundleURLTypes</key>
+<array>
+    <dict>
+        <key>CFBundleURLSchemes</key>
+        <array>
+            <string>rowndsupertokens</string>
+        </array>
+    </dict>
 </array>
 ```
 
@@ -401,7 +423,7 @@ Opens the Rownd sign-in dialog for authentication.
 
 #### Rownd.requestSignIn(RowndSignInOptions(postSignInRedirect: "https://my-domain.com", intent: .signIn)) -> Void
 
-Opens the Rownd sign-in dialog for authentication, as above. When the user completes the authentication challenge via email or SMS, they'll be redirected to the URL set for `postSignInRedirect`. If this is a [Universal Link](https://developer.apple.com/ios/universal-links/), it will redirect the user back to your app.
+Opens the Rownd sign-in dialog for authentication, as above. The SDK and Hub normally handle redirects using your configured Universal Link and custom scheme fallback. Pass `postSignInRedirect` only when you need to override the default redirect target.
 
 #### Rownd.requestSignIn(with: RowndSignInHint) -> Void
 
@@ -421,7 +443,7 @@ Passkeys, Firebase connection actions, legacy Rownd smart-link auth, and public 
 
 Some of the `requestSignIn()` methods accept an optional `RowndSignInOptions` parameter. This class contains the following properties:
 
-- `postSignInRedirect: String?` (not recommended) - When the user completes the authentication challenge via email or SMS, they'll be redirected to the URL set for `postSignInRedirect`. If this is a [Universal Link](https://developer.apple.com/ios/universal-links/), it will redirect the user back to your app. If you don't set this value, the user will be redirected to your app's subdomain as configured in the Rownd dashboard.
+- `postSignInRedirect: String?` (not recommended) - The SDK and Hub normally handle redirects using your configured Universal Link and custom scheme fallback. Use this only when you need to override the default redirect target. If you provide a custom value, it must still resolve back to your app through a Universal Link or custom URL scheme your app handles.
 - `intent: RowndSignInIntent?` - This option applies only when you have opted to split the sign-up/sign-in flow via the Rownd dashboard. Valid values are `.signIn` or `.signUp`. If you don't set this value, the user will be presented with the unified sign-in/sign-up flow.
 
 ### Rownd.signOut() -> Void
