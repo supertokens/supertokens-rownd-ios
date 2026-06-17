@@ -148,6 +148,26 @@ import AnyCodable
         #expect(protected["userId"] as? String == "ios-test-user")
     }
 
+    @Test func migrationWithoutRefreshHeaderDoesNotCreatePartialSession() async throws {
+        try await TestInfrastructure.prepare()
+        try await setMigrationMode("migrateWithoutRefreshHeader")
+
+        try await migrateLegacySession(
+            accessToken: generateJwt(expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970),
+            refreshToken: "legacy-refresh-token"
+        )
+
+        #expect(await !SuperTokensSessionBridge.doesSessionExist())
+        #expect(await SuperTokensSessionBridge.getAccessToken() == nil)
+        #expect(SuperTokensSessionBridge.getRefreshToken() == nil)
+        #expect(SuperTokensSessionBridge.getFrontToken() == nil)
+        #expect(await currentAuthRefreshToken() == "legacy-refresh-token")
+
+        let counters = try await getJSON(path: "counters")
+        #expect(counters["migrate"] as? Int == 1)
+        #expect(counters["legacyRefresh"] as? Int == 0)
+    }
+
     @Test func expiredLegacySessionRefreshesThenMigratesThroughHarness() async throws {
         try await TestInfrastructure.prepare()
 

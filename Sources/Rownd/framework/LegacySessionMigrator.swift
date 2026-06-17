@@ -114,14 +114,23 @@ struct LegacySessionMigrationClient {
         switch httpResponse.statusCode {
         case 200..<300:
             guard let accessToken = httpResponse.headerValue(named: "st-access-token"), !accessToken.isEmpty else {
+                SuperTokensSessionBridge.clearLocalSessionArtifacts()
                 throw RowndError("Rownd migration response did not include st-access-token")
+            }
+            guard let refreshToken = httpResponse.headerValue(named: "st-refresh-token"), !refreshToken.isEmpty else {
+                SuperTokensSessionBridge.clearLocalSessionArtifacts()
+                throw RowndError("Rownd migration response did not include st-refresh-token")
+            }
+            guard let frontToken = httpResponse.headerValue(named: "front-token"), !frontToken.isEmpty else {
+                SuperTokensSessionBridge.clearLocalSessionArtifacts()
+                throw RowndError("Rownd migration response did not include front-token")
             }
 
             return .migrated(
                 SuperTokensSessionTokens(
                     accessToken: accessToken,
-                    refreshToken: httpResponse.headerValue(named: "st-refresh-token"),
-                    frontToken: httpResponse.headerValue(named: "front-token"),
+                    refreshToken: refreshToken,
+                    frontToken: frontToken,
                     antiCSRF: httpResponse.headerValue(named: "anti-csrf")
                 )
             )
@@ -216,6 +225,10 @@ enum LegacySessionMigrator {
 
             switch result {
             case .migrated(let tokens):
+                guard hasCompleteNativeSessionTokens(tokens) else {
+                    logger.warning("Skipping SuperTokens session bootstrap because migration returned incomplete session headers")
+                    return
+                }
                 await dependencies.bootstrapSession(tokens)
                 await dependencies.syncRowndAuthStateFromSuperTokens()
                 await clearLegacyRefreshToken()
@@ -237,6 +250,9 @@ enum LegacySessionMigrator {
         do {
             return try await client.migrate(legacyAccessToken: legacyAccessToken)
         } catch {
+            guard error is URLError else {
+                throw error
+            }
             return try await client.migrate(legacyAccessToken: legacyAccessToken)
         }
     }
@@ -247,6 +263,12 @@ enum LegacySessionMigrator {
             authState.refreshToken = nil
             Context.currentContext.store.dispatch(SetAuthState(payload: authState))
         }
+    }
+
+    private static func hasCompleteNativeSessionTokens(_ tokens: SuperTokensSessionTokens) -> Bool {
+        !tokens.accessToken.isEmpty
+            && tokens.refreshToken?.isEmpty == false
+            && tokens.frontToken?.isEmpty == false
     }
 
     private static func isAccessTokenValid(_ accessToken: String) -> Bool {

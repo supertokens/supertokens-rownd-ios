@@ -74,7 +74,7 @@ import Testing
             calls.migrateResults = [.migrated(SuperTokensSessionTokens(
                 accessToken: migratedAccessToken,
                 refreshToken: "st-refresh-token",
-                frontToken: nil,
+                frontToken: "front-token",
                 antiCSRF: nil
             ))]
 
@@ -165,8 +165,8 @@ import Testing
             calls.migrateErrors = [URLError(.notConnectedToInternet)]
             calls.migrateResults = [.migrated(SuperTokensSessionTokens(
                 accessToken: migratedAccessToken,
-                refreshToken: nil,
-                frontToken: nil,
+                refreshToken: "st-refresh-token",
+                frontToken: "front-token",
                 antiCSRF: nil
             ))]
 
@@ -201,7 +201,7 @@ import Testing
             calls.migrateResults = [.migrated(SuperTokensSessionTokens(
                 accessToken: migratedAccessToken,
                 refreshToken: "st-refresh-token",
-                frontToken: nil,
+                frontToken: "front-token",
                 antiCSRF: nil
             ))]
 

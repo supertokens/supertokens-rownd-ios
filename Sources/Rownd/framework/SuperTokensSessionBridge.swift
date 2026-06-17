@@ -52,6 +52,10 @@ internal enum SuperTokensSessionBridge {
         }.value
     }
 
+    static func clearLocalSessionArtifacts() {
+        clearLocalSessionArtifactsInCurrentThread()
+    }
+
     // WKWebView requests do not traverse SuperTokensURLProtocol, so Hub-complete
     // auth flows need a direct local session bootstrap.
     static func bootstrapSession(
@@ -62,13 +66,14 @@ internal enum SuperTokensSessionBridge {
     ) {
         precondition(!Thread.isMainThread, "bootstrapSession must be called off the main thread")
         guard !SuperTokens.doesSessionExist() else { return }
+        guard let refreshToken, !refreshToken.isEmpty else {
+            logger.warning("Skipping SuperTokens session bootstrap because refresh token is missing")
+            return
+        }
 
         let userDefaults = UserDefaults.standard
         userDefaults.set(accessToken, forKey: accessTokenStorageKey)
-
-        if let refreshToken, !refreshToken.isEmpty {
-            userDefaults.set(refreshToken, forKey: refreshTokenStorageKey)
-        }
+        userDefaults.set(refreshToken, forKey: refreshTokenStorageKey)
 
         if let antiCSRF, !antiCSRF.isEmpty {
             userDefaults.set(antiCSRF, forKey: antiCSRFStorageKey)
@@ -110,7 +115,7 @@ internal enum SuperTokensSessionBridge {
         return data.base64EncodedString()
     }
 
-    private static func clearLocalSessionArtifacts() {
+    private static func clearLocalSessionArtifactsInCurrentThread() {
         let userDefaults = UserDefaults.standard
         userDefaults.removeObject(forKey: accessTokenStorageKey)
         userDefaults.removeObject(forKey: refreshTokenStorageKey)

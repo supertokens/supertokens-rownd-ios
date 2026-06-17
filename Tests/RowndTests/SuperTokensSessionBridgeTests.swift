@@ -22,13 +22,14 @@ import Testing
                 )
             }.value
 
-            #expect(await SuperTokensSessionBridge.doesSessionExist())
             #expect(await SuperTokensSessionBridge.getAccessToken() == accessToken)
             #expect(UserDefaults.standard.string(forKey: "st-storage-item-st-refresh-token") == refreshToken)
+            #expect(UserDefaults.standard.string(forKey: "supertokens-ios-fronttoken-key") != nil)
+            #expect(UserDefaults.standard.string(forKey: "st-storage-item-st-last-access-token-update") != nil)
         }
     }
 
-    @Test func bootstrapSessionWithoutRefreshTokenDoesNotPersistEmptyValue() async throws {
+    @Test func bootstrapSessionWithoutRefreshTokenDoesNotCreateSession() async throws {
         try await withMockedSuperTokensSession {
             let accessToken = makeSuperTokensTestJWT(expiresIn: 3600)
 
@@ -36,13 +37,15 @@ import Testing
                 SuperTokensSessionBridge.bootstrapSession(accessToken: accessToken, refreshToken: nil)
             }.value
 
-            #expect(await SuperTokensSessionBridge.doesSessionExist())
-            #expect(await SuperTokensSessionBridge.getAccessToken() == accessToken)
+            #expect(await !SuperTokensSessionBridge.doesSessionExist())
+            #expect(await SuperTokensSessionBridge.getAccessToken() == nil)
             #expect(UserDefaults.standard.string(forKey: "st-storage-item-st-refresh-token") == nil)
+            #expect(UserDefaults.standard.string(forKey: "supertokens-ios-fronttoken-key") == nil)
+            #expect(UserDefaults.standard.string(forKey: "st-storage-item-st-last-access-token-update") == nil)
         }
     }
 
-    @Test func bootstrapSessionPersistsAntiCSRFWhenProvided() async throws {
+    @Test func bootstrapSessionDoesNotPersistAntiCSRFWithoutRefreshToken() async throws {
         try await withMockedSuperTokensSession {
             let accessToken = makeSuperTokensTestJWT(expiresIn: 3600)
 
@@ -54,8 +57,8 @@ import Testing
                 )
             }.value
 
-            #expect(await SuperTokensSessionBridge.doesSessionExist())
-            #expect(UserDefaults.standard.string(forKey: "supertokens-ios-anticsrf-key") == "anti-csrf-token")
+            #expect(await !SuperTokensSessionBridge.doesSessionExist())
+            #expect(UserDefaults.standard.string(forKey: "supertokens-ios-anticsrf-key") == nil)
         }
     }
 
@@ -91,6 +94,11 @@ import Testing
                     accessToken: originalAccessToken,
                     refreshToken: originalRefreshToken
                 )
+            }.value
+
+            let originalFrontToken = UserDefaults.standard.string(forKey: "supertokens-ios-fronttoken-key")
+
+            await Task.detached {
                 SuperTokensSessionBridge.bootstrapSession(
                     accessToken: replacementAccessToken,
                     refreshToken: replacementRefreshToken
@@ -99,6 +107,7 @@ import Testing
 
             #expect(await SuperTokensSessionBridge.getAccessToken() == originalAccessToken)
             #expect(UserDefaults.standard.string(forKey: "st-storage-item-st-refresh-token") == originalRefreshToken)
+            #expect(UserDefaults.standard.string(forKey: "supertokens-ios-fronttoken-key") == originalFrontToken)
         }
     }
 
@@ -144,7 +153,8 @@ import Testing
                 )
             }.value
 
-            #expect(await SuperTokensSessionBridge.doesSessionExist())
+            #expect(await SuperTokensSessionBridge.getAccessToken() == accessToken)
+            #expect(UserDefaults.standard.string(forKey: "st-storage-item-st-refresh-token") == refreshToken)
 
             await SuperTokensSessionBridge.signOut()
 
@@ -181,7 +191,8 @@ import Testing
                 )
             }.value
 
-            #expect(await SuperTokensSessionBridge.doesSessionExist())
+            #expect(await SuperTokensSessionBridge.getAccessToken() == accessToken)
+            #expect(UserDefaults.standard.string(forKey: "st-storage-item-st-refresh-token") == refreshToken)
 
             Rownd.signOut()
 

@@ -28,6 +28,7 @@ struct TestInfrastructure {
         if await SuperTokensSessionBridge.doesSessionExist() {
             await SuperTokensSessionBridge.signOut()
         }
+        SuperTokensSessionBridge.clearLocalSessionArtifacts()
     }
 
     static func waitForBackend(timeout: TimeInterval = 30) async throws {
@@ -64,4 +65,5 @@ struct TestInfrastructure {
         let statusCode = try #require((response as? HTTPURLResponse)?.statusCode)
         #expect(statusCode == 200)
     }
+
 }
