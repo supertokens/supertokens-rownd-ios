@@ -54,15 +54,20 @@ class SmartLinks {
     @discardableResult
     public static func handleSmartLink(url: URL?) -> Bool {
         guard let url = url else {
+            logger.debug("Smart link ignored: URL is nil")
             return false
         }
 
+        logger.debug("Handling smart link: \(url.absoluteString)")
+
         if let hubUrl = hubUrl(for: url) {
             if lastHandledDeepLink == url {
+                logger.debug("Smart link already handled: \(url.absoluteString)")
                 return true
             }
 
             lastHandledDeepLink = url
+            logger.debug("Smart link maps to Hub URL: \(hubUrl.absoluteString)")
             Rownd.openHubDeepLink(hubUrl)
             return true
         }
@@ -85,15 +90,18 @@ class SmartLinks {
             return false
         }
 
+        logger.debug("Smart link ignored: no matching Hub URL or sign-in link pattern")
         return false
     }
 
     private static func hubUrl(for url: URL) -> URL? {
         guard let host = url.host?.trimmingCharacters(in: CharacterSet(charactersIn: "/")) else {
+            logger.debug("Smart link URL has no host: \(url.absoluteString)")
             return nil
         }
 
         guard var components = URLComponents(string: Rownd.config.baseUrl) else {
+            logger.debug("Invalid Rownd Hub base URL: \(Rownd.config.baseUrl)")
             return nil
         }
 
@@ -104,10 +112,12 @@ class SmartLinks {
         } else if url.scheme == "https", host == components.host || matchesSignInLinkPattern(host) {
             hubPath = url.path
         } else {
+            logger.debug("Smart link host/scheme did not match: scheme=\(url.scheme ?? "nil") host=\(host) baseHost=\(components.host ?? "nil") pattern=\(Rownd.config.signInLinkPattern)")
             return nil
         }
 
         guard hubPath == "/account/login" || hubPath == "/account/verify-email" else {
+            logger.debug("Smart link path is unsupported: \(hubPath)")
             return nil
         }
 

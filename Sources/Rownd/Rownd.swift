@@ -174,6 +174,7 @@ public class Rownd: NSObject {
     }
 
     internal static func openHubDeepLink(_ url: URL) {
+        logger.debug("Opening Hub deep link: \(url.absoluteString)")
         config.pendingHubDeepLinkUrl = url
         inst.displayHub(.deepLink, jsFnOptions: nil)
     }

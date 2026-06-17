@@ -131,6 +131,7 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
 
         var hubRequest = URLRequest(url: url)
         hubRequest.timeoutInterval = 10
+        logger.debug("Loading Hub URL in webview: \(url.absoluteString)")
         webView.load(hubRequest)
     }
 
