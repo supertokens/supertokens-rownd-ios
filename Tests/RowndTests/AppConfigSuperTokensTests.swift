@@ -161,7 +161,13 @@ import Testing
                               "ios_client_id": "ios-client.apps.googleusercontent.com",
                               "scopes": []
                             },
-                            "apple": { "enabled": false, "client_id": "" },
+                            "apple": {
+                              "enabled": false,
+                              "client_id": "",
+                              "web_client_type": "web",
+                              "ios_client_type": "ios",
+                              "android_client_type": "android"
+                            },
                             "anonymous": { "enabled": true, "type": "guest", "display_name": "Continue as guest" }
                           },
                           "additional_fields": [],
@@ -186,6 +192,9 @@ import Testing
             #expect(methods.google?.iosClientId == "ios-client.apps.googleusercontent.com")
             #expect(methods.google?.scopes == [])
             #expect(methods.apple?.enabled == false)
+            #expect(methods.apple?.webClientType == "web")
+            #expect(methods.apple?.iosClientType == "ios")
+            #expect(methods.apple?.androidClientType == "android")
             #expect(methods.anonymous?.enabled == true)
             #expect(methods.anonymous?.type == "guest")
             #expect(methods.anonymous?.displayName == "Continue as guest")

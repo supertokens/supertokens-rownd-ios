@@ -2,6 +2,7 @@ import Foundation
 
 struct SuperTokensThirdPartySignInRequest: Encodable {
     let thirdPartyId: String
+    let clientType: String?
     let oAuthTokens: OAuthTokens?
     let redirectURIInfo: RedirectURIInfo?
 
@@ -47,16 +48,18 @@ struct SuperTokensThirdPartySignInClient {
         try await signIn(
             SuperTokensThirdPartySignInRequest(
                 thirdPartyId: "google",
+                clientType: nil,
                 oAuthTokens: .init(idToken: idToken),
                 redirectURIInfo: nil
             )
         )
     }
 
-    func signInWithApple(authorizationCode: String) async throws -> SuperTokensThirdPartySignInResponse {
+    func signInWithApple(authorizationCode: String, clientType: String? = nil) async throws -> SuperTokensThirdPartySignInResponse {
         try await signIn(
             SuperTokensThirdPartySignInRequest(
                 thirdPartyId: "apple",
+                clientType: clientType,
                 oAuthTokens: nil,
                 redirectURIInfo: .init(
                     redirectURIOnProviderDashboard: "",

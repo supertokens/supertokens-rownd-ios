@@ -219,12 +219,18 @@ public struct BasicSignInMethodConfig: Hashable, Codable {
 public struct AppleSignInMethodConfig: Hashable {
     public var enabled: Bool?
     public var clientId: String?
+    public var webClientType: String?
+    public var iosClientType: String?
+    public var androidClientType: String?
 }
 
 extension AppleSignInMethodConfig: Codable {
     enum CodingKeys: String, CodingKey {
         case enabled
         case clientId = "client_id"
+        case webClientType = "web_client_type"
+        case iosClientType = "ios_client_type"
+        case androidClientType = "android_client_type"
     }
 }
 

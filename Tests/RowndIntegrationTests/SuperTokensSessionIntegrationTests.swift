@@ -310,6 +310,7 @@ import AnyCodable
 
         let body = try #require(appleRequest["body"] as? [String: Any])
         #expect(body["thirdPartyId"] as? String == "apple")
+        #expect(body["clientType"] == nil)
         #expect(body["oAuthTokens"] == nil)
 
         let redirectURIInfo = try #require(body["redirectURIInfo"] as? [String: Any])

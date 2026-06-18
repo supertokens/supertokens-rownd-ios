@@ -120,7 +120,8 @@ class AppleSignUpCoordinator: NSObject, ASAuthorizationControllerDelegate, ASAut
 
                 Task { [userAppleSignInData] in
                     do {
-                        let signInResponse = try await signInClient.signInWithApple(authorizationCode: authCode)
+                        let clientType = Context.currentContext.store.state.appConfig.config?.hub?.auth?.signInMethods?.apple?.iosClientType
+                        let signInResponse = try await signInClient.signInWithApple(authorizationCode: authCode, clientType: clientType)
                         await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens()
 
                         Task { @MainActor in
