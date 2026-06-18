@@ -11,6 +11,7 @@ import WebKit
 import SwiftUI
 import ReSwift
 import ReSwiftThunk
+import AnyCodable
 
 public enum HubPageSelector {
     case signIn
@@ -62,14 +63,22 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
         store: Store<RowndState>,
         initialJsFunctionArgsAsJson: String,
         currentJsFunctionArgsAsJson: @escaping @MainActor () -> String?,
-        hideHub: @escaping @MainActor () -> Void
+        hideHub: @escaping @MainActor () -> Void,
+        eventData: [String: String] = [:]
     ) async {
         await MainActor.run {
             // Ensure user.isLoading = false so that the data is fetched properly
             store.dispatch(SetUserLoading(isLoading: false))
             store.dispatch(UserData.fetch())
             store.dispatch(ResetSignInState())
-            RowndEventEmitter.emit(RowndEvent(event: .signInCompleted))
+
+            let signInCompletedData = eventData.reduce(into: [String: AnyCodable?]()) { result, entry in
+                result[entry.key] = AnyCodable(entry.value)
+            }
+            RowndEventEmitter.emit(RowndEvent(
+                event: .signInCompleted,
+                data: signInCompletedData.isEmpty ? nil : signInCompletedData
+            ))
         }
 
         await MainActor.run {
@@ -333,7 +342,8 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
                         store: store,
                         initialJsFunctionArgsAsJson: initialJsFunctionArgsAsJson,
                         currentJsFunctionArgsAsJson: { [weak self] in self?.jsFunctionArgsAsJson },
-                        hideHub: { [weak self] in self?.hubViewController?.hide() }
+                        hideHub: { [weak self] in self?.hubViewController?.hide() },
+                        eventData: authMessage.signInCompletedEventData
                     )
                 }
             case .closeHubViewController:

@@ -171,12 +171,30 @@ enum MessagePayload: Decodable {
         var refreshToken: String
         var frontToken: String
         var antiCSRF: String?
+        var userType: String?
+        var appVariantUserType: String?
 
         enum CodingKeys: String, CodingKey {
             case accessToken = "access_token"
             case refreshToken = "refresh_token"
             case frontToken = "front_token"
             case antiCSRF = "anti_csrf"
+            case userType = "user_type"
+            case appVariantUserType = "app_variant_user_type"
+        }
+
+        var signInCompletedEventData: [String: String] {
+            var data: [String: String] = [:]
+
+            if let userType {
+                data["user_type"] = userType
+            }
+
+            if let appVariantUserType {
+                data["app_variant_user_type"] = appVariantUserType
+            }
+
+            return data
         }
     }
 
