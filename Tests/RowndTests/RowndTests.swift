@@ -36,7 +36,7 @@ import Get
 
             #expect(store.state?.auth.isAuthenticated == true)
 
-            Rownd.signOut()
+            await Rownd.signOut()
 
             // Rownd.signOut() schedules the auth-state clear on the main actor, so
             // poll for a short, bounded window until the async state update lands.

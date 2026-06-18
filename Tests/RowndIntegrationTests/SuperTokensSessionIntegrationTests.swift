@@ -46,7 +46,7 @@ import AnyCodable
         try await createHarnessSession(userId: "ios-signout-all-user")
         #expect(await SuperTokensSessionBridge.doesSessionExist())
 
-        try Rownd.signOut(scope: .all)
+        try await Rownd.signOut(scope: .all)
 
         for _ in 0..<40 {
             if await !SuperTokensSessionBridge.doesSessionExist() {

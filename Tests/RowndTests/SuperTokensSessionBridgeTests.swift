@@ -1,5 +1,7 @@
 import Foundation
 import Testing
+import Network
+@testable import SuperTokensIOS
 
 @testable import Rownd
 
@@ -194,7 +196,7 @@ import Testing
             #expect(await SuperTokensSessionBridge.getAccessToken() == accessToken)
             #expect(UserDefaults.standard.string(forKey: "st-storage-item-st-refresh-token") == refreshToken)
 
-            Rownd.signOut()
+            await Rownd.signOut()
 
             for _ in 0..<40 {
                 let isAuthenticated = await MainActor.run {
@@ -213,6 +215,54 @@ import Testing
             }
             #expect(await !SuperTokensSessionBridge.doesSessionExist())
             #expect(UserDefaults.standard.string(forKey: "supertokens-ios-fronttoken-key") == nil)
+        }
+    }
+
+    @Test func rowndSignOutAsyncKeepsAuthorizationWhenCallerClearsStorageAfterReturn() async throws {
+        try await withLocalSignOutServerSession { server in
+            let accessToken = makeSuperTokensTestJWT(expiresIn: 3600)
+            let refreshToken = makeSuperTokensTestJWT(expiresIn: 7200)
+
+            await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: accessToken,
+                    refreshToken: refreshToken
+                )
+            }.value
+
+            #expect(await SuperTokensSessionBridge.doesSessionExist())
+
+            await Rownd.signOut()
+            clearStoredSessionArtifacts()
+
+            let request = try await server.nextRequest()
+            #expect(request.path == "/auth/signout")
+            #expect(request.headers["authorization"]?.hasPrefix("Bearer ") == true)
+        }
+    }
+
+    @Test func rowndSignOutFireAndForgetCanLoseAuthorizationWhenCallerClearsStorageImmediately() async throws {
+        try await withLocalSignOutServerSession { server in
+            let accessToken = makeSuperTokensTestJWT(expiresIn: 3600)
+            let refreshToken = makeSuperTokensTestJWT(expiresIn: 7200)
+
+            await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: accessToken,
+                    refreshToken: refreshToken
+                )
+            }.value
+
+            #expect(await SuperTokensSessionBridge.doesSessionExist())
+
+            callFireAndForgetSignOut()
+            clearStoredSessionArtifacts()
+
+            let request = try await server.nextRequestIfAvailable()
+            if let request {
+                #expect(request.path == "/auth/signout")
+                #expect(request.headers["authorization"]?.hasPrefix("Bearer ") != true)
+            }
         }
     }
 
@@ -266,6 +316,36 @@ import Testing
         }
     }
 
+    private func withLocalSignOutServerSession(
+        _ operation: @escaping (LocalHTTPServer) async throws -> Void
+    ) async throws {
+        try await withGlobalTestLock {
+            let server = try await LocalHTTPServer.start()
+            let originalSuperTokensConfig = Rownd.config.supertokens
+            let originalIsSuperTokensInitialized = Rownd.isSuperTokensInitialized
+
+            Rownd.isSuperTokensInitialized = false
+            SuperTokens.resetForTests()
+            Rownd.config.supertokens = RowndSuperTokensConfig(
+                appName: "Signout Race Test",
+                apiDomain: server.baseURL.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")),
+                apiBasePath: "/auth"
+            )
+            _ = try Rownd.initializeSuperTokensIfNeeded()
+
+            defer {
+                server.stop()
+                SuperTokens.resetForTests()
+                Rownd.config.supertokens = originalSuperTokensConfig
+                Rownd.isSuperTokensInitialized = originalIsSuperTokensInitialized
+            }
+
+            clearStoredSessionArtifacts()
+            try await operation(server)
+            clearStoredSessionArtifacts()
+        }
+    }
+
     private func clearSessionIfNeeded() async {
         if await SuperTokensSessionBridge.doesSessionExist() {
             await SuperTokensSessionBridge.signOut()
@@ -279,6 +359,10 @@ import Testing
         userDefaults.removeObject(forKey: "supertokens-ios-fronttoken-key")
         userDefaults.removeObject(forKey: "st-storage-item-st-last-access-token-update")
         userDefaults.removeObject(forKey: "supertokens-ios-anticsrf-key")
+    }
+
+    private func callFireAndForgetSignOut() {
+        Rownd.signOut()
     }
 
     private func makeSuperTokensTestJWT(expiresIn seconds: TimeInterval) -> String {
@@ -337,4 +421,172 @@ private final class SuperTokensSignOutURLProtocol: URLProtocol {
     }
 
     override func stopLoading() {}
+}
+
+private final class LocalHTTPServer: @unchecked Sendable {
+    struct CapturedRequest: Sendable {
+        var path: String
+        var headers: [String: String]
+    }
+
+    private(set) var baseURL: URL!
+
+    private let listener: NWListener
+    private let queue = DispatchQueue(label: "io.rownd.tests.local-http-server")
+    private let requests: AsyncStream<CapturedRequest>
+    private let requestContinuation: AsyncStream<CapturedRequest>.Continuation
+
+    private init(listener: NWListener) {
+        self.listener = listener
+
+        var continuation: AsyncStream<CapturedRequest>.Continuation!
+        self.requests = AsyncStream { continuation = $0 }
+        self.requestContinuation = continuation
+    }
+
+    static func start() async throws -> LocalHTTPServer {
+        let listener = try NWListener(using: .tcp, on: .any)
+        let server = LocalHTTPServer(listener: listener)
+
+        return try await withCheckedThrowingContinuation { continuation in
+            var hasResumed = false
+
+            listener.newConnectionHandler = { connection in
+                server.handle(connection)
+            }
+
+            listener.stateUpdateHandler = { state in
+                guard !hasResumed else { return }
+
+                switch state {
+                case .ready:
+                    guard let port = listener.port else {
+                        hasResumed = true
+                        continuation.resume(throwing: RowndError("Local test server started without a port"))
+                        return
+                    }
+
+                    server.baseURL = URL(string: "http://127.0.0.1:\(port.rawValue)")!
+                    hasResumed = true
+                    continuation.resume(returning: server)
+                case .failed(let error):
+                    hasResumed = true
+                    continuation.resume(throwing: error)
+                default:
+                    break
+                }
+            }
+
+            listener.start(queue: DispatchQueue(label: "io.rownd.tests.local-http-listener"))
+        }
+    }
+
+    func stop() {
+        listener.cancel()
+        requestContinuation.finish()
+    }
+
+    func nextRequest(timeout: TimeInterval = 2) async throws -> CapturedRequest {
+        try await withThrowingTaskGroup(of: CapturedRequest.self) { group in
+            group.addTask { [requests] in
+                for await request in requests {
+                    return request
+                }
+                throw RowndError("Local test server stopped before receiving a request")
+            }
+
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                throw RowndError("Timed out waiting for local test server request")
+            }
+
+            let request = try await group.next()!
+            group.cancelAll()
+            return request
+        }
+    }
+
+    func nextRequestIfAvailable(timeout: TimeInterval = 0.5) async throws -> CapturedRequest? {
+        try await withThrowingTaskGroup(of: CapturedRequest?.self) { group in
+            group.addTask { [requests] in
+                for await request in requests {
+                    return request
+                }
+                throw RowndError("Local test server stopped before receiving a request")
+            }
+
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                return nil
+            }
+
+            let request = try await group.next()!
+            group.cancelAll()
+            return request
+        }
+    }
+
+    private func handle(_ connection: NWConnection) {
+        connection.start(queue: queue)
+        receive(on: connection, buffer: Data())
+    }
+
+    private func receive(on connection: NWConnection, buffer: Data) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { [weak self] data, _, _, error in
+            guard let self else { return }
+            guard error == nil else {
+                connection.cancel()
+                return
+            }
+
+            var nextBuffer = buffer
+            if let data {
+                nextBuffer.append(data)
+            }
+
+            guard String(data: nextBuffer, encoding: .utf8)?.contains("\r\n\r\n") == true else {
+                self.receive(on: connection, buffer: nextBuffer)
+                return
+            }
+
+            self.requestContinuation.yield(Self.parseRequest(nextBuffer))
+            self.sendResponse(on: connection)
+        }
+    }
+
+    private func sendResponse(on connection: NWConnection) {
+        let body = #"{"status":"OK"}"#
+        let response = """
+            HTTP/1.1 200 OK\r
+            Content-Type: application/json\r
+            Content-Length: \(body.utf8.count)\r
+            front-token: remove\r
+            Connection: close\r
+            \r
+            \(body)
+            """
+
+        connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in
+            connection.cancel()
+        })
+    }
+
+    private static func parseRequest(_ data: Data) -> CapturedRequest {
+        let rawRequest = String(data: data, encoding: .utf8) ?? ""
+        let lines = rawRequest.components(separatedBy: "\r\n")
+        let requestLineParts = (lines.first ?? "").split(separator: " ")
+        var headers: [String: String] = [:]
+
+        for line in lines.dropFirst() {
+            guard let separatorIndex = line.firstIndex(of: ":") else { continue }
+            let name = line[..<separatorIndex].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let value = line[line.index(after: separatorIndex)...].trimmingCharacters(in: .whitespacesAndNewlines)
+            headers[name] = value
+        }
+
+        return CapturedRequest(
+            path: requestLineParts.count > 1 ? String(requestLineParts[1]) : "",
+            headers: headers
+        )
+    }
 }

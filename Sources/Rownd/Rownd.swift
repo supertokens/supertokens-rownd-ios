@@ -180,24 +180,38 @@ public class Rownd: NSObject {
     }
 
     public static func signOut(scope: RowndSignoutScope) throws {
-        switch scope {
-        case .all:
-            Task {
-                do {
-                    try await Auth.signOutUser()
-                    await performLocalSignOut()
-                } catch {
-                    logger.error(
-                        "Failed to sign out user from all sessions: \(String(describing: error))")
-                }
+        Task {
+            do {
+                try await signOut(scope: scope)
+            } catch {
+                logger.error(
+                    "Failed to sign out user from all sessions: \(String(describing: error))")
             }
         }
+    }
 
+    public static func signOut(scope: RowndSignoutScope) async throws {
+        switch scope {
+        case .all:
+            try await Auth.signOutUser()
+            await performLocalSignOut()
+        }
     }
 
     public static func signOut() {
         Task {
             await performLocalSignOut()
+        }
+    }
+
+    public static func signOut() async {
+        await performLocalSignOut()
+    }
+
+    public static func signOut(completion: @escaping (Error?) -> Void) {
+        Task {
+            await performLocalSignOut()
+            completion(nil)
         }
     }
 

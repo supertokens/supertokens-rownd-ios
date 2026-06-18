@@ -448,7 +448,30 @@ Some of the `requestSignIn()` methods accept an optional `RowndSignInOptions` pa
 
 ### Rownd.signOut() -> Void
 
-Clears the user's access token, removes the user's profile data, and returns the user to a completely unauthenticated state.
+Starts local sign-out and returns immediately. This API is retained for compatibility, but it is fire-and-forget: SuperTokens may still be building or sending `/auth/signout` after this function returns.
+
+Do not use this overload when your app clears app storage, or other local state immediately after sign-out. Clearing storage too early can remove the tokens before the sign-out request attaches its `Authorization` header.
+
+### Rownd.signOut() async -> Void
+
+Waits for local Rownd sign-out and SuperTokens sign-out to complete before returning. Use this overload before destructive cleanup:
+
+```swift
+await Rownd.signOut()
+clearAppStorage()
+```
+
+If you cannot use Swift concurrency, use the completion overload:
+
+```swift
+Rownd.signOut { error in
+    guard error == nil else {
+        return
+    }
+
+    clearAppStorage()
+}
+```
 
 ### Rownd.signOut(scope: RowndSignoutScope) -> Void
 

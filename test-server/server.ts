@@ -34,7 +34,12 @@ type CapturedRequest = {
   body?: unknown;
 };
 
-type MigrationMode = 'normal' | 'migrate401' | 'migrate409' | 'legacyRefreshFailure';
+type MigrationMode =
+  | 'normal'
+  | 'migrate401'
+  | 'migrate409'
+  | 'legacyRefreshFailure'
+  | 'migrateWithoutRefreshHeader';
 
 type IntegrationHarness = {
   apiUrl: string;
@@ -248,7 +253,7 @@ export async function startIntegrationHarness(): Promise<IntegrationHarness> {
 
   app.post('/test/migration-mode', (req, res) => {
     const mode = req.body?.mode;
-    if (!['normal', 'migrate401', 'migrate409', 'legacyRefreshFailure'].includes(mode)) {
+    if (!['normal', 'migrate401', 'migrate409', 'legacyRefreshFailure', 'migrateWithoutRefreshHeader'].includes(mode)) {
       res.status(400).json({ status: 'ERROR', message: 'Invalid migration mode' });
       return;
     }
@@ -268,6 +273,17 @@ export async function startIntegrationHarness(): Promise<IntegrationHarness> {
     if (migrationMode === 'migrate409') {
       res.status(409).json({ status: 'ERROR', message: 'User already migrated' });
       return;
+    }
+
+    if (migrationMode === 'migrateWithoutRefreshHeader') {
+      const originalSetHeader = res.setHeader.bind(res);
+      res.setHeader = (name: string, value: number | string | readonly string[]) => {
+        if (name.toLowerCase() === 'st-refresh-token') {
+          return res;
+        }
+
+        return originalSetHeader(name, value);
+      };
     }
 
     next();
@@ -344,12 +360,12 @@ export async function startIntegrationHarness(): Promise<IntegrationHarness> {
     res.json({ status: 'OK', id: 'ios-profile-user', meta: req.body?.meta ?? {} });
   });
 
-  app.use(middleware());
-
   app.post('/auth/plugin/rownd/signout', verifySession(), (req, res) => {
     captureRequest('signOut', req);
     res.json({ status: 'OK' });
   });
+
+  app.use(middleware());
 
   app.post('/hub/auth/token', (_req, res) => {
     counters.legacyRefresh += 1;
