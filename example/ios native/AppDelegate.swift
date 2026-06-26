@@ -7,7 +7,7 @@
 
 import Foundation
 import SwiftUI
-import Rownd
+import SuperTokensRownd
 import Lottie
 import WidgetKit
 import AnyCodable

@@ -8,11 +8,8 @@
 	</array>
 	<key>com.apple.developer.associated-domains</key>
 	<array>
+		<string>applinks:sandboxx.rownd-hub.supertokens.com</string>
 		<string>applinks:staging.supertokens-rownd-hub.pages.dev</string>
-		<string>applinks:mth.dev.rownd.link</string>
-		<string>applinks:mthlandmarks.dev.rownd.link</string>
-		<string>webcredentials:mthshiny.dev.rownd.link</string>
-		<string>webcredentials:mthlandmarks.dev.rownd.link</string>
 	</array>
 	<key>com.apple.security.application-groups</key>
 	<array>

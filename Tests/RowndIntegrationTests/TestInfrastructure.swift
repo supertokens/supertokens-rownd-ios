@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 
-@testable import Rownd
+@testable import SuperTokensRownd
 
 struct TestInfrastructure {
     static let backendURL = URL(

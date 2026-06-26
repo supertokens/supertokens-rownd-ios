@@ -41,16 +41,38 @@ Expose it with ngrok using the same local port:
 ngrok http 3137
 ```
 
-## iOS App
+## iOS App Config
 
-Set these environment variables on the `rownd_ios_example` scheme:
+The example app reads Rownd config from target Info.plist keys populated by Xcode build settings. The app, widget, and app clip all use the same keys.
+
+Checked-in scenarios live in `example/Configurations/`:
 
 ```text
-ROWND_EXAMPLE_API_DOMAIN=https://your-ngrok-domain.ngrok-free.dev
+ExampleLocal.xcconfig
+ExampleNgrok.xcconfig
+```
+
+Use the `rownd_ios_example` scheme for local defaults:
+
+```text
+ROWND_EXAMPLE_API_DOMAIN=http://127.0.0.1:3137
 ROWND_EXAMPLE_HUB_BASE_URL=https://staging.supertokens-rownd-hub.pages.dev
+ROWND_EXAMPLE_APP_KEY=test_app_key
+ROWND_EXAMPLE_API_BASE_PATH=/auth
+```
+
+Use the `rownd_ios_example_ngrok` scheme to test an externally reachable backend. Update `example/Configurations/ExampleNgrok.xcconfig` first:
+
+```text
+ROWND_EXAMPLE_API_DOMAIN=https:/$()/your-ngrok-domain.ngrok-free.dev
+ROWND_EXAMPLE_HUB_BASE_URL=https:/$()/staging.supertokens-rownd-hub.pages.dev
 ROWND_EXAMPLE_APP_KEY=<local app key>
 ROWND_EXAMPLE_API_BASE_PATH=/auth
 ```
+
+Xcode `.xcconfig` files require `https:/$()/...` because `//` starts a comment.
+
+For one-off main-app runs, Xcode scheme environment variables with the same names still override the Info.plist values at runtime. Do not rely on scheme environment variables for widget or app clip testing; use the `.xcconfig` build settings instead.
 
 The example app uses Universal Links for Rownd authentication links hosted on `https://staging.supertokens-rownd-hub.pages.dev`.
 

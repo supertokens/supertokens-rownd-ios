@@ -1,3 +1,9 @@
+## Unreleased
+
+* breaking: require SuperTokens configuration and remove unsupported legacy auth paths
+* breaking: remove native passkey APIs/routes and Firebase connection-action APIs/routes from the SuperTokens-backed SDK
+* breaking: remove legacy smart-link auth and public legacy token exchange APIs
+
 
 
 ## <small>3.14.10 (2026-03-18)</small>

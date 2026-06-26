@@ -15,7 +15,7 @@ import Combine
 import JWTDecode
 import Testing
 
-@testable import Rownd
+@testable import SuperTokensRownd
 
 @Suite(.serialized) struct AuthTests {
 

@@ -1,5 +1,5 @@
 import SwiftUI
-import Rownd
+import SuperTokensRownd
 
 struct ContentView: View {
     @StateObject var authState = Rownd.getInstance().state().subscribe { $0.auth }

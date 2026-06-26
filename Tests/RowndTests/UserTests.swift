@@ -7,7 +7,7 @@
 
 import XCTest
 
-@testable import Rownd
+@testable import SuperTokensRownd
 
 final class UserTests: XCTestCase {
     

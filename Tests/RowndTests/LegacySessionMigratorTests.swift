@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 
-@testable import Rownd
+@testable import SuperTokensRownd
 
 @Suite(.serialized) struct LegacySessionMigratorTests {
     @Test func skipsWhenSuperTokensSessionAlreadyExists() async throws {

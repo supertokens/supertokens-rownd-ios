@@ -7,7 +7,7 @@
 
 import WidgetKit
 import SwiftUI
-import Rownd
+import SuperTokensRownd
 import Combine
 
 struct Provider: TimelineProvider {

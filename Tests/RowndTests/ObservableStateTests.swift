@@ -12,7 +12,7 @@ import Foundation
 import ReSwift
 import Testing
 
-@testable import Rownd
+@testable import SuperTokensRownd
 
 @MainActor
 struct ObservableStateTests {

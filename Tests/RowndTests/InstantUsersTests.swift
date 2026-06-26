@@ -10,7 +10,7 @@ import Foundation
 import ReSwift
 import XCTest
 
-@testable import Rownd
+@testable import SuperTokensRownd
 
 @MainActor
 class InstantUsersTests: XCTestCase {

@@ -11,7 +11,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "Rownd",
+    name: "SuperTokensRownd",
     platforms: [
         .iOS(.v14),
         .macOS(.v12),
@@ -19,8 +19,8 @@ let package = Package(
     ],
     products: [
         .library(
-            name: "Rownd",
-            targets: ["Rownd"]
+            name: "SuperTokensRownd",
+            targets: ["SuperTokensRownd"]
         )
     ],
 
@@ -107,7 +107,7 @@ let package = Package(
             path: "Packages/GzipSwift/Sources/system-zlib"
         ),
         .target(
-            name: "Rownd",
+            name: "SuperTokensRownd",
             dependencies: [
                 "AnyCodable",
                 "ReSwift",
@@ -121,7 +121,8 @@ let package = Package(
                 "Lottie",
                 "Factory",
                 "SuperTokensIOS",
-            ]
+            ],
+            path: "Sources/Rownd"
         ),
         .testTarget(
             name: "AnyCodableTests",
@@ -150,13 +151,13 @@ let package = Package(
                 "GoogleSignIn",
                 "Lottie",
                 "Factory",
-                "Rownd"
+                "SuperTokensRownd"
             ]
         ),
         .testTarget(
             name: "RowndIntegrationTests",
             dependencies: [
-                "Rownd"
+                "SuperTokensRownd"
             ],
             path: "Tests/RowndIntegrationTests"
         )

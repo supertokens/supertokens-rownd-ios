@@ -1,20 +1,21 @@
 Pod::Spec.new do |s|
-  s.name             = "Rownd"
-  s.version          = "3.14.10"
-  s.summary          = "Rownd bindings for iOS"
+  s.name             = "SuperTokensRownd"
+  s.version          = "0.1.0"
+  s.summary          = "SuperTokens Rownd bindings for iOS"
   s.description      = <<-DESC
                         Rownd is a user management platform designed to make authentication
-                        and user lifecycle easy, frictionless, and seamless for both devs and end-users
+                        and user lifecycle easy, frictionless, and seamless for both devs and end-users.
+                        This SDK integrates Rownd with SuperTokens-backed authentication.
                         DESC
-  s.homepage         = "https://github.com/rownd/ios"
+  s.homepage         = "https://github.com/supertokens/supertokens-rownd-ios"
   s.license          = { :type => "Apache 2.0", :file => "LICENSE.txt" }
   s.author           = {
-    "Rownd" => "support@rownd.io",
+    "SuperTokens" => "support@supertokens.com",
   }
-  s.documentation_url = "https://github.com/rownd/ios"
+  s.documentation_url = "https://github.com/supertokens/supertokens-rownd-ios"
   s.source            = {
-    :git => "https://github.com/rownd/ios.git",
-    :tag => s.version.to_s
+    :git => "https://github.com/supertokens/supertokens-rownd-ios.git",
+    :tag => "v#{s.version}"
   }
 
   s.ios.deployment_target     = '14.0'

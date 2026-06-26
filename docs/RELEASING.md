@@ -1,30 +1,30 @@
-# Releasing new versions of the Rownd iOS SDK
+# Releasing SuperTokensRownd for iOS
 
 ## Setup
 
-It'll make things easier if you set a `GITHUB_TOKEN` environment variable with a GitHub Personal Access Token that has all `repo` permissions.
+Set `GITHUB_TOKEN` to a GitHub Personal Access Token with repository permissions.
 
-<img width="481" alt="image" src="https://user-images.githubusercontent.com/130131/199608211-9471d610-5be5-4251-8699-17c7f49fd147.png">
+Authenticate with CocoaPods trunk before publishing:
 
+```sh
+pod trunk register <email> "SuperTokens" --description="SuperTokens release machine"
+```
 
-## 1. Tag to release Swift Package Manager (SPM) package
+## Release
 
-From your local machine do the following:
+From a clean checkout of the latest `main` branch:
 
-1. Pull latest main branch and ensure there are no uncommitted or untested changes present.
-   Run `git reset --hard origin/master` if you need to make sure.
-2. Run `npm install` if needed
-3. Run `npm run release` and answer `y` for all questions
+1. Run `npm install` if dependencies are missing.
+2. Run `npm run release` and confirm the prompts.
 
-SPM should now be able to pull the latest package version.
+The release command bumps `VERSION`, `Sources/Rownd/framework/Version.swift`, and `SuperTokensRownd.podspec`, creates a GitHub release with a `vX.Y.Z` tag, validates the podspec, and publishes `SuperTokensRownd` to CocoaPods.
 
-## 2. Release to CocoaPods
+If CocoaPods validation fails with a missing `libarclite` error on Xcode 15 or newer, install the missing `libarclite` files or release from an Xcode environment that still includes them. Some transitive CocoaPods dependencies still declare old iOS deployment targets, which triggers this toolchain issue during validation.
 
-After releasing to SPM, push to CocoaPods.
+## Verify
 
-1. Update the version number in the `Rownd.podspec` file to match the version just released to SPM.
-2. Run `pod trunk push . --allow-warnings` to push the podspec to the CocoaPods main repo.
-3. Commit the change to the podspec with the message `chore: release vX.Y.Z to cocoapods` (replacing `X.Y.Z` with the actual released version number).
-4. Push to GitHub
+After release, confirm CocoaPods can see the published pod:
 
-That's it!
+```sh
+pod trunk info SuperTokensRownd
+```

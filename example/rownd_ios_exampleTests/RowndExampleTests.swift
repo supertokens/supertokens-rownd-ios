@@ -2,7 +2,7 @@ import XCTest
 import AnyCodable
 import SuperTokensIOS
 
-@testable import Rownd
+@testable import SuperTokensRownd
 
 final class RowndExampleTests: XCTestCase {
     private let backendURL = URL(string: ProcessInfo.processInfo.environment["TEST_BACKEND_URL"] ?? "http://127.0.0.1:3100")!

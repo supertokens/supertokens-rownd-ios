@@ -7,7 +7,7 @@
 
 import Testing
 import WebKit
-@testable import Rownd
+@testable import SuperTokensRownd
 
 @Suite(.serialized) struct CustomerWebViewManagerTests {
     /// Register a customer web view and ensure that message handling and script evaluation work correctly

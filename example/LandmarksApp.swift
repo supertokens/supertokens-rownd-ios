@@ -6,7 +6,7 @@
 //
 
 import SwiftUI
-import Rownd
+import SuperTokensRownd
 
 @main
 struct LandmarksApp: App {

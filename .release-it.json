@@ -2,7 +2,7 @@
   "npm": false,
   "git": {
     "commitMessage": "chore: release v${version}",
-    "tagName": "${version}"
+    "tagName": "v${version}"
   },
   "github": {
     "release": true
@@ -23,9 +23,9 @@
   },
   "hooks": {
     "after:bump": [
-      "npx podspec-bump -w -i ${version} -p Rownd.podspec",
-      "pod lib lint --allow-warnings"
+      "npx podspec-bump -w -i ${version} -p SuperTokensRownd.podspec",
+      "pod lib lint SuperTokensRownd.podspec --allow-warnings"
     ],
-    "after:release": "pod trunk push . --allow-warnings"
+    "after:release": "pod trunk push SuperTokensRownd.podspec --allow-warnings"
   }
 }
