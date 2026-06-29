@@ -5,26 +5,6 @@
 //  Created by Matt Hamann on 6/14/22.
 //
 
-/*
- This structure relies on userData within the decodable in order to reference a parent value.
- Here's an example of how to use it:
- let jsonData = """
- {
-     "type": "authentication",
-     "payload": {
-         "access_token": "foo",
-         "refresh_token": "bar"
-     }
- }
- """.data(using: .utf8)
-
- let decoder = JSONDecoder()
- decoder.userInfo[.messageType] = MessageTypeHolder()
- let result = try decoder.decode(RowndHubInteropMessage.self, from: jsonData!)
- print(result)
-
- */
-
 import Foundation
 import AnyCodable
 import UIKit

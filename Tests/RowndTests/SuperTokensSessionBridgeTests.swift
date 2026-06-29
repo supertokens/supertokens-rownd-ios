@@ -302,6 +302,7 @@ import Network
         try await withGlobalTestLock {
             Rownd.config.supertokens = Self.supertokensConfig
             _ = try Rownd.initializeSuperTokensIfNeeded()
+            SDKStorage.setTokenStorageForTests(UserDefaultsTokenStorage())
             URLProtocol.registerClass(SuperTokensSignOutURLProtocol.self)
 
             defer {
@@ -332,6 +333,7 @@ import Network
                 apiBasePath: "/auth"
             )
             _ = try Rownd.initializeSuperTokensIfNeeded()
+            SDKStorage.setTokenStorageForTests(UserDefaultsTokenStorage())
 
             defer {
                 server.stop()
@@ -392,6 +394,22 @@ import Network
             group.cancelAll()
             #expect(completed)
         }
+    }
+}
+
+private final class UserDefaultsTokenStorage: TokenStorage {
+    func get(_ name: String) -> String? {
+        UserDefaults.standard.string(forKey: name)
+    }
+
+    func set(_ name: String, value: String) -> Bool {
+        UserDefaults.standard.set(value, forKey: name)
+        return true
+    }
+
+    func remove(_ name: String) -> Bool {
+        UserDefaults.standard.removeObject(forKey: name)
+        return true
     }
 }
 

@@ -9,6 +9,7 @@ internal enum SuperTokensSessionBridge {
     private static let frontTokenStorageKey = "supertokens-ios-fronttoken-key"
     private static let lastAccessTokenUpdateStorageKey = "st-storage-item-st-last-access-token-update"
     private static let antiCSRFStorageKey = "supertokens-ios-anticsrf-key"
+    internal static var storageOverride: SuperTokensSessionStorage?
 
     static func doesSessionExist() async -> Bool {
         await Task.detached(priority: .userInitiated) {
@@ -141,7 +142,11 @@ internal enum SuperTokensSessionBridge {
         userDefaults.removeObject(forKey: antiCSRFStorageKey)
     }
 
-    private static func storage() -> SuperTokensKeychainSessionStorage {
+    private static func storage() -> SuperTokensSessionStorage {
+        if let storageOverride {
+            return storageOverride
+        }
+
         let config = try? Rownd.requireSuperTokensConfig()
         return SuperTokensKeychainSessionStorage(
             apiDomain: config?.apiDomain,
@@ -151,7 +156,17 @@ internal enum SuperTokensSessionBridge {
     }
 }
 
-private struct SuperTokensKeychainSessionStorage {
+internal protocol SuperTokensSessionStorage {
+    func get(_ key: String) -> String?
+
+    @discardableResult
+    func set(_ key: String, value: String) -> Bool
+
+    @discardableResult
+    func remove(_ key: String) -> Bool
+}
+
+private struct SuperTokensKeychainSessionStorage: SuperTokensSessionStorage {
     private let service: String
     private let accessGroup: String?
 
@@ -190,7 +205,7 @@ private struct SuperTokensKeychainSessionStorage {
             return true
         }
 
-        guard updateStatus == errSecItemNotFound else { return false }
+        guard updateStatus == errSecItemNotFound else { return setLegacyFallback(key, value: value) }
 
         var addQuery = query
         addQuery[kSecValueData as String] = data
@@ -213,11 +228,13 @@ private struct SuperTokensKeychainSessionStorage {
             }
         }
 
-        return false
+        return setLegacyFallback(key, value: value)
     }
 
-    func remove(_ key: String) {
-        SecItemDelete(baseQuery(key) as CFDictionary)
+    @discardableResult
+    func remove(_ key: String) -> Bool {
+        let status = SecItemDelete(baseQuery(key) as CFDictionary)
+        return status == errSecSuccess || status == errSecItemNotFound
     }
 
     private func baseQuery(_ key: String) -> [String: Any] {
@@ -232,6 +249,12 @@ private struct SuperTokensKeychainSessionStorage {
         }
 
         return query
+    }
+
+    private func setLegacyFallback(_ key: String, value: String) -> Bool {
+        guard accessGroup == nil else { return false }
+        UserDefaults.standard.set(value, forKey: key)
+        return true
     }
 
     private static func serviceName(apiDomain: String?, apiBasePath: String?) -> String {

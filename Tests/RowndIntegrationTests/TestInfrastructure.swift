@@ -1,9 +1,12 @@
 import Foundation
 import Testing
+@testable import SuperTokensIOS
 
 @testable import SuperTokensRownd
 
 struct TestInfrastructure {
+    private static let sessionStorage = InMemorySuperTokensSessionStorage()
+
     static let backendURL = URL(
         string: ProcessInfo.processInfo.environment["TEST_BACKEND_URL"] ?? "http://127.0.0.1:3100"
     )!
@@ -24,6 +27,9 @@ struct TestInfrastructure {
 
         Rownd.config.supertokens = supertokensConfig
         _ = try Rownd.initializeSuperTokensIfNeeded()
+        sessionStorage.clear()
+        SDKStorage.setTokenStorageForTests(sessionStorage)
+        SuperTokensSessionBridge.storageOverride = sessionStorage
 
         if await SuperTokensSessionBridge.doesSessionExist() {
             await SuperTokensSessionBridge.signOut()
@@ -66,4 +72,26 @@ struct TestInfrastructure {
         #expect(statusCode == 200)
     }
 
+}
+
+private final class InMemorySuperTokensSessionStorage: TokenStorage, SuperTokensSessionStorage {
+    private var values: [String: String] = [:]
+
+    func get(_ name: String) -> String? {
+        values[name]
+    }
+
+    func set(_ name: String, value: String) -> Bool {
+        values[name] = value
+        return true
+    }
+
+    func remove(_ key: String) -> Bool {
+        values.removeValue(forKey: key)
+        return true
+    }
+
+    func clear() {
+        values.removeAll()
+    }
 }

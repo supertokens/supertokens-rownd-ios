@@ -262,42 +262,6 @@ public class Rownd: NSObject {
         Context.currentContext.eventListeners.append(handler)
     }
 
-    // This is an internal test function used only to manually test
-    // ensuring refresh tokens are only used once when attempting
-    // to fetch new access tokens
-    @available(
-        *, deprecated,
-        message: "Internal test use only. This method may change any time without warning."
-    )
-    public static func _refreshToken() {
-        Task {
-            do {
-                let refreshResp = try await Context.currentContext.authenticator.refreshToken()
-                print("refresh 1: \(String(describing: refreshResp))")
-            } catch {
-                print("Error refreshing token 1: \(String(describing: error))")
-            }
-        }
-
-        Task {
-            do {
-                let refreshResp = try await Context.currentContext.authenticator.refreshToken()
-                print("refresh 2: \(String(describing: refreshResp))")
-            } catch {
-                print("Error refreshing token 2: \(String(describing: error))")
-            }
-        }
-
-        Task {
-            do {
-                let refreshResp = try await Context.currentContext.authenticator.refreshToken()
-                print("refresh 3: \(String(describing: refreshResp))")
-            } catch {
-                print("Error refreshing token 3: \(String(describing: error))")
-            }
-        }
-    }
-
     internal static func determineSignInOptions(_ signInOptions: RowndSignInOptions?)
         -> RowndSignInOptions?
     {

@@ -276,7 +276,7 @@ class UserData {
                 }
 
                 throw RowndError(
-                    "Failed to retireve user: \(error.localizedDescription)"
+                    "Failed to retrieve user: \(error.localizedDescription)"
                 )
             }
         }

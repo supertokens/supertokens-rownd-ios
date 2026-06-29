@@ -9,10 +9,11 @@ import AnyCodable
         try await TestInfrastructure.prepare()
 
         let appConfig = try await getJSON(path: "auth/plugin/rownd/app-config")
+        let app = try #require(appConfig["app"] as? [String: Any])
 
         #expect(appConfig["status"] as? String == "OK")
-        #expect(appConfig["id"] as? String == "app_test_rownd_ios")
-        #expect(appConfig["name"] as? String == "Rownd iOS Integration Tests")
+        #expect(app["id"] as? String == "app_test_rownd_ios")
+        #expect(app["name"] as? String == "Rownd iOS Integration Tests")
     }
 
     @Test func urlProtocolCapturesSessionHeadersFromSuperTokensResponse() async throws {
