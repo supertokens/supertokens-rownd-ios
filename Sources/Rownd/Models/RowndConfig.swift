@@ -11,11 +11,18 @@ public struct RowndSuperTokensConfig: Encodable, Hashable {
     public var appName: String
     public var apiDomain: String
     public var apiBasePath: String
+    public var keychainAccessGroup: String?
 
-    public init(appName: String, apiDomain: String, apiBasePath: String = "/auth") {
+    public init(
+        appName: String,
+        apiDomain: String,
+        apiBasePath: String = "/auth",
+        keychainAccessGroup: String? = nil
+    ) {
         self.appName = appName
         self.apiDomain = apiDomain
         self.apiBasePath = apiBasePath
+        self.keychainAccessGroup = keychainAccessGroup
     }
 }
 

@@ -476,12 +476,7 @@ import AnyCodable
     }
 
     private func clearLocalSuperTokensSessionArtifacts() {
-        let userDefaults = UserDefaults.standard
-        userDefaults.removeObject(forKey: "st-storage-item-st-access-token")
-        userDefaults.removeObject(forKey: "st-storage-item-st-refresh-token")
-        userDefaults.removeObject(forKey: "supertokens-ios-fronttoken-key")
-        userDefaults.removeObject(forKey: "st-storage-item-st-last-access-token-update")
-        userDefaults.removeObject(forKey: "supertokens-ios-anticsrf-key")
+        SuperTokensSessionBridge.clearLocalSessionArtifacts()
     }
 }
 

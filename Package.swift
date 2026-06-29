@@ -78,7 +78,7 @@ let package = Package(
         .package(
             name: "SuperTokensIOS",
             url: "https://github.com/supertokens/supertokens-ios",
-            .upToNextMajor(from: "0.4.3")
+            .upToNextMajor(from: "0.5.0")
         ),
     ],
 

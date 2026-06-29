@@ -372,6 +372,7 @@ public class Rownd: NSObject {
             apiDomain: supertokens.apiDomain,
             apiBasePath: supertokens.apiBasePath,
             tokenTransferMethod: .header,
+            keychainAccessGroup: supertokens.keychainAccessGroup,
             eventHandler: debugEventHandler,
             preAPIHook: debugPreAPIHook,
             postAPIHook: debugPostAPIHook

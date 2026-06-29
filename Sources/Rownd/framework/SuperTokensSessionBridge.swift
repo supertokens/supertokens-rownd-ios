@@ -1,5 +1,6 @@
 import Foundation
 import JWTDecode
+import Security
 import SuperTokensIOS
 
 internal enum SuperTokensSessionBridge {
@@ -22,15 +23,15 @@ internal enum SuperTokensSessionBridge {
     }
 
     static func getRefreshToken() -> String? {
-        UserDefaults.standard.string(forKey: refreshTokenStorageKey)
+        storage().get(refreshTokenStorageKey)
     }
 
     static func getFrontToken() -> String? {
-        UserDefaults.standard.string(forKey: frontTokenStorageKey)
+        storage().get(frontTokenStorageKey)
     }
 
     static func getAntiCSRF() -> String? {
-        UserDefaults.standard.string(forKey: antiCSRFStorageKey)
+        storage().get(antiCSRFStorageKey)
     }
 
     static func attemptRefresh() async -> Bool {
@@ -71,19 +72,28 @@ internal enum SuperTokensSessionBridge {
             return
         }
 
-        let userDefaults = UserDefaults.standard
-        userDefaults.set(accessToken, forKey: accessTokenStorageKey)
-        userDefaults.set(refreshToken, forKey: refreshTokenStorageKey)
-
-        if let antiCSRF, !antiCSRF.isEmpty {
-            userDefaults.set(antiCSRF, forKey: antiCSRFStorageKey)
+        let storage = storage()
+        guard storage.set(accessTokenStorageKey, value: accessToken),
+              storage.set(refreshTokenStorageKey, value: refreshToken) else {
+            logger.warning("Skipping SuperTokens session bootstrap because session tokens could not be stored")
+            clearLocalSessionArtifactsInCurrentThread()
+            return
         }
 
-        userDefaults.set(frontToken ?? buildFrontToken(from: accessToken), forKey: frontTokenStorageKey)
-        userDefaults.set(
-            "\(Int64(Date().timeIntervalSince1970 * 1000))",
-            forKey: lastAccessTokenUpdateStorageKey
-        )
+        if let antiCSRF, !antiCSRF.isEmpty {
+            guard storage.set(antiCSRFStorageKey, value: antiCSRF) else {
+                logger.warning("SuperTokens session bootstrap could not store anti-CSRF token")
+                clearLocalSessionArtifactsInCurrentThread()
+                return
+            }
+        }
+
+        guard storage.set(frontTokenStorageKey, value: frontToken ?? buildFrontToken(from: accessToken)),
+              storage.set(lastAccessTokenUpdateStorageKey, value: "\(Int64(Date().timeIntervalSince1970 * 1000))") else {
+            logger.warning("Skipping SuperTokens session bootstrap because session metadata could not be stored")
+            clearLocalSessionArtifactsInCurrentThread()
+            return
+        }
     }
 
     static func syncRowndAuthStateFromSuperTokens() async {
@@ -116,12 +126,144 @@ internal enum SuperTokensSessionBridge {
     }
 
     private static func clearLocalSessionArtifactsInCurrentThread() {
+        let storage = storage()
+        storage.remove(accessTokenStorageKey)
+        storage.remove(refreshTokenStorageKey)
+        storage.remove(frontTokenStorageKey)
+        storage.remove(lastAccessTokenUpdateStorageKey)
+        storage.remove(antiCSRFStorageKey)
+
         let userDefaults = UserDefaults.standard
         userDefaults.removeObject(forKey: accessTokenStorageKey)
         userDefaults.removeObject(forKey: refreshTokenStorageKey)
         userDefaults.removeObject(forKey: frontTokenStorageKey)
         userDefaults.removeObject(forKey: lastAccessTokenUpdateStorageKey)
         userDefaults.removeObject(forKey: antiCSRFStorageKey)
+    }
+
+    private static func storage() -> SuperTokensKeychainSessionStorage {
+        let config = try? Rownd.requireSuperTokensConfig()
+        return SuperTokensKeychainSessionStorage(
+            apiDomain: config?.apiDomain,
+            apiBasePath: config?.apiBasePath,
+            accessGroup: config?.keychainAccessGroup
+        )
+    }
+}
+
+private struct SuperTokensKeychainSessionStorage {
+    private let service: String
+    private let accessGroup: String?
+
+    init(apiDomain: String?, apiBasePath: String?, accessGroup: String?) {
+        self.service = Self.serviceName(apiDomain: apiDomain, apiBasePath: apiBasePath)
+        self.accessGroup = accessGroup
+    }
+
+    func get(_ key: String) -> String? {
+        var query = baseQuery(key)
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess,
+              let data = result as? Data else {
+            return UserDefaults.standard.string(forKey: key)
+        }
+
+        return String(data: data, encoding: .utf8)
+    }
+
+    @discardableResult
+    func set(_ key: String, value: String) -> Bool {
+        guard let data = value.data(using: .utf8) else { return false }
+
+        let query = baseQuery(key)
+        let updateStatus = SecItemUpdate(
+            query as CFDictionary,
+            [kSecValueData as String: data] as CFDictionary
+        )
+
+        if updateStatus == errSecSuccess {
+            UserDefaults.standard.removeObject(forKey: key)
+            return true
+        }
+
+        guard updateStatus == errSecItemNotFound else { return false }
+
+        var addQuery = query
+        addQuery[kSecValueData as String] = data
+        addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+
+        let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
+        if addStatus == errSecSuccess {
+            UserDefaults.standard.removeObject(forKey: key)
+            return true
+        }
+
+        if addStatus == errSecDuplicateItem {
+            let retryStatus = SecItemUpdate(
+                query as CFDictionary,
+                [kSecValueData as String: data] as CFDictionary
+            )
+            if retryStatus == errSecSuccess {
+                UserDefaults.standard.removeObject(forKey: key)
+                return true
+            }
+        }
+
+        return false
+    }
+
+    func remove(_ key: String) {
+        SecItemDelete(baseQuery(key) as CFDictionary)
+    }
+
+    private func baseQuery(_ key: String) -> [String: Any] {
+        var query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: key
+        ]
+
+        if let accessGroup {
+            query[kSecAttrAccessGroup as String] = accessGroup
+        }
+
+        return query
+    }
+
+    private static func serviceName(apiDomain: String?, apiBasePath: String?) -> String {
+        let defaultService = "io.supertokens.session"
+        guard let apiDomain, let apiBasePath else { return defaultService }
+
+        return "\(defaultService).\(normaliseDomain(apiDomain))\(normalisePath(apiBasePath))"
+    }
+
+    private static func normaliseDomain(_ value: String) -> String {
+        let trimmedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let valueWithScheme = trimmedValue.hasPrefix("http://") || trimmedValue.hasPrefix("https://")
+            ? trimmedValue
+            : "https://\(trimmedValue)"
+
+        guard let components = URLComponents(string: valueWithScheme),
+              let scheme = components.scheme,
+              let host = components.host else {
+            return trimmedValue
+        }
+
+        if let port = components.port {
+            return "\(scheme)://\(host):\(port)"
+        }
+
+        return "\(scheme)://\(host)"
+    }
+
+    private static func normalisePath(_ value: String) -> String {
+        let trimmedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let path = trimmedValue.hasPrefix("/") ? trimmedValue : "/\(trimmedValue)"
+        return path.hasSuffix("/") && path.count > 1 ? String(path.dropLast()) : path
     }
 }
 

@@ -28,7 +28,7 @@ Pod::Spec.new do |s|
   s.dependency 'GoogleSignIn', '~> 7.0.0'
   s.dependency 'lottie-ios', '~> 4.5.0'
   s.dependency 'Factory', '~> 1.2.8'
-  s.dependency 'SuperTokensIOS', '~> 0.4.2'
+  s.dependency 'SuperTokensIOS', '~> 0.5.0'
 
   s.dependency 'LBBottomSheet'
   s.dependency 'AnyCodable'
