@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import SuperTokensIOS
 
-@testable import SuperTokensRownd
+@testable import Rownd
 
 struct TestInfrastructure {
     private static let sessionStorage = InMemorySuperTokensSessionStorage()

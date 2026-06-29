@@ -16,7 +16,7 @@ Enter this as the package repository url:
 https://github.com/supertokens/supertokens-rownd-ios.git
 ```
 
-Select the `SuperTokensRownd` package product and add it to your app target.
+Select the `Rownd` package product and add it to your app target.
 
 ## Usage
 
@@ -25,7 +25,7 @@ Select the `SuperTokensRownd` package product and add it to your app target.
 The SuperTokens-backed Rownd SDK requires both Rownd and SuperTokens configuration during application launch. In your `AppDelegate`, set the Rownd runtime config first, then call `Rownd.configure()`:
 
 ```swift
-import SuperTokensRownd
+import Rownd
 import UIKit
 
 func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey : Any]? = nil) -> Bool {
@@ -122,7 +122,7 @@ Here's an example SwiftUI view that displays different messages depending on the
 
 ```swift
 import SwiftUI
-import SuperTokensRownd
+import Rownd
 
 struct MyView: View {
     @StateObject var authState = Rownd.getInstance().state().subscribe { $0.auth }
@@ -241,7 +241,7 @@ class AppCustomizations : RowndCustomizations {
 }
 
 // AppDelegate.swift
-import SuperTokensRownd
+import Rownd
 
 class AppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey : Any]? = nil) -> Bool {
@@ -303,7 +303,7 @@ If you're building widgets that need access to Rownd auth state, you should list
 import Foundation
 import Combine
 import WidgetKit
-import SuperTokensRownd
+import Rownd
 
 class SomeClass {
 private var authState = Rownd.getInstance().state().subscribe { $0.auth }
@@ -331,7 +331,7 @@ To listen to events, first create a class that conforms to the `RowndEventHandle
 
 ```swift
 import Foundation
-import SuperTokensRownd
+import Rownd
 
 class RowndEventHandler: RowndEventHandlerDelegate {
     func handleRowndEvent(_ event: RowndEvent) {
@@ -563,7 +563,7 @@ Here's an example of how you might use `registerWebView` in your app:
 ```swift
 import UIKit
 import WebKit
-import SuperTokensRownd
+import Rownd
 
 class WebViewController: UIViewController {
     var webView: WKWebView!

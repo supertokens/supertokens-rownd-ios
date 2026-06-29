@@ -8,7 +8,7 @@
 import Combine
 import Foundation
 import AnyCodable
-import SuperTokensRownd
+import Rownd
 import WidgetKit
 import OSLog
 

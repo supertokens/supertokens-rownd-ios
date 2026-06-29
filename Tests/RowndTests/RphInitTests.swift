@@ -6,7 +6,7 @@
 //
 
 import Testing
-@testable import SuperTokensRownd
+@testable import Rownd
 import Foundation
 
 @Suite(.serialized) struct RphInitTests {

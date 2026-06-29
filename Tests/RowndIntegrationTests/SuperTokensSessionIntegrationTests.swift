@@ -2,7 +2,7 @@ import Foundation
 import Testing
 import AnyCodable
 
-@testable import SuperTokensRownd
+@testable import Rownd
 
 @Suite(.serialized) struct SuperTokensSessionIntegrationTests {
     @Test func pluginAppConfigRouteIsServedBySuperTokensHarness() async throws {

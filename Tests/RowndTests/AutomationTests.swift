@@ -7,7 +7,7 @@
 
 import XCTest
 
-@testable import SuperTokensRownd
+@testable import Rownd
 
 final class AutomationTests: XCTestCase {
     

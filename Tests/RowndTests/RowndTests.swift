@@ -6,7 +6,7 @@
 //
 
 import Testing
-@testable import SuperTokensRownd
+@testable import Rownd
 import Foundation
 import Get
 

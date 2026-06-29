@@ -6,7 +6,7 @@
 import Foundation
 import Testing
 
-@testable import SuperTokensRownd
+@testable import Rownd
 
 @Suite(.serialized) struct AppConfigSuperTokensTests {
     @Test func appConfigURLUsesDefaultBasePath() throws {

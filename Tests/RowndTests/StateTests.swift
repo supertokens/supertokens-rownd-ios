@@ -10,7 +10,7 @@ import XCTest
 import Combine
 import ReSwift
 
-@testable import SuperTokensRownd
+@testable import Rownd
 
 class StateTests: XCTestCase {
     override func setUp() {

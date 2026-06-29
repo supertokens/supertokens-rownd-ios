@@ -6,7 +6,7 @@
 //
 
 import SwiftUI
-import SuperTokensRownd
+import Rownd
 import Lottie
 
 struct SplashView: View {

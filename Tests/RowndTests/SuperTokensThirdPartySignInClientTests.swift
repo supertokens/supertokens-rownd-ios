@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 
-@testable import SuperTokensRownd
+@testable import Rownd
 
 @Suite(.serialized) struct SuperTokensThirdPartySignInClientTests {
     @Test func googleExchangePostsSigninupPayload() async throws {

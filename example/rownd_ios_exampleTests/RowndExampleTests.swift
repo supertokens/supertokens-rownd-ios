@@ -2,7 +2,7 @@ import XCTest
 import AnyCodable
 import SuperTokensIOS
 
-@testable import SuperTokensRownd
+@testable import Rownd
 
 final class RowndExampleTests: XCTestCase {
     private let backendURL = URL(string: ProcessInfo.processInfo.environment["TEST_BACKEND_URL"] ?? "http://127.0.0.1:3100")!
@@ -37,17 +37,17 @@ final class RowndExampleTests: XCTestCase {
             )
         )
 
-        try await createSession(userId: "ios-example-e2e-user")
-        let accessToken = try await Rownd.getAccessToken(throwIfMissing: true)
-        XCTAssertFalse(accessToken?.isEmpty ?? true)
+        let accessToken = try await createSession(userId: "ios-example-e2e-user")
+        XCTAssertFalse(accessToken.isEmpty)
 
         Rownd.user.set(data: [
             "user_id": AnyCodable("ios-example-e2e-user"),
             "email": AnyCodable("ios-example-e2e-user@example.com")
         ])
 
-        try await updateProfile()
-        try Rownd.signOut(scope: .all)
+        try await updateProfile(accessToken: accessToken)
+        try await signOut(accessToken: accessToken)
+        await Rownd.signOut()
 
         let didSignOut = await waitForCounter("signOut", toEqual: 1, timeout: 10)
         XCTAssertTrue(didSignOut)
@@ -63,23 +63,41 @@ final class RowndExampleTests: XCTestCase {
         return try JSONDecoder().decode(E2EHarnessConfig.self, from: data)
     }
 
-    private func createSession(userId: String) async throws {
+    private func createSession(userId: String) async throws -> String {
         let (_, response) = try await response("POST", path: "/test/session", body: ["userId": userId])
-        try SuperTokensSessionBridge.bootstrapSession(
-            accessToken: requiredHeader("st-access-token", in: response),
-            refreshToken: requiredHeader("st-refresh-token", in: response),
-            frontToken: requiredHeader("front-token", in: response),
-            antiCSRF: header("anti-csrf", in: response)
-        )
+        let accessToken = try requiredHeader("st-access-token", in: response)
+        let refreshToken = try requiredHeader("st-refresh-token", in: response)
+        let frontToken = try requiredHeader("front-token", in: response)
+        let antiCSRF = header("anti-csrf", in: response)
+
+        await Task.detached {
+            SuperTokensSessionBridge.bootstrapSession(
+                accessToken: accessToken,
+                refreshToken: refreshToken,
+                frontToken: frontToken,
+                antiCSRF: antiCSRF
+            )
+        }.value
+
+        return accessToken
     }
 
-    private func updateProfile() async throws {
+    private func updateProfile(accessToken: String) async throws {
         _ = try await response("PUT", path: "/auth/plugin/rownd/user", body: [
             "data": [
                 "user_id": "ios-example-e2e-user",
                 "first_name": "E2E"
             ]
-        ], session: URLSession.shared)
+        ], session: harnessSession, headers: authorizationHeaders(accessToken))
+    }
+
+    private func signOut(accessToken: String) async throws {
+        _ = try await response(
+            "POST",
+            path: "/auth/plugin/rownd/signout",
+            session: harnessSession,
+            headers: authorizationHeaders(accessToken)
+        )
     }
 
     private func waitForCounter(_ name: String, toEqual expected: Int, timeout: TimeInterval) async -> Bool {
@@ -110,17 +128,22 @@ final class RowndExampleTests: XCTestCase {
     }
 
     private func json(_ method: String, path: String, body: Any? = nil) async throws -> Any {
-        try await JSONSerialization.jsonObject(with: request(method, path: path, body: body))
+        let data = try await request(method, path: path, body: body)
+        return try JSONSerialization.jsonObject(with: data)
     }
 
     private func response(
         _ method: String,
         path: String,
         body: Any? = nil,
-        session: URLSession
+        session: URLSession,
+        headers: [String: String] = [:]
     ) async throws -> (Data, HTTPURLResponse) {
         var request = URLRequest(url: backendURL.appendingPathComponent(path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))))
         request.httpMethod = method
+        for (name, value) in headers {
+            request.setValue(value, forHTTPHeaderField: name)
+        }
 
         if let body = body {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -133,6 +156,15 @@ final class RowndExampleTests: XCTestCase {
         }
 
         return (data, response)
+    }
+
+    private func authorizationHeaders(_ accessToken: String) -> [String: String] {
+        [
+            "Authorization": "Bearer \(accessToken)",
+            "rid": "session",
+            "fdi-version": "1.18",
+            "st-auth-mode": "header"
+        ]
     }
 
     private func requiredHeader(_ name: String, in response: HTTPURLResponse) throws -> String {

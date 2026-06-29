@@ -6,7 +6,7 @@
 //
 
 import Foundation
-import SuperTokensRownd
+import Rownd
 
 struct EventError: Error, CustomStringConvertible {
     var message: String

@@ -30,7 +30,7 @@ jobs:
           scheme_list=$(xcodebuild -list -json | tr -d "\n")
           echo $scheme_list
           #default=$(echo $scheme_list | ruby -e "require 'json'; puts JSON.parse(STDIN.gets)['project']['targets'][0]")
-          default="SuperTokensRownd"
+          default="Rownd"
           echo $default | cat >default
           echo Using scheme: $default
       - name: Build

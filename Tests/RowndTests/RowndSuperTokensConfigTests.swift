@@ -8,7 +8,7 @@ import Get
 import SuperTokensIOS
 import Testing
 
-@testable import SuperTokensRownd
+@testable import Rownd
 
 @Suite(.serialized) struct RowndSuperTokensConfigTests {
     init() async throws {}

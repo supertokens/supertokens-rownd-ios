@@ -1,7 +1,7 @@
 import Testing
 import Foundation
 
-@testable import SuperTokensRownd
+@testable import Rownd
 
 @Suite(.serialized) struct RowndHubInteropMessageTests {
     @Test func authenticationMessageDecodesAntiCSRF() throws {

@@ -3,7 +3,7 @@ import Foundation
 import ReSwift
 import Testing
 
-@testable import SuperTokensRownd
+@testable import Rownd
 
 @MainActor
 struct SubscriberMutationTests {

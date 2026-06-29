@@ -3,7 +3,7 @@ import Testing
 import Network
 @testable import SuperTokensIOS
 
-@testable import SuperTokensRownd
+@testable import Rownd
 
 @Suite(.serialized) struct SuperTokensSessionBridgeTests {
     private static let supertokensConfig = RowndSuperTokensConfig(

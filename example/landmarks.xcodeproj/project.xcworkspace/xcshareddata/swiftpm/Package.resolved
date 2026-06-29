@@ -110,6 +110,15 @@
         }
       },
       {
+        "package": "SuperTokensIOS",
+        "repositoryURL": "https://github.com/supertokens/supertokens-ios",
+        "state": {
+          "branch": null,
+          "revision": "ac29a2399ad5902d0573087265b2d9f096af30ce",
+          "version": "0.5.0"
+        }
+      },
+      {
         "package": "SwiftKeychainWrapper",
         "repositoryURL": "https://github.com/jrendel/SwiftKeychainWrapper",
         "state": {

@@ -6,7 +6,7 @@
 //
 
 import SwiftUI
-import SuperTokensRownd
+import Rownd
 import AnyCodable
 import WidgetKit
 
@@ -157,11 +157,6 @@ struct ContentView: View {
                             firstName = user.current.data["first_name"]?.value as? String ?? ""
                             presentEditName = true
                         }
-
-                        Button("Refresh token") {
-                            Rownd._refreshToken()
-                        }
-                        .accessibilityIdentifier("e2e-refresh-token-button")
 
                         Button("Sign out") {
                             Rownd.signOut()
