@@ -117,7 +117,7 @@ class GoogleSignInCoordinator: NSObject {
     func signIn(_ intent: RowndSignInIntent?, hint: String?) async {
         let googleConfig = Context.currentContext.store.state.appConfig.config?.hub?.auth?.signInMethods?.google
         guard googleConfig?.enabled == true, let googleConfig = googleConfig else {
-            logger.error("Sign in with Google is not enabled. Turn it on in the Rownd platform")
+            logger.error("Google sign-in is not enabled in the backend app config. Expected /plugin/rownd/app-config to include config.hub.auth.sign_in_methods.google.enabled=true.")
             defaultSignInFlow()
             return
         }

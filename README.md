@@ -8,6 +8,8 @@ Once a user is authenticated, you can retrieve and update their profile informat
 
 ## Installation
 
+### Swift Package Manager
+
 In Xcode, select your project file, select the main target, then scroll down to the "frameworks" section to add a package dependency to your project. See the [official documentation](https://developer.apple.com/documentation/xcode/adding-package-dependencies-to-your-app) for specific steps.
 
 Enter this as the package repository url:
@@ -17,6 +19,22 @@ https://github.com/supertokens/supertokens-rownd-ios.git
 ```
 
 Select the `Rownd` package product and add it to your app target.
+
+### CocoaPods
+
+Add the pod to your `Podfile`:
+
+```ruby
+pod 'RowndSupertokens'
+```
+
+Then run:
+
+```sh
+pod install
+```
+
+The CocoaPods package exposes the same Swift module, so app code should still use `import Rownd`.
 
 ## Usage
 
