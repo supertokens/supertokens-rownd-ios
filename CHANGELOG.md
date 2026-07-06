@@ -1,3 +1,9 @@
+# Changelog
+
+## <small>0.1.1 (2026-07-06)</small>
+
+* chore: Rename cocoapod package ([adba350](https://github.com/supertokens/supertokens-rownd-ios/commit/adba350))
+
 ## Unreleased
 
 * breaking: require SuperTokens configuration and remove unsupported legacy auth paths
@@ -547,7 +553,7 @@
 
 ## [1.8.1](https://github.com/rownd/ios/compare/1.8.0...1.8.1) (2022-09-16)
 
-# Changelog
+
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
