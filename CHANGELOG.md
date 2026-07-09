@@ -1,5 +1,9 @@
 # Changelog
 
+## <small>0.1.2 (2026-07-09)</small>
+
+* chore: Add debug logs ([a969845](https://github.com/supertokens/supertokens-rownd-ios/commit/a969845))
+
 ## <small>0.1.1 (2026-07-06)</small>
 
 * chore: Rename cocoapod package ([adba350](https://github.com/supertokens/supertokens-rownd-ios/commit/adba350))
