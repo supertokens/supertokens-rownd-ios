@@ -75,6 +75,7 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
             let signInCompletedData = eventData.reduce(into: [String: AnyCodable?]()) { result, entry in
                 result[entry.key] = AnyCodable(entry.value)
             }
+            logger.debug("Emitting sign_in_completed from authentication result: user_type=\(eventData["user_type"] ?? "nil") app_variant_user_type=\(eventData["app_variant_user_type"] ?? "nil")")
             RowndEventEmitter.emit(RowndEvent(
                 event: .signInCompleted,
                 data: signInCompletedData.isEmpty ? nil : signInCompletedData
@@ -326,7 +327,12 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
             switch hubMessage.type {
             case .authentication:
                 guard case .authentication(let authMessage) = hubMessage.payload else { return }
-                guard Self.canHandleAuthentication(on: hubViewController?.targetPage) else { return }
+                let targetPage = hubViewController?.targetPage
+                guard Self.canHandleAuthentication(on: targetPage) else {
+                    logger.debug("Ignoring Hub authentication message for targetPage=\(String(describing: targetPage))")
+                    return
+                }
+                logger.debug("Handling Hub authentication message: targetPage=\(String(describing: targetPage)) user_type=\(authMessage.userType ?? "nil") app_variant_user_type=\(authMessage.appVariantUserType ?? "nil")")
                 let initialJsFunctionArgsAsJson = self.jsFunctionArgsAsJson
 
                 Task.detached(priority: .userInitiated) { [weak self] in
@@ -422,6 +428,9 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
                 break
             case .event:
                 guard case .event(let eventMessage) = hubMessage.payload else { return }
+                let targetPage = self.hubViewController?.targetPage
+                logger.debug("Received Hub event message: event=\(eventMessage.event.rawValue) targetPage=\(String(describing: targetPage))")
+                logger.debug("Forwarding Hub event message: event=\(eventMessage.event.rawValue)")
                 RowndEventEmitter.emit(eventMessage)
                 break
             case .unknown:
