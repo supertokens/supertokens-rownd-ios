@@ -115,6 +115,84 @@ class Storage: NSObject, NSFilePresenter {
         return value
     }
 
+    @discardableResult
+    func remove(forKey key: String) -> Bool {
+        var didRemove = true
+        var urls: [URL] = []
+
+        if let sharedFileUrl = computeSharedStoragePath(Rownd.config.appGroupPrefix) {
+            urls.append(sharedFileUrl.appendingPathComponent(key))
+        }
+        if let appFileUrl = computeAppStoragePath() {
+            urls.append(appFileUrl.appendingPathComponent(key))
+        }
+
+        for url in urls where FileManager.default.fileExists(atPath: url.path) {
+            do {
+                try FileManager.default.removeItem(at: url)
+            } catch {
+                didRemove = false
+                Self.log.error("Removing stored state failed: \(String(describing: error))")
+            }
+        }
+
+        userDefaultsStore?.removeObject(forKey: key)
+        return didRemove
+    }
+
+    func hasInstallationMarker(forKey key: String) -> Bool {
+        let markerURL: URL?
+        if Bundle.main.bundlePath.hasSuffix(".appex") {
+            markerURL = computeSharedStoragePath(Rownd.config.appGroupPrefix)?.appendingPathComponent(key)
+                ?? computeAppStoragePath()?.appendingPathComponent(key)
+        } else {
+            markerURL = computeAppStoragePath()?.appendingPathComponent(key)
+        }
+
+        guard let markerURL else { return false }
+        return FileManager.default.fileExists(atPath: markerURL.path)
+    }
+
+    @discardableResult
+    func setInstallationMarker(forKey key: String) -> Bool {
+        let urls = installationMarkerURLs(forKey: key)
+
+        for url in urls {
+            do {
+                try FileManager.default.createDirectory(
+                    at: url.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try Data("true".utf8).write(to: url, options: .atomic)
+                var resourceValues = URLResourceValues()
+                resourceValues.isExcludedFromBackup = true
+                var mutableURL = url
+                try mutableURL.setResourceValues(resourceValues)
+            } catch {
+                Self.log.error("Writing installation marker failed: \(String(describing: error))")
+                for markerURL in urls where FileManager.default.fileExists(atPath: markerURL.path) {
+                    try? FileManager.default.removeItem(at: markerURL)
+                }
+                return false
+            }
+        }
+
+        return true
+    }
+
+    private func installationMarkerURLs(forKey key: String) -> [URL] {
+        var urls: [URL] = []
+
+        if let sharedURL = computeSharedStoragePath(Rownd.config.appGroupPrefix) {
+            urls.append(sharedURL.appendingPathComponent(key))
+        }
+        if let appURL = computeAppStoragePath() {
+            urls.append(appURL.appendingPathComponent(key))
+        }
+
+        return urls
+    }
+
     func set(_ value: String, forKey key: String) {
 
         // If shared folder enabled, write to that

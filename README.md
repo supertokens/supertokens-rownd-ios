@@ -72,6 +72,10 @@ Configuration notes:
 - `Rownd.config.deepLinkScheme` should be the custom URL scheme your app registers and the SDK accepts, for example `rowndsupertokens` or your app-specific scheme.
 - `RowndSuperTokensConfig.apiDomain` should point at the backend that hosts your SuperTokens plugin routes. `Rownd.configure()` also assigns this value to `Rownd.config.apiUrl`.
 - `RowndSuperTokensConfig.apiBasePath` must match your backend SuperTokens API base path, usually `/auth`.
+- Sessions are installation-scoped. On the first launch after app deletion and reinstall, `Rownd.configure()` clears retained SuperTokens Keychain credentials before initializing the session SDK.
+- The first upgrade to a version supporting installation tracking clears the existing session once. This establishes tracking without trusting backed-up application state.
+
+When sharing sessions with app extensions, configure the same `Rownd.config.appGroupPrefix`, `keychainAccessGroup`, API domain, and base path in the containing app and every extension. The app group shares the installation marker while the Keychain access group shares the credentials. App offloading preserves app data and therefore preserves the session, while deleting the app does not.
 
 #### Handling deep links and universal links
 
@@ -289,10 +293,10 @@ It's possible to access the Rownd state from within an app extension, like a wid
 
 Follow these steps to configure your app and extension to work with Rownd:
 
-1. Add an [app group](https://developer.apple.com/documentation/xcode/configuring-app-groups) entitlement to both your app and any extensions that will use Rownd.
+1. Add an [app group](https://developer.apple.com/documentation/xcode/configuring-app-groups) entitlement and a shared [Keychain access group](https://developer.apple.com/documentation/security/sharing-access-to-keychain-items-among-a-collection-of-apps) to both your app and any extensions that will use Rownd.
    This app group **must** be named like this: `<prefix>.io.rownd.sdk`. For example, if you work at a company with the acme.com domain, your app group might look like this: `com.acme.app.io.rownd.sdk`. Rownd will store its data in this app group. Your app should store data in a separate app group to prevent any collisions.
 
-2. In your app's `AppDelegate` file as well as your extension's entry point, set the app group prefix you defined above via `Rownd.config.appGroupPrefix = "<prefix>"` (e.g., `Rownd.config.appGroupPrefix = "com.acme.app"`)
+2. In your app's `AppDelegate` file as well as your extension's entry point, set the app group prefix you defined above via `Rownd.config.appGroupPrefix = "<prefix>"` (e.g., `Rownd.config.appGroupPrefix = "com.acme.app"`). Pass the same Keychain access group to `RowndSuperTokensConfig` in both targets.
 
 3. In your extension, call `Rownd.configure()` prior to accessing authentication state. Here's an example:
 
@@ -304,7 +308,8 @@ Follow these steps to configure your app and extension to work with Rownd:
             supertokens: RowndSuperTokensConfig(
                 appName: "Your App",
                 apiDomain: "https://api.example.com",
-                apiBasePath: "/auth"
+                apiBasePath: "/auth",
+                keychainAccessGroup: "YOUR_TEAM_ID.com.acme.app.shared"
             )
         )
 

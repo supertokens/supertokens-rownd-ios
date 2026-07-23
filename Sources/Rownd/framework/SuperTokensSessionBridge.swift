@@ -8,6 +8,7 @@ internal enum SuperTokensSessionBridge {
     private static let refreshTokenStorageKey = "st-storage-item-st-refresh-token"
     private static let frontTokenStorageKey = "supertokens-ios-fronttoken-key"
     private static let lastAccessTokenUpdateStorageKey = "st-storage-item-st-last-access-token-update"
+    private static let refreshTokenFrontendStorageKey = "st-storage-item-sIRTFrontend"
     private static let antiCSRFStorageKey = "supertokens-ios-anticsrf-key"
     internal static var storageOverride: SuperTokensSessionStorage?
 
@@ -50,11 +51,12 @@ internal enum SuperTokensSessionBridge {
                 }
             }
 
-            clearLocalSessionArtifacts()
+            _ = clearLocalSessionArtifacts()
         }.value
     }
 
-    static func clearLocalSessionArtifacts() {
+    @discardableResult
+    static func clearLocalSessionArtifacts() -> Bool {
         clearLocalSessionArtifactsInCurrentThread()
     }
 
@@ -126,20 +128,25 @@ internal enum SuperTokensSessionBridge {
         return data.base64EncodedString()
     }
 
-    private static func clearLocalSessionArtifactsInCurrentThread() {
+    @discardableResult
+    private static func clearLocalSessionArtifactsInCurrentThread() -> Bool {
         let storage = storage()
-        storage.remove(accessTokenStorageKey)
-        storage.remove(refreshTokenStorageKey)
-        storage.remove(frontTokenStorageKey)
-        storage.remove(lastAccessTokenUpdateStorageKey)
-        storage.remove(antiCSRFStorageKey)
+        var didClear = true
+        didClear = storage.remove(accessTokenStorageKey) && didClear
+        didClear = storage.remove(refreshTokenStorageKey) && didClear
+        didClear = storage.remove(frontTokenStorageKey) && didClear
+        didClear = storage.remove(lastAccessTokenUpdateStorageKey) && didClear
+        didClear = storage.remove(refreshTokenFrontendStorageKey) && didClear
+        didClear = storage.remove(antiCSRFStorageKey) && didClear
 
         let userDefaults = UserDefaults.standard
         userDefaults.removeObject(forKey: accessTokenStorageKey)
         userDefaults.removeObject(forKey: refreshTokenStorageKey)
         userDefaults.removeObject(forKey: frontTokenStorageKey)
         userDefaults.removeObject(forKey: lastAccessTokenUpdateStorageKey)
+        userDefaults.removeObject(forKey: refreshTokenFrontendStorageKey)
         userDefaults.removeObject(forKey: antiCSRFStorageKey)
+        return didClear
     }
 
     private static func storage() -> SuperTokensSessionStorage {
@@ -286,6 +293,9 @@ private struct SuperTokensKeychainSessionStorage: SuperTokensSessionStorage {
     private static func normalisePath(_ value: String) -> String {
         let trimmedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
         let path = trimmedValue.hasPrefix("/") ? trimmedValue : "/\(trimmedValue)"
+        if path == "/" {
+            return ""
+        }
         return path.hasSuffix("/") && path.count > 1 ? String(path.dropLast()) : path
     }
 }

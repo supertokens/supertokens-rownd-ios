@@ -58,6 +58,7 @@ public class Rownd: NSObject {
         }
 
         do {
+            try InstallationSessionManager.prepareForInitialization(config: config.supertokens)
             try initializeSuperTokensIfNeeded()
         } catch {
             fatalError("Failed to initialize SuperTokens: \(error)")
@@ -294,6 +295,7 @@ public class Rownd: NSObject {
     internal static func validateSuperTokensConfig(_ config: RowndSuperTokensConfig) throws
         -> RowndSuperTokensConfig
     {
+        var config = config
         if config.appName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             throw RowndError("SuperTokens appName must not be empty")
         }
@@ -305,6 +307,12 @@ public class Rownd: NSObject {
         if config.apiBasePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             throw RowndError("SuperTokens apiBasePath must not be empty")
         }
+
+        var normalizedBasePath = config.apiBasePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        while normalizedBasePath.hasSuffix("/") && normalizedBasePath.count > 1 {
+            normalizedBasePath.removeLast()
+        }
+        config.apiBasePath = normalizedBasePath
 
         return config
     }

@@ -166,6 +166,36 @@ import Network
         }
     }
 
+    @Test func localCleanupRemovesAllSuperTokensSessionArtifacts() async throws {
+        try await withMockedSuperTokensSession {
+            let storage = RecordingSessionStorage()
+            let previousStorage = SuperTokensSessionBridge.storageOverride
+            SuperTokensSessionBridge.storageOverride = storage
+            defer {
+                SuperTokensSessionBridge.storageOverride = previousStorage
+            }
+
+            let keys = [
+                "st-storage-item-st-access-token",
+                "st-storage-item-st-refresh-token",
+                "supertokens-ios-fronttoken-key",
+                "st-storage-item-st-last-access-token-update",
+                "st-storage-item-sIRTFrontend",
+                "supertokens-ios-anticsrf-key"
+            ]
+            for key in keys {
+                UserDefaults.standard.set("value", forKey: key)
+            }
+
+            #expect(SuperTokensSessionBridge.clearLocalSessionArtifacts())
+
+            for key in keys {
+                #expect(UserDefaults.standard.string(forKey: key) == nil)
+            }
+            #expect(Set(storage.removedKeys) == Set(keys))
+        }
+    }
+
     @Test func rowndSignOutClearsSuperTokensAndCompatibilityState() async throws {
         try await withMockedSuperTokensSession {
             let originalContext = Context.currentContext
@@ -309,8 +339,8 @@ import Network
                 URLProtocol.unregisterClass(SuperTokensSignOutURLProtocol.self)
             }
 
-            await clearSessionIfNeeded()
             clearStoredSessionArtifacts()
+            await clearSessionIfNeeded()
             try await operation()
             await clearSessionIfNeeded()
             clearStoredSessionArtifacts()
@@ -360,6 +390,7 @@ import Network
         userDefaults.removeObject(forKey: "st-storage-item-st-refresh-token")
         userDefaults.removeObject(forKey: "supertokens-ios-fronttoken-key")
         userDefaults.removeObject(forKey: "st-storage-item-st-last-access-token-update")
+        userDefaults.removeObject(forKey: "st-storage-item-sIRTFrontend")
         userDefaults.removeObject(forKey: "supertokens-ios-anticsrf-key")
     }
 
@@ -409,6 +440,23 @@ private final class UserDefaultsTokenStorage: TokenStorage {
 
     func remove(_ name: String) -> Bool {
         UserDefaults.standard.removeObject(forKey: name)
+        return true
+    }
+}
+
+private final class RecordingSessionStorage: SuperTokensSessionStorage {
+    private(set) var removedKeys: [String] = []
+
+    func get(_ key: String) -> String? {
+        nil
+    }
+
+    func set(_ key: String, value: String) -> Bool {
+        true
+    }
+
+    func remove(_ key: String) -> Bool {
+        removedKeys.append(key)
         return true
     }
 }
