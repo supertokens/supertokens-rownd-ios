@@ -68,6 +68,11 @@ extension AuthState: Codable {
         }
     }
 
+    static func isSuperTokensAccessToken(_ accessToken: String?) -> Bool {
+        guard let accessToken, let jwt = try? decode(jwt: accessToken) else { return false }
+        return isSuperTokensAccessToken(jwt)
+    }
+
     private static func isSuperTokensAccessToken(_ jwt: JWT) -> Bool {
         jwt.claim(name: "sessionHandle").string != nil
             || jwt.claim(name: "tId").string != nil

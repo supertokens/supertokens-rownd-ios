@@ -57,14 +57,36 @@ public class Rownd: NSObject {
             config.appKey = _appKey
         }
 
+        let installationPreparation: InstallationSessionManager.Preparation
         do {
-            try InstallationSessionManager.prepareForInitialization(config: config.supertokens)
+            installationPreparation = try InstallationSessionManager.prepareForInitialization(
+                config: config.supertokens
+            )
             try initializeSuperTokensIfNeeded()
         } catch {
             fatalError("Failed to initialize SuperTokens: \(error)")
         }
 
-        let state = await inst.inflateStoreCache()
+        var state = await inst.inflateStoreCache()
+        let preparedAuthState = InstallationSessionManager.authStateAfterPreparation(
+            state.auth,
+            didClearSuperTokensSession: installationPreparation.didClearSuperTokensSession
+        )
+        var persistPreparedState: (() -> Bool)?
+        if let preparedState = await MainActor.run(body: {
+            applyPreparedAuthState(preparedAuthState, to: Context.currentContext.store)
+        }) {
+            state = preparedState
+            persistPreparedState = { state.saveImmediately() }
+        }
+        do {
+            try InstallationSessionManager.completeInitialization(
+                installationPreparation,
+                persistPreparedState: persistPreparedState
+            )
+        } catch {
+            fatalError("Failed to initialize SuperTokens: \(error)")
+        }
         await LegacySessionMigrator.migrateIfNeeded(authState: state.auth)
 
         // Skip the rest within app extensions
@@ -319,6 +341,16 @@ public class Rownd: NSObject {
 
     internal static func requireSuperTokensConfig() throws -> RowndSuperTokensConfig {
         try config.requireSuperTokensConfig()
+    }
+
+    @MainActor
+    internal static func applyPreparedAuthState(
+        _ preparedAuthState: AuthState,
+        to store: Store<RowndState>
+    ) -> RowndState? {
+        guard preparedAuthState != store.state.auth else { return nil }
+        store.dispatch(SetAuthState(payload: preparedAuthState))
+        return store.state
     }
 
     @discardableResult

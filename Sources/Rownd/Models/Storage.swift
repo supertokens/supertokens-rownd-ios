@@ -56,21 +56,24 @@ class Storage: NSObject, NSFilePresenter {
         return try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true).appendingPathComponent(defaultContainerName)
     }
 
-    private func writeToStorage(_ value: String, fileUrl: URL) {
-
+    private func writeToStorage(_ value: String, fileUrl: URL) -> Bool {
         let fileCoordinator: NSFileCoordinator = NSFileCoordinator(filePresenter: self)
-        let errorPointer: NSErrorPointer = nil
-        fileCoordinator.coordinate(writingItemAt: fileUrl, options: .forReplacing, error: errorPointer) { url in
+        var coordinationError: NSError?
+        var didWrite = false
+        fileCoordinator.coordinate(writingItemAt: fileUrl, options: .forReplacing, error: &coordinationError) { url in
             do {
                 try value.write(to: url, atomically: false, encoding: .utf8)
+                didWrite = true
             } catch {
                 Self.log.error("Writing state failed \(String(describing: error))")
             }
         }
 
-        if let error = errorPointer?.pointee {
+        if let error = coordinationError {
             Self.log.error("Storage write coordination failed: \(error.localizedDescription).")
         }
+
+        return didWrite && coordinationError == nil
     }
 
     private func readFromStorage(_ fileUrl: URL) -> String? {
@@ -193,31 +196,45 @@ class Storage: NSObject, NSFilePresenter {
         return urls
     }
 
-    func set(_ value: String, forKey key: String) {
+    @discardableResult
+    func set(_ value: String, forKey key: String) -> Bool {
+        var didWrite = true
 
         // If shared folder enabled, write to that
         if let sharedFileUrl = computeSharedStoragePath(Rownd.config.appGroupPrefix) {
-            writeToStorage(value, fileUrl: sharedFileUrl.appendingPathComponent(key))
-            Self.log.debug("Successfully wrote to \(String(describing: sharedFileUrl.appendingPathComponent(key)))")
+            let sharedURL = sharedFileUrl.appendingPathComponent(key)
+            let didWriteSharedValue = writeToStorage(value, fileUrl: sharedURL)
+            didWrite = didWriteSharedValue && didWrite
+            if didWriteSharedValue {
+                Self.log.debug("Successfully wrote to \(String(describing: sharedURL))")
+            }
         }
 
         // Always write to default
         appFileIf: if let appFileUrl = computeAppStoragePath() {
-            if !FileManager.default.fileExists(atPath: appFileUrl.absoluteString) {
+            if !FileManager.default.fileExists(atPath: appFileUrl.path) {
                 do {
                     try FileManager.default.createDirectory(at: appFileUrl, withIntermediateDirectories: true, attributes: nil)
                 } catch {
                     Self.log.error("Failed to create storage directory: \(String(describing: error))")
+                    didWrite = false
                     break appFileIf
                 }
             }
 
-            writeToStorage(value, fileUrl: appFileUrl.appendingPathComponent(key))
-            Self.log.debug("Successfully wrote to \(String(describing: appFileUrl.appendingPathComponent(key)))")
+            let appURL = appFileUrl.appendingPathComponent(key)
+            let didWriteAppValue = writeToStorage(value, fileUrl: appURL)
+            didWrite = didWriteAppValue && didWrite
+            if didWriteAppValue {
+                Self.log.debug("Successfully wrote to \(String(describing: appURL))")
+            }
+        } else {
+            didWrite = false
         }
 
         // We no longer want to use UserDefaults for state, so we'll remove this later.
         // Mainly keeping it around for backward compat purposes. Remove in v5.0 or later.
         userDefaultsStore?.set(value, forKey: key)
+        return didWrite
     }
 }

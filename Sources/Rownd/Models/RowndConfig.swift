@@ -12,17 +12,20 @@ public struct RowndSuperTokensConfig: Encodable, Hashable {
     public var apiDomain: String
     public var apiBasePath: String
     public var keychainAccessGroup: String?
+    public var clearSessionOnNewInstallation: Bool
 
     public init(
         appName: String,
         apiDomain: String,
         apiBasePath: String = "/auth",
-        keychainAccessGroup: String? = nil
+        keychainAccessGroup: String? = nil,
+        clearSessionOnNewInstallation: Bool = false
     ) {
         self.appName = appName
         self.apiDomain = apiDomain
         self.apiBasePath = apiBasePath
         self.keychainAccessGroup = keychainAccessGroup
+        self.clearSessionOnNewInstallation = clearSessionOnNewInstallation
     }
 }
 

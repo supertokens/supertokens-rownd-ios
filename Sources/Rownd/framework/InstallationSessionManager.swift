@@ -2,19 +2,35 @@ import CryptoKit
 import Foundation
 
 internal enum InstallationSessionManager {
-    private static let rowndStateKey = "RowndState"
+    struct Preparation {
+        let markerKey: String?
+        let didClearSuperTokensSession: Bool
+    }
 
-    static func prepareForInitialization(config: RowndSuperTokensConfig) throws {
+    static func prepareForInitialization(config: RowndSuperTokensConfig) throws -> Preparation {
         let markerKey = installationMarkerKey(config: config)
-        try prepareForInitialization(
+        let didClearSuperTokensSession = try prepareForInitialization(
             hasInstallationMarker: Storage.shared.hasInstallationMarker(forKey: markerKey),
-            clearLocalData: {
-                let didClearSession = SuperTokensSessionBridge.clearLocalSessionArtifacts()
-                let didClearState = Storage.shared.remove(forKey: rowndStateKey)
-                return didClearSession && didClearState
-            },
+            shouldClearSuperTokensSession: config.clearSessionOnNewInstallation,
+            clearSuperTokensSession: SuperTokensSessionBridge.clearLocalSessionArtifacts
+        )
+        return Preparation(
+            markerKey: didClearSuperTokensSession == nil ? nil : markerKey,
+            didClearSuperTokensSession: didClearSuperTokensSession == true
+        )
+    }
+
+    static func completeInitialization(
+        _ preparation: Preparation,
+        persistPreparedState: (() -> Bool)? = nil
+    ) throws {
+        try completeInitialization(
+            shouldPersistPreparedState: persistPreparedState != nil,
+            persistPreparedState: persistPreparedState ?? { true },
+            shouldWriteInstallationMarker: preparation.markerKey != nil,
             writeInstallationMarker: {
-                Storage.shared.setInstallationMarker(forKey: markerKey)
+                guard let markerKey = preparation.markerKey else { return false }
+                return Storage.shared.setInstallationMarker(forKey: markerKey)
             }
         )
     }
@@ -31,17 +47,44 @@ internal enum InstallationSessionManager {
 
     static func prepareForInitialization(
         hasInstallationMarker: Bool,
-        clearLocalData: () -> Bool,
-        writeInstallationMarker: () -> Bool
-    ) throws {
-        guard !hasInstallationMarker else { return }
+        shouldClearSuperTokensSession: Bool,
+        clearSuperTokensSession: () -> Bool
+    ) throws -> Bool? {
+        guard !hasInstallationMarker else { return nil }
 
-        guard clearLocalData() else {
+        guard !shouldClearSuperTokensSession || clearSuperTokensSession() else {
             throw RowndError("Could not clear session data for a new app installation")
         }
 
+        return shouldClearSuperTokensSession
+    }
+
+    static func completeInitialization(
+        shouldPersistPreparedState: Bool = false,
+        persistPreparedState: () -> Bool = { true },
+        shouldWriteInstallationMarker: Bool,
+        writeInstallationMarker: () -> Bool
+    ) throws {
+        guard shouldWriteInstallationMarker else { return }
+        guard !shouldPersistPreparedState || persistPreparedState() else {
+            throw RowndError("Could not persist cleared state for a new app installation")
+        }
         guard writeInstallationMarker() else {
             throw RowndError("Could not persist the app installation marker")
         }
+    }
+
+    static func authStateAfterPreparation(
+        _ authState: AuthState,
+        didClearSuperTokensSession: Bool
+    ) -> AuthState {
+        guard didClearSuperTokensSession,
+              AuthState.isSuperTokensAccessToken(authState.accessToken) else {
+            return authState
+        }
+
+        var clearedAuthState = AuthState()
+        clearedAuthState.hasPreviouslySignedIn = authState.hasPreviouslySignedIn
+        return clearedAuthState
     }
 }

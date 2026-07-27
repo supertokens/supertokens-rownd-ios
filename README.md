@@ -72,10 +72,11 @@ Configuration notes:
 - `Rownd.config.deepLinkScheme` should be the custom URL scheme your app registers and the SDK accepts, for example `rowndsupertokens` or your app-specific scheme.
 - `RowndSuperTokensConfig.apiDomain` should point at the backend that hosts your SuperTokens plugin routes. `Rownd.configure()` also assigns this value to `Rownd.config.apiUrl`.
 - `RowndSuperTokensConfig.apiBasePath` must match your backend SuperTokens API base path, usually `/auth`.
-- Sessions are installation-scoped. On the first launch after app deletion and reinstall, `Rownd.configure()` clears retained SuperTokens Keychain credentials before initializing the session SDK.
-- The first upgrade to a version supporting installation tracking clears the existing session once. This establishes tracking without trusting backed-up application state.
+- Set `RowndSuperTokensConfig.clearSessionOnNewInstallation` to `true` to clear retained SuperTokens credentials when the installation marker is missing. It defaults to `false`, and marker tracking is still established when cleanup is disabled.
+- Enabling cleanup in the first marker-aware release also clears existing SuperTokens sessions once. To avoid that adoption-time reset, first release with the default disabled, then enable cleanup after the installed population has established markers. Users who skip the marker-establishing release are still reset when they first launch a cleanup-enabled release.
+- Installation cleanup never removes legacy `RowndState`, allowing existing Rownd sessions to migrate to SuperTokens without requiring users to sign in again. SuperTokens-derived compatibility auth is cleared with the native session.
 
-When sharing sessions with app extensions, configure the same `Rownd.config.appGroupPrefix`, `keychainAccessGroup`, API domain, and base path in the containing app and every extension. The app group shares the installation marker while the Keychain access group shares the credentials. App offloading preserves app data and therefore preserves the session, while deleting the app does not.
+When sharing sessions with app extensions, configure the same `Rownd.config.appGroupPrefix`, `keychainAccessGroup`, API domain, base path, and installation cleanup setting in the containing app and every extension. The app group shares the installation marker while the Keychain access group shares the credentials. App offloading preserves app data and therefore preserves the session. Deleting the app removes its local marker; retained SuperTokens credentials are cleared on the next containing-app launch when cleanup is enabled.
 
 #### Handling deep links and universal links
 

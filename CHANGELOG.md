@@ -10,7 +10,7 @@
 
 ## Unreleased
 
-* security: clear retained SuperTokens sessions once on adoption and after app reinstall
+* security: optionally clear retained SuperTokens sessions on markerless launches without removing legacy Rownd migration state
 * breaking: require SuperTokens configuration and remove unsupported legacy auth paths
 * breaking: remove native passkey APIs/routes and Firebase connection-action APIs/routes from the SuperTokens-backed SDK
 * breaking: remove legacy smart-link auth and public legacy token exchange APIs

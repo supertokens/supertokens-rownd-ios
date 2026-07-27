@@ -21,6 +21,7 @@ import Testing
             )
 
             #expect(try Rownd.validateSuperTokensConfig(validConfig) == validConfig)
+            #expect(!validConfig.clearSessionOnNewInstallation)
             #expect(
                 try Rownd.validateSuperTokensConfig(
                     RowndSuperTokensConfig(
