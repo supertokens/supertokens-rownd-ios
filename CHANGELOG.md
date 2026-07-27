@@ -1,5 +1,10 @@
 # Changelog
 
+## <small>0.1.4 (2026-07-27)</small>
+
+* fix: mark session clear as opt in and prevent rownd session removal ([bda8f2f](https://github.com/supertokens/supertokens-rownd-ios/commit/bda8f2f))
+* chore: release v0.1.3 ([fa36084](https://github.com/supertokens/supertokens-rownd-ios/commit/fa36084))
+
 ## <small>0.1.2 (2026-07-09)</small>
 
 * chore: Add debug logs ([a969845](https://github.com/supertokens/supertokens-rownd-ios/commit/a969845))
