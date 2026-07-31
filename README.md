@@ -72,6 +72,7 @@ Configuration notes:
 - `Rownd.config.deepLinkScheme` should be the custom URL scheme your app registers and the SDK accepts, for example `rowndsupertokens` or your app-specific scheme.
 - `RowndSuperTokensConfig.apiDomain` should point at the backend that hosts your SuperTokens plugin routes. `Rownd.configure()` also assigns this value to `Rownd.config.apiUrl`.
 - `RowndSuperTokensConfig.apiBasePath` must match your backend SuperTokens API base path, usually `/auth`.
+- `appVariantId` is optional. Set it when this app belongs to a Rownd app variant so Hub and native Google sign-in include it in authentication requests.
 - Set `RowndSuperTokensConfig.clearSessionOnNewInstallation` to `true` to clear retained SuperTokens credentials when the installation marker is missing. It defaults to `false`, and marker tracking is still established when cleanup is disabled.
 - Enabling cleanup in the first marker-aware release also clears existing SuperTokens sessions once. To avoid that adoption-time reset, first release with the default disabled, then enable cleanup after the installed population has established markers. Users who skip the marker-establishing release are still reset when they first launch a cleanup-enabled release.
 - Installation cleanup never removes legacy `RowndState`, allowing existing Rownd sessions to migrate to SuperTokens without requiring users to sign in again. SuperTokens-derived compatibility auth is cleared with the native session.

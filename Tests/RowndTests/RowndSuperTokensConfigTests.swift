@@ -192,6 +192,7 @@ import Testing
         try await withGlobalTestLock {
             var config = RowndConfig()
             config.appKey = "app_test"
+            config.appVariantId = "variant_123"
             config.supertokens = RowndSuperTokensConfig(
                 appName: "Example App",
                 apiDomain: "https://api.example.com",
@@ -210,6 +211,7 @@ import Testing
             #expect(queryItems["config"] == "encoded-config")
             #expect(queryItems["sign_in"] == "encoded-sign-in")
             #expect(queryItems["appKey"] == "app_test")
+            #expect(queryItems["appVariantId"] == "variant_123")
             #expect(queryItems["apiDomain"] == "https://api.example.com")
             #expect(queryItems["apiBasePath"] == "/custom-auth")
         }

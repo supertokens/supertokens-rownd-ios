@@ -6,6 +6,8 @@ import Testing
 @Suite(.serialized) struct SuperTokensThirdPartySignInClientTests {
     @Test func googleExchangePostsSigninupPayload() async throws {
         try await withGlobalTestLock {
+            let originalConfig = Rownd.config
+            defer { Rownd.config = originalConfig }
             ThirdPartySignInURLProtocol.reset()
             ThirdPartySignInURLProtocol.responseBody = #"{"status":"OK","createdNewRecipeUser":true}"#.data(using: .utf8)!
 
@@ -34,6 +36,31 @@ import Testing
             let tokens = json?["oAuthTokens"] as? [String: Any]
             #expect(tokens?["id_token"] as? String == "google-id-token")
             #expect(json?["redirectURIInfo"] == nil)
+        }
+    }
+
+    @Test func googleExchangeIncludesAppVariantId() async throws {
+        try await withGlobalTestLock {
+            let originalConfig = Rownd.config
+            defer { Rownd.config = originalConfig }
+            Rownd.config.appVariantId = "variant_123"
+            ThirdPartySignInURLProtocol.reset()
+            ThirdPartySignInURLProtocol.responseBody = #"{"status":"OK","createdNewRecipeUser":true}"#.data(using: .utf8)!
+
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.protocolClasses = [ThirdPartySignInURLProtocol.self]
+            let client = SuperTokensThirdPartySignInClient(
+                apiDomain: "https://auth.example.com",
+                apiBasePath: "/auth",
+                session: URLSession(configuration: configuration)
+            )
+
+            _ = try await client.signInWithGoogle(idToken: "google-id-token")
+
+            #expect(
+                ThirdPartySignInURLProtocol.lastRequest?.url?.absoluteString
+                    == "https://auth.example.com/auth/signinup?app_variant_id=variant_123"
+            )
         }
     }
 

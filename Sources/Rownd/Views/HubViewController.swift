@@ -42,7 +42,7 @@ public class HubViewController: UIViewController, HubViewProtocol, BottomSheetHo
             URLQueryItem(name: "appKey", value: config.appKey),
             URLQueryItem(name: "apiDomain", value: config.supertokens.apiDomain),
             URLQueryItem(name: "apiBasePath", value: config.supertokens.apiBasePath)
-        ]
+        ] + (config.appVariantId.map { [URLQueryItem(name: "appVariantId", value: $0)] } ?? [])
 
         return hubLoaderUrl
     }

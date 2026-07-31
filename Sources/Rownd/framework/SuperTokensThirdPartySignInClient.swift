@@ -80,6 +80,9 @@ struct SuperTokensThirdPartySignInClient {
 
         let normalizedBasePath = apiBasePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         components.path = normalizedBasePath.isEmpty ? "/signinup" : "/\(normalizedBasePath)/signinup"
+        if let appVariantId = Rownd.config.appVariantId, !appVariantId.isEmpty {
+            components.queryItems = [URLQueryItem(name: "app_variant_id", value: appVariantId)]
+        }
         guard let url = components.url else {
             throw RowndError("Invalid SuperTokens signinup URL")
         }

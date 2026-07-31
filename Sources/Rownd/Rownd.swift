@@ -43,6 +43,7 @@ public class Rownd: NSObject {
     public static func configure(
         launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil,
         appKey: String?,
+        appVariantId: String? = nil,
         supertokens: RowndSuperTokensConfig
     ) async -> RowndState {
         do {
@@ -56,6 +57,7 @@ public class Rownd: NSObject {
         if let _appKey = appKey {
             config.appKey = _appKey
         }
+        config.appVariantId = appVariantId
 
         let installationPreparation: InstallationSessionManager.Preparation
         do {
