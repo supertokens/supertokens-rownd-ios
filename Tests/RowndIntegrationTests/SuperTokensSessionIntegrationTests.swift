@@ -104,7 +104,7 @@ import AnyCodable
         #expect(await !SuperTokensSessionBridge.doesSessionExist())
 
         await Task.detached(priority: .userInitiated) {
-            SuperTokensSessionBridge.bootstrapSession(
+            _ = SuperTokensSessionBridge.bootstrapSession(
                 accessToken: accessToken,
                 refreshToken: header(response, named: "st-refresh-token"),
                 frontToken: header(response, named: "front-token"),

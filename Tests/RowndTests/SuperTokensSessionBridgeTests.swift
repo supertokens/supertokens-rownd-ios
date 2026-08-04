@@ -16,14 +16,14 @@ import Network
         try await withMockedSuperTokensSession {
             let accessToken = makeSuperTokensTestJWT(expiresIn: 3600)
             let refreshToken = makeSuperTokensTestJWT(expiresIn: 7200)
-
-            await Task.detached {
+            let succeeded = await Task.detached {
                 SuperTokensSessionBridge.bootstrapSession(
                     accessToken: accessToken,
                     refreshToken: refreshToken
                 )
             }.value
 
+            #expect(succeeded)
             #expect(await SuperTokensSessionBridge.getAccessToken() == accessToken)
             #expect(UserDefaults.standard.string(forKey: "st-storage-item-st-refresh-token") == refreshToken)
             #expect(UserDefaults.standard.string(forKey: "supertokens-ios-fronttoken-key") != nil)
@@ -35,10 +35,11 @@ import Network
         try await withMockedSuperTokensSession {
             let accessToken = makeSuperTokensTestJWT(expiresIn: 3600)
 
-            await Task.detached {
+            let succeeded = await Task.detached {
                 SuperTokensSessionBridge.bootstrapSession(accessToken: accessToken, refreshToken: nil)
             }.value
 
+            #expect(!succeeded)
             #expect(await !SuperTokensSessionBridge.doesSessionExist())
             #expect(await SuperTokensSessionBridge.getAccessToken() == nil)
             #expect(UserDefaults.standard.string(forKey: "st-storage-item-st-refresh-token") == nil)
@@ -47,12 +48,27 @@ import Network
         }
     }
 
+    @Test func bootstrapSessionRejectsMalformedTokens() async throws {
+        try await withMockedSuperTokensSession {
+            let succeeded = await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: "not-a-jwt",
+                    refreshToken: "refresh-token",
+                    frontToken: "not-base64"
+                )
+            }.value
+
+            #expect(!succeeded)
+            #expect(await !SuperTokensSessionBridge.doesSessionExist())
+        }
+    }
+
     @Test func bootstrapSessionDoesNotPersistAntiCSRFWithoutRefreshToken() async throws {
         try await withMockedSuperTokensSession {
             let accessToken = makeSuperTokensTestJWT(expiresIn: 3600)
 
             await Task.detached {
-                SuperTokensSessionBridge.bootstrapSession(
+                _ = SuperTokensSessionBridge.bootstrapSession(
                     accessToken: accessToken,
                     refreshToken: nil,
                     antiCSRF: "anti-csrf-token"
@@ -68,31 +84,33 @@ import Network
         try await withMockedSuperTokensSession {
             let accessToken = makeSuperTokensTestJWT(expiresIn: 3600)
             let refreshToken = makeSuperTokensTestJWT(expiresIn: 7200)
+            let frontToken = SuperTokensSessionBridge.buildFrontToken(from: accessToken)
 
             await Task.detached {
-                SuperTokensSessionBridge.bootstrapSession(
+                _ = SuperTokensSessionBridge.bootstrapSession(
                     accessToken: accessToken,
                     refreshToken: refreshToken,
-                    frontToken: "front-token",
+                    frontToken: frontToken,
                     antiCSRF: "anti-csrf-token"
                 )
             }.value
 
             #expect(SuperTokensSessionBridge.getRefreshToken() == refreshToken)
-            #expect(SuperTokensSessionBridge.getFrontToken() == "front-token")
+            #expect(SuperTokensSessionBridge.getFrontToken() == frontToken)
             #expect(SuperTokensSessionBridge.getAntiCSRF() == "anti-csrf-token")
         }
     }
 
-    @Test func bootstrapSessionDoesNotOverwriteExistingSession() async throws {
+    @Test func bootstrapSessionReplacesExistingSession() async throws {
         try await withMockedSuperTokensSession {
             let originalAccessToken = makeSuperTokensTestJWT(expiresIn: 3600)
             let originalRefreshToken = makeSuperTokensTestJWT(expiresIn: 7200)
             let replacementAccessToken = makeSuperTokensTestJWT(expiresIn: 1800)
             let replacementRefreshToken = makeSuperTokensTestJWT(expiresIn: 5400)
+            let replacementFrontToken = SuperTokensSessionBridge.buildFrontToken(from: replacementAccessToken)
 
             await Task.detached {
-                SuperTokensSessionBridge.bootstrapSession(
+                _ = SuperTokensSessionBridge.bootstrapSession(
                     accessToken: originalAccessToken,
                     refreshToken: originalRefreshToken
                 )
@@ -100,16 +118,115 @@ import Network
 
             let originalFrontToken = UserDefaults.standard.string(forKey: "supertokens-ios-fronttoken-key")
 
-            await Task.detached {
+            let succeeded = await Task.detached {
                 SuperTokensSessionBridge.bootstrapSession(
                     accessToken: replacementAccessToken,
-                    refreshToken: replacementRefreshToken
+                    refreshToken: replacementRefreshToken,
+                    refreshSession: {
+                        guard SDKStorage.set("st-storage-item-st-access-token", value: replacementAccessToken),
+                              FrontToken.setItem(frontToken: replacementFrontToken) else {
+                            return false
+                        }
+                        return true
+                    }
                 )
             }.value
 
+            #expect(succeeded)
+            #expect(await SuperTokensSessionBridge.getAccessToken() == replacementAccessToken)
+            #expect(UserDefaults.standard.string(forKey: "st-storage-item-st-refresh-token") == replacementRefreshToken)
+            #expect(UserDefaults.standard.string(forKey: "supertokens-ios-fronttoken-key") != originalFrontToken)
+        }
+    }
+
+    @Test func bootstrapSessionCanRejectReplacingExistingSession() async throws {
+        try await withMockedSuperTokensSession {
+            let originalAccessToken = makeSuperTokensTestJWT(expiresIn: 3600)
+            let originalRefreshToken = makeSuperTokensTestJWT(expiresIn: 7200)
+
+            let initialSucceeded = await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: originalAccessToken,
+                    refreshToken: originalRefreshToken
+                )
+            }.value
+            let replacementSucceeded = await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: makeSuperTokensTestJWT(expiresIn: 1800),
+                    refreshToken: makeSuperTokensTestJWT(expiresIn: 5400),
+                    allowReplacingExistingSession: false,
+                    refreshSession: {
+                        Issue.record("Replacement must not refresh the existing session")
+                        return true
+                    }
+                )
+            }.value
+
+            #expect(initialSucceeded)
+            #expect(!replacementSucceeded)
             #expect(await SuperTokensSessionBridge.getAccessToken() == originalAccessToken)
-            #expect(UserDefaults.standard.string(forKey: "st-storage-item-st-refresh-token") == originalRefreshToken)
-            #expect(UserDefaults.standard.string(forKey: "supertokens-ios-fronttoken-key") == originalFrontToken)
+            #expect(SuperTokensSessionBridge.getRefreshToken() == originalRefreshToken)
+        }
+    }
+
+    @Test func bootstrapSessionWithSameAccessTokenIsIdempotentSuccess() async throws {
+        try await withMockedSuperTokensSession {
+            let accessToken = makeSuperTokensTestJWT(expiresIn: 3600)
+            let refreshToken = makeSuperTokensTestJWT(expiresIn: 7200)
+
+            let firstSucceeded = await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: accessToken,
+                    refreshToken: refreshToken,
+                    antiCSRF: "original-anti-csrf"
+                )
+            }.value
+            let secondSucceeded = await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: accessToken,
+                    refreshToken: "different-refresh-token",
+                    antiCSRF: "different-anti-csrf"
+                )
+            }.value
+
+            #expect(firstSucceeded)
+            #expect(secondSucceeded)
+            #expect(UserDefaults.standard.string(forKey: "st-storage-item-st-refresh-token") == refreshToken)
+            #expect(UserDefaults.standard.string(forKey: "supertokens-ios-anticsrf-key") == "original-anti-csrf")
+        }
+    }
+
+    @Test func bootstrapSessionFailureRestoresExistingSession() async throws {
+        try await withMockedSuperTokensSession {
+            let storage = FailingSessionStorage()
+            let previousStorage = SuperTokensSessionBridge.storageOverride
+            SDKStorage.setTokenStorageForTests(storage)
+            SuperTokensSessionBridge.storageOverride = storage
+            defer {
+                SuperTokensSessionBridge.storageOverride = previousStorage
+            }
+
+            let originalAccessToken = makeSuperTokensTestJWT(expiresIn: 3600)
+            let originalRefreshToken = makeSuperTokensTestJWT(expiresIn: 7200)
+            let initialSucceeded = await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: originalAccessToken,
+                    refreshToken: originalRefreshToken
+                )
+            }.value
+            storage.failingKey = "st-storage-item-st-refresh-token"
+
+            let replacementSucceeded = await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: makeSuperTokensTestJWT(expiresIn: 1800),
+                    refreshToken: makeSuperTokensTestJWT(expiresIn: 5400)
+                )
+            }.value
+
+            #expect(initialSucceeded)
+            #expect(!replacementSucceeded)
+            #expect(await SuperTokensSessionBridge.getAccessToken() == originalAccessToken)
+            #expect(storage.get("st-storage-item-st-refresh-token") == originalRefreshToken)
         }
     }
 
@@ -149,7 +266,7 @@ import Network
             let refreshToken = makeSuperTokensTestJWT(expiresIn: 7200)
 
             await Task.detached {
-                SuperTokensSessionBridge.bootstrapSession(
+                _ = SuperTokensSessionBridge.bootstrapSession(
                     accessToken: accessToken,
                     refreshToken: refreshToken
                 )
@@ -217,7 +334,7 @@ import Network
             }
 
             await Task.detached {
-                SuperTokensSessionBridge.bootstrapSession(
+                _ = SuperTokensSessionBridge.bootstrapSession(
                     accessToken: accessToken,
                     refreshToken: refreshToken
                 )
@@ -254,7 +371,7 @@ import Network
             let refreshToken = makeSuperTokensTestJWT(expiresIn: 7200)
 
             await Task.detached {
-                SuperTokensSessionBridge.bootstrapSession(
+                _ = SuperTokensSessionBridge.bootstrapSession(
                     accessToken: accessToken,
                     refreshToken: refreshToken
                 )
@@ -277,7 +394,7 @@ import Network
             let refreshToken = makeSuperTokensTestJWT(expiresIn: 7200)
 
             await Task.detached {
-                SuperTokensSessionBridge.bootstrapSession(
+                _ = SuperTokensSessionBridge.bootstrapSession(
                     accessToken: accessToken,
                     refreshToken: refreshToken
                 )
@@ -400,7 +517,10 @@ import Network
 
     private func makeSuperTokensTestJWT(expiresIn seconds: TimeInterval) -> String {
         // SuperTokens local session state reads real JWT claims such as sub and exp.
-        generateJwt(expires: Date(timeIntervalSinceNow: seconds).timeIntervalSince1970)
+        generateJwt(
+            expires: Date(timeIntervalSinceNow: seconds).timeIntervalSince1970,
+            sessionHandle: "test-session"
+        )
     }
 
     @MainActor private func callBlockingBridgeMethodsFromMainActor() async {
@@ -457,6 +577,26 @@ private final class RecordingSessionStorage: SuperTokensSessionStorage {
 
     func remove(_ key: String) -> Bool {
         removedKeys.append(key)
+        return true
+    }
+}
+
+private final class FailingSessionStorage: TokenStorage, SuperTokensSessionStorage {
+    var failingKey: String?
+    private var values: [String: String] = [:]
+
+    func get(_ key: String) -> String? {
+        values[key]
+    }
+
+    func set(_ key: String, value: String) -> Bool {
+        guard key != failingKey else { return false }
+        values[key] = value
+        return true
+    }
+
+    func remove(_ key: String) -> Bool {
+        values.removeValue(forKey: key)
         return true
     }
 }

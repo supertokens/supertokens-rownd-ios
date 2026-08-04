@@ -90,6 +90,20 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
         }
     }
 
+    static func completeAuthenticationAfterAdoption(
+        succeeded: Bool,
+        syncAuthState: () async -> Void,
+        completion: () async -> Void
+    ) async {
+        guard succeeded else {
+            logger.warning("Skipping Hub authentication completion because the SuperTokens session could not be adopted")
+            return
+        }
+
+        await syncAuthState()
+        await completion()
+    }
+
     let webConfiguration = WKWebViewConfiguration()
     let userController = WKUserContentController()
     lazy var webView: WKWebView = WKWebView(frame: .zero, configuration: webConfiguration)
@@ -336,20 +350,24 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
                 let initialJsFunctionArgsAsJson = self.jsFunctionArgsAsJson
 
                 Task.detached(priority: .userInitiated) { [weak self] in
-                    SuperTokensSessionBridge.bootstrapSession(
+                    let sessionAdopted = SuperTokensSessionBridge.bootstrapSession(
                         accessToken: authMessage.accessToken,
                         refreshToken: authMessage.refreshToken,
                         frontToken: authMessage.frontToken,
                         antiCSRF: authMessage.antiCSRF
                     )
-                    await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens()
-
-                    await Self.completeAuthentication(
-                        store: store,
-                        initialJsFunctionArgsAsJson: initialJsFunctionArgsAsJson,
-                        currentJsFunctionArgsAsJson: { [weak self] in self?.jsFunctionArgsAsJson },
-                        hideHub: { [weak self] in self?.hubViewController?.hide() },
-                        eventData: authMessage.signInCompletedEventData
+                    await Self.completeAuthenticationAfterAdoption(
+                        succeeded: sessionAdopted,
+                        syncAuthState: SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens,
+                        completion: {
+                            await Self.completeAuthentication(
+                                store: store,
+                                initialJsFunctionArgsAsJson: initialJsFunctionArgsAsJson,
+                                currentJsFunctionArgsAsJson: { [weak self] in self?.jsFunctionArgsAsJson },
+                                hideHub: { [weak self] in self?.hubViewController?.hide() },
+                                eventData: authMessage.signInCompletedEventData
+                            )
+                        }
                     )
                 }
             case .closeHubViewController:

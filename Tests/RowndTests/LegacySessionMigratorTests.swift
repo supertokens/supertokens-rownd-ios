@@ -10,7 +10,7 @@ import Testing
             var calls = MigrationCalls()
             var dependencies = makeDependencies(calls: calls)
             dependencies.doesSuperTokensSessionExist = { true }
-            dependencies.bootstrapSession = { _ in didBootstrap = true }
+            dependencies.bootstrapSession = { _ in didBootstrap = true; return true }
 
             await LegacySessionMigrator.migrateIfNeeded(
                 authState: AuthState(accessToken: validLegacyToken(), refreshToken: "legacy-refresh-token"),
@@ -37,7 +37,7 @@ import Testing
             var bootstrappedTokens: SuperTokensSessionTokens?
             var syncCount = 0
             var dependencies = makeDependencies(calls: calls)
-            dependencies.bootstrapSession = { tokens in bootstrappedTokens = tokens }
+            dependencies.bootstrapSession = { tokens in bootstrappedTokens = tokens; return true }
             dependencies.syncRowndAuthStateFromSuperTokens = { syncCount += 1 }
 
             await setAuthState(AuthState(accessToken: validLegacyToken(), refreshToken: "legacy-refresh-token"))
@@ -80,7 +80,7 @@ import Testing
 
             var bootstrappedTokens: SuperTokensSessionTokens?
             var dependencies = makeDependencies(calls: calls)
-            dependencies.bootstrapSession = { tokens in bootstrappedTokens = tokens }
+            dependencies.bootstrapSession = { tokens in bootstrappedTokens = tokens; return true }
 
             await setAuthState(AuthState(accessToken: expiredLegacyToken(), refreshToken: "legacy-refresh-token"))
 
@@ -93,6 +93,32 @@ import Testing
             #expect(calls.migrateAccessTokens == [refreshedLegacyAccessToken])
             #expect(bootstrappedTokens?.accessToken == migratedAccessToken)
             #expect(await currentRefreshToken() == nil)
+        }
+    }
+
+    @Test func bootstrapFailureKeepsLegacySession() async throws {
+        try await withIsolatedStore {
+            var calls = MigrationCalls()
+            calls.migrateResults = [.migrated(SuperTokensSessionTokens(
+                accessToken: validSuperTokensToken(),
+                refreshToken: "st-refresh-token",
+                frontToken: "front-token",
+                antiCSRF: nil
+            ))]
+
+            var syncCount = 0
+            var dependencies = makeDependencies(calls: calls)
+            dependencies.bootstrapSession = { _ in false }
+            dependencies.syncRowndAuthStateFromSuperTokens = { syncCount += 1 }
+
+            await setAuthState(AuthState(accessToken: validLegacyToken(), refreshToken: "legacy-refresh-token"))
+            await LegacySessionMigrator.migrateIfNeeded(
+                authState: Context.currentContext.store.state.auth,
+                dependencies: dependencies
+            )
+
+            #expect(syncCount == 0)
+            #expect(await currentRefreshToken() == "legacy-refresh-token")
         }
     }
 
@@ -143,7 +169,7 @@ import Testing
             var didBootstrap = false
             var dependencies = makeDependencies(calls: calls)
             dependencies.syncRowndAuthStateFromSuperTokens = { syncCount += 1 }
-            dependencies.bootstrapSession = { _ in didBootstrap = true }
+            dependencies.bootstrapSession = { _ in didBootstrap = true; return true }
 
             await setAuthState(AuthState(accessToken: validLegacyToken(), refreshToken: "legacy-refresh-token"))
 
@@ -172,7 +198,7 @@ import Testing
 
             var bootstrappedTokens: SuperTokensSessionTokens?
             var dependencies = makeDependencies(calls: calls)
-            dependencies.bootstrapSession = { tokens in bootstrappedTokens = tokens }
+            dependencies.bootstrapSession = { tokens in bootstrappedTokens = tokens; return true }
 
             await LegacySessionMigrator.migrateIfNeeded(
                 authState: AuthState(accessToken: validLegacyToken(), refreshToken: "legacy-refresh-token"),
@@ -207,7 +233,7 @@ import Testing
 
             var bootstrappedTokens: SuperTokensSessionTokens?
             var dependencies = makeDependencies(calls: calls)
-            dependencies.bootstrapSession = { tokens in bootstrappedTokens = tokens }
+            dependencies.bootstrapSession = { tokens in bootstrappedTokens = tokens; return true }
 
             #expect(!legacyAuthState.isAccessTokenValid)
 
@@ -225,7 +251,7 @@ import Testing
     private func makeDependencies(calls: MigrationCalls) -> LegacySessionMigrationDependencies {
         LegacySessionMigrationDependencies(
             doesSuperTokensSessionExist: { false },
-            bootstrapSession: { _ in },
+            bootstrapSession: { _ in true },
             syncRowndAuthStateFromSuperTokens: {},
             signOut: {},
             client: LegacySessionMigrationClient(

@@ -146,13 +146,14 @@ struct LegacySessionMigrationClient {
 
 struct LegacySessionMigrationDependencies {
     var doesSuperTokensSessionExist: () async -> Bool = SuperTokensSessionBridge.doesSessionExist
-    var bootstrapSession: (SuperTokensSessionTokens) async -> Void = { tokens in
+    var bootstrapSession: (SuperTokensSessionTokens) async -> Bool = { tokens in
         await Task.detached(priority: .userInitiated) {
             SuperTokensSessionBridge.bootstrapSession(
                 accessToken: tokens.accessToken,
                 refreshToken: tokens.refreshToken,
                 frontToken: tokens.frontToken,
-                antiCSRF: tokens.antiCSRF
+                antiCSRF: tokens.antiCSRF,
+                allowReplacingExistingSession: false
             )
         }.value
     }
@@ -229,7 +230,10 @@ enum LegacySessionMigrator {
                     logger.warning("Skipping SuperTokens session bootstrap because migration returned incomplete session headers")
                     return
                 }
-                await dependencies.bootstrapSession(tokens)
+                guard await dependencies.bootstrapSession(tokens) else {
+                    logger.warning("Skipping legacy session migration completion because the SuperTokens session could not be adopted")
+                    return
+                }
                 await dependencies.syncRowndAuthStateFromSuperTokens()
                 await clearLegacyRefreshToken()
             case .sessionAlreadyExists:

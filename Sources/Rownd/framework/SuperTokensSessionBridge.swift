@@ -4,12 +4,21 @@ import Security
 import SuperTokensIOS
 
 internal enum SuperTokensSessionBridge {
+    private static let adoptionLock = NSLock()
     private static let accessTokenStorageKey = "st-storage-item-st-access-token"
     private static let refreshTokenStorageKey = "st-storage-item-st-refresh-token"
     private static let frontTokenStorageKey = "supertokens-ios-fronttoken-key"
     private static let lastAccessTokenUpdateStorageKey = "st-storage-item-st-last-access-token-update"
     private static let refreshTokenFrontendStorageKey = "st-storage-item-sIRTFrontend"
     private static let antiCSRFStorageKey = "supertokens-ios-anticsrf-key"
+    private static let sessionStorageKeys = [
+        accessTokenStorageKey,
+        refreshTokenStorageKey,
+        frontTokenStorageKey,
+        lastAccessTokenUpdateStorageKey,
+        refreshTokenFrontendStorageKey,
+        antiCSRFStorageKey,
+    ]
     internal static var storageOverride: SuperTokensSessionStorage?
 
     static func doesSessionExist() async -> Bool {
@@ -66,37 +75,112 @@ internal enum SuperTokensSessionBridge {
         accessToken: String,
         refreshToken: String?,
         frontToken: String? = nil,
-        antiCSRF: String? = nil
-    ) {
+        antiCSRF: String? = nil,
+        allowReplacingExistingSession: Bool = true,
+        refreshSession: () throws -> Bool = SuperTokens.attemptRefreshingSession
+    ) -> Bool {
         precondition(!Thread.isMainThread, "bootstrapSession must be called off the main thread")
-        guard !SuperTokens.doesSessionExist() else { return }
+        adoptionLock.lock()
+        defer { adoptionLock.unlock() }
+
         guard let refreshToken, !refreshToken.isEmpty else {
             logger.warning("Skipping SuperTokens session bootstrap because refresh token is missing")
-            return
+            return false
         }
 
         let storage = storage()
+        let adoptedFrontToken = frontToken ?? buildFrontToken(from: accessToken)
+        guard let expectedUserId = validatedUserId(accessToken: accessToken, frontToken: adoptedFrontToken) else {
+            logger.warning("Skipping SuperTokens session bootstrap because the session tokens are invalid")
+            return false
+        }
+
+        let sessionAlreadyExists = SuperTokens.doesSessionExist()
+        if sessionAlreadyExists && !allowReplacingExistingSession {
+            logger.warning("Skipping SuperTokens session bootstrap because a session already exists")
+            return false
+        }
+        if sessionAlreadyExists,
+           SuperTokens.getAccessToken() == accessToken,
+           storage.get(refreshTokenStorageKey)?.isEmpty == false {
+            return true
+        }
+
+        if sessionAlreadyExists {
+            let previousAccessToken = SuperTokens.getAccessToken()
+            let previousRefreshToken = storage.get(refreshTokenStorageKey)
+            guard storage.set(refreshTokenStorageKey, value: refreshToken) else {
+                logger.warning("Skipping SuperTokens session bootstrap because the refresh token could not be stored")
+                return false
+            }
+
+            do {
+                guard try refreshSession(),
+                      SuperTokens.doesSessionExist(),
+                      (try? SuperTokens.getUserId()) == expectedUserId else {
+                    logger.warning("SuperTokens did not refresh the adopted session")
+                    restoreRefreshTokenIfSessionUnchanged(
+                        adoptedValue: refreshToken,
+                        previousAccessToken: previousAccessToken,
+                        previousValue: previousRefreshToken,
+                        storage: storage
+                    )
+                    return false
+                }
+            } catch {
+                logger.warning("SuperTokens could not refresh the adopted session: \(String(describing: error))")
+                restoreRefreshTokenIfSessionUnchanged(
+                    adoptedValue: refreshToken,
+                    previousAccessToken: previousAccessToken,
+                    previousValue: previousRefreshToken,
+                    storage: storage
+                )
+                return false
+            }
+
+            return true
+        }
+
+        let previousValues = sessionStorageKeys.reduce(into: [String: String]()) { values, key in
+            values[key] = storage.get(key)
+        }
         guard storage.set(accessTokenStorageKey, value: accessToken),
               storage.set(refreshTokenStorageKey, value: refreshToken) else {
             logger.warning("Skipping SuperTokens session bootstrap because session tokens could not be stored")
-            clearLocalSessionArtifactsInCurrentThread()
-            return
+            rollbackSessionArtifacts(previousValues, storage: storage)
+            return false
         }
 
         if let antiCSRF, !antiCSRF.isEmpty {
             guard storage.set(antiCSRFStorageKey, value: antiCSRF) else {
                 logger.warning("SuperTokens session bootstrap could not store anti-CSRF token")
-                clearLocalSessionArtifactsInCurrentThread()
-                return
+                rollbackSessionArtifacts(previousValues, storage: storage)
+                return false
             }
+        } else if !storage.remove(antiCSRFStorageKey) {
+            logger.warning("SuperTokens session bootstrap could not clear the previous anti-CSRF token")
+            rollbackSessionArtifacts(previousValues, storage: storage)
+            return false
         }
 
-        guard storage.set(frontTokenStorageKey, value: frontToken ?? buildFrontToken(from: accessToken)),
-              storage.set(lastAccessTokenUpdateStorageKey, value: "\(Int64(Date().timeIntervalSince1970 * 1000))") else {
+        guard storage.set(frontTokenStorageKey, value: adoptedFrontToken),
+              storage.set(lastAccessTokenUpdateStorageKey, value: "\(Int64(Date().timeIntervalSince1970 * 1000))"),
+              storage.remove(refreshTokenFrontendStorageKey) else {
             logger.warning("Skipping SuperTokens session bootstrap because session metadata could not be stored")
-            clearLocalSessionArtifactsInCurrentThread()
-            return
+            rollbackSessionArtifacts(previousValues, storage: storage)
+            return false
         }
+
+        guard SuperTokens.doesSessionExist(),
+              SuperTokens.getAccessToken() == accessToken,
+              storage.get(refreshTokenStorageKey) == refreshToken,
+              (try? SuperTokens.getUserId()) == expectedUserId else {
+            logger.warning("Skipping SuperTokens session bootstrap because the adopted session could not be verified")
+            rollbackSessionArtifacts(previousValues, storage: storage)
+            return false
+        }
+
+        return true
     }
 
     static func syncRowndAuthStateFromSuperTokens() async {
@@ -128,6 +212,43 @@ internal enum SuperTokensSessionBridge {
         return data.base64EncodedString()
     }
 
+    private static func validatedUserId(accessToken: String, frontToken: String) -> String? {
+        guard let jwt = try? decode(jwt: accessToken),
+              let accessTokenUserId = jwt.subject ?? jwt.claim(name: "userId").string,
+              !accessTokenUserId.isEmpty,
+              jwt.expiresAt.map({ $0 > Date() }) == true,
+              jwt.claim(name: "sessionHandle").string != nil || jwt.claim(name: "tId").string != nil,
+              let data = Data(base64Encoded: frontToken),
+              data.count <= 64 * 1024,
+              let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let frontTokenUserId = payload["uid"] as? String,
+              !frontTokenUserId.isEmpty,
+              let accessTokenExpiry = payload["ate"] as? NSNumber,
+              accessTokenExpiry.int64Value > Int64(Date().timeIntervalSince1970 * 1000),
+              frontTokenUserId == accessTokenUserId else {
+            return nil
+        }
+        return accessTokenUserId
+    }
+
+    private static func restoreRefreshTokenIfSessionUnchanged(
+        adoptedValue: String,
+        previousAccessToken: String?,
+        previousValue: String?,
+        storage: SuperTokensSessionStorage
+    ) {
+        guard SuperTokens.doesSessionExist(),
+              SuperTokens.getAccessToken() == previousAccessToken,
+              storage.get(refreshTokenStorageKey) == adoptedValue else {
+            return
+        }
+        let didRestore = previousValue.map { storage.set(refreshTokenStorageKey, value: $0) }
+            ?? storage.remove(refreshTokenStorageKey)
+        if !didRestore {
+            logger.warning("SuperTokens session bootstrap could not restore the previous refresh token")
+        }
+    }
+
     @discardableResult
     private static func clearLocalSessionArtifactsInCurrentThread() -> Bool {
         let storage = storage()
@@ -147,6 +268,25 @@ internal enum SuperTokensSessionBridge {
         userDefaults.removeObject(forKey: refreshTokenFrontendStorageKey)
         userDefaults.removeObject(forKey: antiCSRFStorageKey)
         return didClear
+    }
+
+    private static func rollbackSessionArtifacts(
+        _ previousValues: [String: String],
+        storage: SuperTokensSessionStorage
+    ) {
+        let didRestore = sessionStorageKeys.reduce(true) { didRestore, key in
+            let didUpdate: Bool
+            if let value = previousValues[key] {
+                didUpdate = storage.set(key, value: value)
+            } else {
+                didUpdate = storage.remove(key)
+            }
+            return didUpdate && didRestore
+        }
+
+        if !didRestore {
+            logger.warning("SuperTokens session bootstrap could not restore the previous session")
+        }
     }
 
     private static func storage() -> SuperTokensSessionStorage {
@@ -241,6 +381,7 @@ private struct SuperTokensKeychainSessionStorage: SuperTokensSessionStorage {
     @discardableResult
     func remove(_ key: String) -> Bool {
         let status = SecItemDelete(baseQuery(key) as CFDictionary)
+        UserDefaults.standard.removeObject(forKey: key)
         return status == errSecSuccess || status == errSecItemNotFound
     }
 

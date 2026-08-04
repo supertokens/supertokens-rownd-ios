@@ -71,7 +71,7 @@ final class RowndExampleTests: XCTestCase {
         let antiCSRF = header("anti-csrf", in: response)
 
         await Task.detached {
-            SuperTokensSessionBridge.bootstrapSession(
+            _ = SuperTokensSessionBridge.bootstrapSession(
                 accessToken: accessToken,
                 refreshToken: refreshToken,
                 frontToken: frontToken,

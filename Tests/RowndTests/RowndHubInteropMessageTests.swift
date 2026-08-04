@@ -60,6 +60,32 @@ import Foundation
         #expect(!HubWebViewController.canHandleAuthentication(on: nil))
     }
 
+    @Test func failedSessionAdoptionSkipsAuthenticationCompletion() async {
+        var didSyncAuthState = false
+        var didComplete = false
+
+        await HubWebViewController.completeAuthenticationAfterAdoption(
+            succeeded: false,
+            syncAuthState: { didSyncAuthState = true },
+            completion: { didComplete = true }
+        )
+
+        #expect(!didSyncAuthState)
+        #expect(!didComplete)
+    }
+
+    @Test func successfulSessionAdoptionSyncsBeforeAuthenticationCompletion() async {
+        var steps: [String] = []
+
+        await HubWebViewController.completeAuthenticationAfterAdoption(
+            succeeded: true,
+            syncAuthState: { steps.append("sync") },
+            completion: { steps.append("complete") }
+        )
+
+        #expect(steps == ["sync", "complete"])
+    }
+
     @Test func authenticationCompletionEmitsSignInCompletedEvent() async throws {
         try await withGlobalTestLock {
             let originalContext = Context.currentContext
