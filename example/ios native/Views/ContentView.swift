@@ -14,6 +14,7 @@ struct ContentView: View {
     @StateObject private var authState = Rownd.getInstance().state().subscribe { $0.auth }
     @StateObject private var user = Rownd.getInstance().state().subscribe { $0.user }
     @StateObject private var state = Rownd.getInstance().state().subscribe { $0 }
+    @StateObject private var e2eReadiness = E2EReadiness.shared
 
     @State private var scenarioStatus = "idle"
     @State private var protectedResult = ""
@@ -47,7 +48,6 @@ struct ContentView: View {
 
                 if isAuthenticated {
                     postLoginCard
-                        .accessibilityIdentifier("e2e-home-screen")
                 } else {
                     loginCard
                 }
@@ -88,6 +88,10 @@ struct ContentView: View {
                 StatusRow(label: "Scenario", value: scenarioStatus)
                 StatusRow(label: "User", value: userId)
                 E2EStatusView()
+                if E2ESupport.isEnabled {
+                    Text(scenarioStatus)
+                        .accessibilityIdentifier("e2e-scenario-state")
+                }
             }
         }
     }
@@ -136,6 +140,7 @@ struct ContentView: View {
                         Text("Post-login page")
                             .font(.title2)
                             .fontWeight(.semibold)
+                            .accessibilityIdentifier("e2e-home-screen")
                         Text("Use the protected request to verify the SuperTokens session and claims.")
                             .foregroundStyle(.secondary)
                     }
@@ -227,12 +232,19 @@ struct ContentView: View {
 
                 FlowButton("E2E sign in") {
                     Task {
-                        try? await E2ESupport.resetHarness()
-                        try? await E2ESupport.createSession()
-                        scenarioStatus = "e2e_session_created"
+                        scenarioStatus = "e2e_session_creating"
+                        do {
+                            await Rownd.signOut()
+                            try await E2ESupport.resetHarness()
+                            try await E2ESupport.createSession()
+                            scenarioStatus = "e2e_session_created"
+                        } catch {
+                            scenarioStatus = "e2e_session_failed"
+                        }
                     }
                 }
                 .accessibilityIdentifier("e2e-create-session-button")
+                .disabled(!e2eReadiness.isReady)
 
                 FlowButton("E2E update profile") {
                     Task {

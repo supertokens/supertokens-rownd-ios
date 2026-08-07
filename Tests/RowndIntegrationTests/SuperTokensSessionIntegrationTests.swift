@@ -19,7 +19,7 @@ import AnyCodable
     @Test func urlProtocolCapturesSessionHeadersFromSuperTokensResponse() async throws {
         try await TestInfrastructure.prepare()
 
-        try await createHarnessSession(userId: "ios-session-capture-user")
+        _ = try await createHarnessSession(userId: "ios-session-capture-user")
 
         #expect(await SuperTokensSessionBridge.doesSessionExist())
         let accessToken = try #require(await SuperTokensSessionBridge.getAccessToken())
@@ -29,11 +29,11 @@ import AnyCodable
     @Test func capturedSessionCanCallProtectedRouteAndSignOut() async throws {
         try await TestInfrastructure.prepare()
 
-        try await createHarnessSession(userId: "ios-protected-user")
+        let userId = try await createHarnessSession(userId: "ios-protected-user")
 
         let protected = try await getJSON(path: "test/protected")
         #expect(protected["status"] as? String == "OK")
-        #expect(protected["userId"] as? String == "ios-protected-user")
+        #expect(protected["userId"] as? String == userId)
 
         await SuperTokensSessionBridge.signOut()
 
@@ -44,7 +44,7 @@ import AnyCodable
     @Test func signOutAllCallsPluginSignoutAndClearsLocalSession() async throws {
         try await TestInfrastructure.prepare()
 
-        try await createHarnessSession(userId: "ios-signout-all-user")
+        _ = try await createHarnessSession(userId: "ios-signout-all-user")
         #expect(await SuperTokensSessionBridge.doesSessionExist())
 
         try await Rownd.signOut(scope: .all)
@@ -75,11 +75,11 @@ import AnyCodable
     @Test func protectedPluginRouteRefreshesSuperTokensSessionWithoutLegacyRefresh() async throws {
         try await TestInfrastructure.prepare()
 
-        try await createHarnessSession(userId: "ios-refresh-user")
+        let userId = try await createHarnessSession(userId: "ios-refresh-user")
 
         let response = try await getJSON(path: "test/refresh-once")
         #expect(response["status"] as? String == "OK")
-        #expect(response["userId"] as? String == "ios-refresh-user")
+        #expect(response["userId"] as? String == userId)
 
         let counters = try await getJSON(path: "counters")
         #expect(counters["refreshOnce"] as? Int == 2)
@@ -97,8 +97,8 @@ import AnyCodable
     @Test func hubStyleAuthenticationPayloadBootstrapsNativeSession() async throws {
         try await TestInfrastructure.prepare()
 
-        let response = try await createHarnessSessionResponse(userId: "ios-hub-bootstrap-user", captureLocally: false)
-        let accessToken = try #require(header(response, named: "st-access-token"))
+        let session = try await createHarnessSessionResponse(userId: "ios-hub-bootstrap-user", captureLocally: false)
+        let accessToken = try #require(header(session.response, named: "st-access-token"))
 
         clearLocalSuperTokensSessionArtifacts()
         #expect(await !SuperTokensSessionBridge.doesSessionExist())
@@ -106,9 +106,9 @@ import AnyCodable
         await Task.detached(priority: .userInitiated) {
             _ = SuperTokensSessionBridge.bootstrapSession(
                 accessToken: accessToken,
-                refreshToken: header(response, named: "st-refresh-token"),
-                frontToken: header(response, named: "front-token"),
-                antiCSRF: header(response, named: "anti-csrf")
+                refreshToken: header(session.response, named: "st-refresh-token"),
+                frontToken: header(session.response, named: "front-token"),
+                antiCSRF: header(session.response, named: "anti-csrf")
             )
         }.value
         await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens()
@@ -118,7 +118,7 @@ import AnyCodable
 
         let protected = try await getJSON(path: "test/protected")
         #expect(protected["status"] as? String == "OK")
-        #expect(protected["userId"] as? String == "ios-hub-bootstrap-user")
+        #expect(protected["userId"] as? String == session.userId)
 
         let counters = try await getJSON(path: "counters")
         #expect(counters["legacyRefresh"] as? Int == 0)
@@ -321,20 +321,23 @@ import AnyCodable
 
     @Test func userProfileRoutesUseSuperTokensPluginHeaders() async throws {
         try await TestInfrastructure.prepare()
-        try await createHarnessSession(userId: "ios-profile-user")
+        let email = uniqueEmail(prefix: "ios-profile")
+        _ = try await createProfileSession(email: email, firstName: "Test")
         await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens()
 
-        let user = try await UserData.fetchUserData(Context.currentContext.store.state)
-        #expect(user?.data["first_name"]?.value as? String == "Test")
+        let user = try await hydrateUserProfile()
+        #expect(user.data["first_name"]?.value as? String == "Test")
+        #expect(user.data["email"]?.value as? String == email)
 
         Context.currentContext.store.dispatch(UserData.save(["first_name": AnyCodable("Updated")]))
-        try await waitForCounter("userUpdate", expectedValue: 1)
+        _ = try await waitForCapturedRequest(named: "userUpdate")
+        try await waitForUserLoadingToFinish()
 
         Context.currentContext.store.dispatch(UserData.saveMetaData(["tier": AnyCodable("pro")]))
-        try await waitForCounter("userMetaUpdate", expectedValue: 1)
+        _ = try await waitForCapturedRequest(named: "userMetaUpdate")
 
         let counters = try await getJSON(path: "counters")
-        #expect(counters["userGet"] as? Int == 1)
+        #expect((counters["userGet"] as? Int ?? 0) >= 1)
         #expect(counters["legacyRefresh"] as? Int == 0)
 
         let capturedRequests = try await getJSON(path: "captured-requests")
@@ -345,23 +348,203 @@ import AnyCodable
         let userUpdate = try #require(capturedRequests["userUpdate"] as? [String: Any])
         let userBody = try #require(userUpdate["body"] as? [String: Any])
         let userData = try #require(userBody["data"] as? [String: Any])
+        #expect(userData.count == 1)
+        #expect(userData["user_id"] == nil)
         #expect(userData["first_name"] as? String == "Updated")
+        #expect(userUpdate["statusCode"] as? Int == 200)
 
         let metaUpdate = try #require(capturedRequests["userMetaUpdate"] as? [String: Any])
         let metaBody = try #require(metaUpdate["body"] as? [String: Any])
         let meta = try #require(metaBody["meta"] as? [String: Any])
         #expect(meta["tier"] as? String == "pro")
+        #expect(metaUpdate["statusCode"] as? Int == 200)
+
+        let persistedProfile = try await getJSON(path: "auth/plugin/rownd/user")
+        let persistedData = try #require(persistedProfile["data"] as? [String: Any])
+        let persistedMeta = try #require(persistedProfile["meta"] as? [String: Any])
+        #expect(persistedData["first_name"] as? String == "Updated")
+        #expect(persistedData["email"] as? String == email)
+        #expect(persistedMeta["tier"] as? String == "pro")
     }
 
-    private func createHarnessSession(userId: String) async throws {
-        let response = try await createHarnessSessionResponse(userId: userId, captureLocally: true)
-        #expect(response.statusCode == 200)
+    @Test func emailEditRemainsPendingUntilVerification() async throws {
+        try await TestInfrastructure.prepare()
+        let initialEmail = uniqueEmail(prefix: "ios-email-pending-old")
+        let editedEmail = uniqueEmail(prefix: "ios-email-pending-new")
+        let userId = try await createProfileSession(email: initialEmail, firstName: "Existing")
+        await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens()
+        _ = try await hydrateUserProfile()
+
+        Rownd.user.set(field: "email", value: AnyCodable(editedEmail))
+
+        let updateRequest = try await waitForEmailUpdateRequest()
+        try assertSuccessfulSingleEmailUpdate(updateRequest, email: editedEmail)
+        try assertSuperTokensOnlyHeaders(updateRequest)
+        let verification = try await waitForVerificationEmail()
+        #expect(verification["email"] as? String == editedEmail)
+
+        try await waitForUserLoadingToFinish()
+        let localEmail: String? = Rownd.user.get(field: "email")
+        let localFirstName: String? = Rownd.user.get(field: "first_name")
+        #expect(localEmail == initialEmail)
+        #expect(localFirstName == "Existing")
+
+        let profile = try await getJSON(path: "auth/plugin/rownd/user")
+        try assertEmailProfile(
+            profile,
+            userId: userId,
+            email: initialEmail,
+            verifiedEmail: initialEmail,
+            firstName: "Existing"
+        )
+        #expect(await SuperTokensSessionBridge.doesSessionExist())
     }
 
-    private func createHarnessSessionResponse(userId: String, captureLocally: Bool) async throws -> HTTPURLResponse {
+    @Test func verifyingEditedEmailUpdatesTheUserProfile() async throws {
+        try await TestInfrastructure.prepare()
+        let initialEmail = uniqueEmail(prefix: "ios-email-verified-old")
+        let editedEmail = uniqueEmail(prefix: "ios-email-verified-new")
+        let userId = try await createProfileSession(email: initialEmail, firstName: "Existing")
+        await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens()
+        _ = try await hydrateUserProfile()
+
+        Rownd.user.set(field: "email", value: AnyCodable(editedEmail))
+
+        let updateRequest = try await waitForEmailUpdateRequest()
+        try assertSuccessfulSingleEmailUpdate(updateRequest, email: editedEmail)
+        try assertSuperTokensOnlyHeaders(updateRequest)
+        let verification = try await waitForVerificationEmail()
+        #expect(verification["email"] as? String == editedEmail)
+        let token = try #require(verification["token"] as? String)
+        let verificationResponse = try await verifyEmail(token: token)
+        #expect(verificationResponse.body["status"] as? String == "OK")
+
+        let profile = try await getJSON(path: "auth/plugin/rownd/user")
+        try assertEmailProfile(
+            profile,
+            userId: userId,
+            email: editedEmail,
+            verifiedEmail: editedEmail,
+            firstName: "Existing"
+        )
+
+        _ = try await hydrateUserProfile()
+        let localEmail: String? = Rownd.user.get(field: "email")
+        #expect(localEmail == editedEmail)
+
+        let protected = try await getJSON(path: "test/protected")
+        #expect(protected["userId"] as? String == userId)
+    }
+
+    @Test func verifiedEmailChangePreservesThirdPartyIdentityAndRotatesSession() async throws {
+        try await TestInfrastructure.prepare()
+
+        let signIn = try await SuperTokensThirdPartySignInClient(
+            apiDomain: TestInfrastructure.supertokensConfig.apiDomain,
+            apiBasePath: TestInfrastructure.supertokensConfig.apiBasePath
+        ).signInWithGoogle(idToken: "fake-google-id-token")
+        #expect(signIn.userType == .NewUser)
+        await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens()
+        _ = try await hydrateUserProfile()
+
+        let originalAccessToken = try #require(await SuperTokensSessionBridge.getAccessToken())
+        let originalRefreshToken = try #require(SuperTokensSessionBridge.getRefreshToken())
+        let originalFrontToken = try #require(SuperTokensSessionBridge.getFrontToken())
+        let originalAccount = try await getJSON(path: "test/account")
+        let userId = try #require(originalAccount["userId"] as? String)
+        let originalSessionHandle = try #require(originalAccount["sessionHandle"] as? String)
+        let originalMethods = try #require(originalAccount["loginMethods"] as? [[String: Any]])
+        let originalProvider = try #require(
+            originalMethods.first { $0["recipeId"] as? String == "thirdparty" }
+        )
+        let originalProviderRecipeUserId = try #require(originalProvider["recipeUserId"] as? String)
+        let originalProviderId = try #require(originalProvider["thirdPartyId"] as? String)
+        let originalProviderUserId = try #require(originalProvider["thirdPartyUserId"] as? String)
+        let originalProviderEmail = try #require(originalProvider["email"] as? String)
+        #expect(originalMethods.count == 1)
+
+        let targetEmail = uniqueEmail(prefix: "ios-thirdparty-email")
+        Rownd.user.set(field: "email", value: AnyCodable(targetEmail))
+
+        let updateRequest = try await waitForEmailUpdateRequest()
+        try assertSuccessfulSingleEmailUpdate(updateRequest, email: targetEmail)
+        let verification = try await waitForVerificationEmail()
+        let token = try #require(verification["token"] as? String)
+        let verificationResponse = try await verifyEmail(token: token)
+        #expect(verificationResponse.body["status"] as? String == "OK")
+
+        let replacementAccessToken = try #require(
+            header(verificationResponse.response, named: "st-access-token")
+        )
+        let replacementRefreshToken = try #require(
+            header(verificationResponse.response, named: "st-refresh-token")
+        )
+        let replacementFrontToken = try #require(
+            header(verificationResponse.response, named: "front-token")
+        )
+        #expect(replacementAccessToken != originalAccessToken)
+        #expect(replacementRefreshToken != originalRefreshToken)
+        #expect(replacementFrontToken != originalFrontToken)
+        #expect(await SuperTokensSessionBridge.getAccessToken() == replacementAccessToken)
+        #expect(SuperTokensSessionBridge.getRefreshToken() == replacementRefreshToken)
+        #expect(SuperTokensSessionBridge.getFrontToken() == replacementFrontToken)
+        #expect(try await Rownd.getAccessToken(throwIfMissing: true) == replacementAccessToken)
+
+        let capturedRequests = try await getJSON(path: "captured-requests")
+        let emailVerify = try #require(capturedRequests["emailVerify"] as? [String: Any])
+        #expect(emailVerify["authorization"] as? String == "Bearer \(originalAccessToken)")
+        #expect(emailVerify["authorizationCount"] as? Int == 1)
+        #expect(emailVerify["rowndAppKey"] == nil)
+
+        let updatedAccount = try await getJSON(path: "test/account")
+        #expect(updatedAccount["userId"] as? String == userId)
+        let replacementSessionHandle = try #require(updatedAccount["sessionHandle"] as? String)
+        let activeSessionHandles = try #require(updatedAccount["sessionHandles"] as? [String])
+        #expect(replacementSessionHandle != originalSessionHandle)
+        #expect(activeSessionHandles == [replacementSessionHandle])
+
+        let updatedMethods = try #require(updatedAccount["loginMethods"] as? [[String: Any]])
+        let updatedProvider = try #require(
+            updatedMethods.first { $0["recipeId"] as? String == "thirdparty" }
+        )
+        let passwordlessMethod = try #require(
+            updatedMethods.first {
+                $0["recipeId"] as? String == "passwordless" &&
+                    $0["email"] as? String == targetEmail
+            }
+        )
+        #expect(updatedMethods.count == 2)
+        #expect(updatedProvider["recipeUserId"] as? String == originalProviderRecipeUserId)
+        #expect(updatedProvider["thirdPartyId"] as? String == originalProviderId)
+        #expect(updatedProvider["thirdPartyUserId"] as? String == originalProviderUserId)
+        #expect(updatedProvider["email"] as? String == originalProviderEmail)
+        #expect(passwordlessMethod["verified"] as? Bool == true)
+
+        let profile = try await getJSON(path: "auth/plugin/rownd/user")
+        let profileData = try #require(profile["data"] as? [String: Any])
+        let verifiedData = try #require(profile["verified_data"] as? [String: Any])
+        #expect(profileData["email"] as? String == targetEmail)
+        #expect(verifiedData["email"] as? String == targetEmail)
+
+        let protected = try await getJSON(path: "test/protected")
+        #expect(protected["status"] as? String == "OK")
+        #expect(protected["userId"] as? String == userId)
+    }
+
+    private func createHarnessSession(userId: String) async throws -> String {
+        let session = try await createHarnessSessionResponse(userId: userId, captureLocally: true)
+        #expect(session.response.statusCode == 200)
+        return session.userId
+    }
+
+    private func createHarnessSessionResponse(
+        userId: String,
+        captureLocally: Bool
+    ) async throws -> (response: HTTPURLResponse, userId: String) {
         var request = URLRequest(url: TestInfrastructure.backendURL.appendingPathComponent("test/session"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("header", forHTTPHeaderField: "st-auth-mode")
         request.httpBody = try JSONSerialization.data(withJSONObject: ["userId": userId])
 
         let session: URLSession
@@ -381,7 +564,33 @@ import AnyCodable
         let payload = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
         #expect(payload["status"] as? String == "OK")
 
-        return httpResponse
+        return (httpResponse, try #require(payload["userId"] as? String))
+    }
+
+    private func createProfileSession(email: String, firstName: String) async throws -> String {
+        var request = URLRequest(url: TestInfrastructure.backendURL.appendingPathComponent("test/profile-session"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "email": email,
+            "firstName": firstName,
+        ])
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let statusCode = try #require((response as? HTTPURLResponse)?.statusCode)
+        #expect(statusCode == 200)
+
+        let payload = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(payload["status"] as? String == "OK")
+        return try #require(payload["userId"] as? String)
+    }
+
+    private func hydrateUserProfile() async throws -> UserStateResponse {
+        let user = try #require(try await UserData.fetchUserData(Context.currentContext.store.state))
+        await MainActor.run {
+            Context.currentContext.store.dispatch(SetUserState(payload: user.toUserState()))
+        }
+        return user
     }
 
     private func migrateLegacySession(accessToken: String, refreshToken: String) async throws {
@@ -426,6 +635,116 @@ import AnyCodable
 
         let counters = try await getJSON(path: "counters")
         #expect(counters[name] as? Int == expectedValue)
+    }
+
+    private func waitForEmailUpdateRequest() async throws -> [String: Any] {
+        for _ in 0..<80 {
+            let capturedRequests = try await getJSON(path: "captured-requests")
+            if let request = capturedRequests["userFieldUpdate"] as? [String: Any],
+               request["statusCode"] is Int {
+                return request
+            }
+            if let request = capturedRequests["userUpdate"] as? [String: Any],
+               request["statusCode"] is Int {
+                return request
+            }
+
+            try await Task.sleep(nanoseconds: 25_000_000)
+        }
+
+        throw RowndError("Timed out waiting for the email update request")
+    }
+
+    private func waitForCapturedRequest(named name: String) async throws -> [String: Any] {
+        for _ in 0..<80 {
+            let capturedRequests = try await getJSON(path: "captured-requests")
+            if let request = capturedRequests[name] as? [String: Any],
+               request["statusCode"] is Int {
+                return request
+            }
+
+            try await Task.sleep(nanoseconds: 25_000_000)
+        }
+
+        throw RowndError("Timed out waiting for the \(name) request")
+    }
+
+    private func waitForUserLoadingToFinish() async throws {
+        for _ in 0..<80 {
+            let isLoading = await MainActor.run {
+                Context.currentContext.store.state.user.isLoading
+            }
+            if !isLoading {
+                return
+            }
+
+            try await Task.sleep(nanoseconds: 25_000_000)
+        }
+
+        throw RowndError("Timed out waiting for the user profile update")
+    }
+
+    private func waitForVerificationEmail() async throws -> [String: Any] {
+        for _ in 0..<80 {
+            let verification = try await getJSON(path: "test/email-verification/latest")
+            if verification["status"] as? String == "OK" {
+                return verification
+            }
+
+            try await Task.sleep(nanoseconds: 25_000_000)
+        }
+
+        throw RowndError("Timed out waiting for the email verification message")
+    }
+
+    private func assertSuccessfulSingleEmailUpdate(_ request: [String: Any], email: String) throws {
+        try #require(request["statusCode"] as? Int == 200)
+
+        let body = try #require(request["body"] as? [String: Any])
+        if request["field"] as? String == "email" {
+            #expect(body.count == 1)
+            #expect(body["value"] as? String == email)
+            return
+        }
+
+        let data = try #require(body["data"] as? [String: Any])
+        #expect(data.count == 1)
+        #expect(data["email"] as? String == email)
+    }
+
+    private func assertEmailProfile(
+        _ profile: [String: Any],
+        userId: String,
+        email: String,
+        verifiedEmail: String,
+        firstName: String
+    ) throws {
+        let data = try #require(profile["data"] as? [String: Any])
+        let verifiedData = try #require(profile["verified_data"] as? [String: Any])
+        #expect(data["user_id"] as? String == userId)
+        #expect(data["email"] as? String == email)
+        #expect(data["first_name"] as? String == firstName)
+        #expect(verifiedData["email"] as? String == verifiedEmail)
+    }
+
+    private func verifyEmail(token: String) async throws -> (body: [String: Any], response: HTTPURLResponse) {
+        var request = URLRequest(url: TestInfrastructure.backendURL.appendingPathComponent("auth/user/email/verify"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "method": "token",
+            "token": token,
+        ])
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let statusCode = try #require((response as? HTTPURLResponse)?.statusCode)
+        #expect(statusCode == 200)
+        let body = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        return (body, try #require(response as? HTTPURLResponse))
+    }
+
+    private func uniqueEmail(prefix: String) -> String {
+        "\(prefix)-\(UUID().uuidString.lowercased())@example.com"
     }
 
     private func assertSuperTokensOnlyHeaders(_ request: [String: Any]?) throws {

@@ -7,6 +7,16 @@ You'll need to first generate mocked classes by running `./gen-mocks.sh`
 
 Then, run the tests by changing the target to `RowndTests` or running individual test suites and functions within their respective files
 
+### Integration and E2E tests
+
+The full E2E suite requires Docker, an `iPhone 17` simulator, and a sibling `../supertokens-rownd-hub` checkout. Run `npm install` in both repositories, then run:
+
+```sh
+npm run test:e2e
+```
+
+This starts the local SuperTokens Core, backend harness, and dynamic Hub server before running the native integration suite, hosted example test, and rendered manage-account XCUITest. The lower-level `test:integration`, `test:e2e:example`, and `test:e2e:ui` scripts require `npm run test:integration:harness` to already be running.
+
 ## Writing tests
 
 We have previously written tests using the XCTesting framework, but have switched to the newer and better [Swift Testing](https://developer.apple.com/documentation/testing/) library. Write new tests using this library.

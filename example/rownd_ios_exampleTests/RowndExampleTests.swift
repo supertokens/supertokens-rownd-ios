@@ -1,5 +1,4 @@
 import XCTest
-import AnyCodable
 import SuperTokensIOS
 
 @testable import Rownd
@@ -28,6 +27,7 @@ final class RowndExampleTests: XCTestCase {
         let config = try await harnessConfig()
 
         Rownd.config.baseUrl = config.hubBaseUrl
+        Rownd.config.enableSmartLinkPasteBehavior = false
         _ = await Rownd.configure(
             appKey: config.appKey,
             supertokens: RowndSuperTokensConfig(
@@ -39,11 +39,6 @@ final class RowndExampleTests: XCTestCase {
 
         let accessToken = try await createSession(userId: "ios-example-e2e-user")
         XCTAssertFalse(accessToken.isEmpty)
-
-        Rownd.user.set(data: [
-            "user_id": AnyCodable("ios-example-e2e-user"),
-            "email": AnyCodable("ios-example-e2e-user@example.com")
-        ])
 
         try await updateProfile(accessToken: accessToken)
         try await signOut(accessToken: accessToken)
@@ -85,7 +80,6 @@ final class RowndExampleTests: XCTestCase {
     private func updateProfile(accessToken: String) async throws {
         _ = try await response("PUT", path: "/auth/plugin/rownd/user", body: [
             "data": [
-                "user_id": "ios-example-e2e-user",
                 "first_name": "E2E"
             ]
         ], session: harnessSession, headers: authorizationHeaders(accessToken))

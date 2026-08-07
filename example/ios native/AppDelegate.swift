@@ -28,6 +28,19 @@ struct E2EHarnessConfig: Decodable {
     let supertokens: SuperTokens
 }
 
+@MainActor
+final class E2EReadiness: ObservableObject {
+    static let shared = E2EReadiness()
+
+    @Published private(set) var isReady = false
+
+    private init() {}
+
+    func markReady() {
+        isReady = true
+    }
+}
+
 enum E2ESupport {
     static var isEnabled: Bool {
         ProcessInfo.processInfo.environment["ROWND_E2E"] == "1"
@@ -56,6 +69,7 @@ enum E2ESupport {
             Rownd.config.subdomainExtension = ExampleAppConfig.subdomainExtension
             Rownd.config.appGroupPrefix = ExampleAppConfig.appGroupPrefix
             Rownd.config.enableDebugMode = ExampleAppConfig.enableDebugMode
+            Rownd.config.enableSmartLinkPasteBehavior = false
             Rownd.config.customizations = AppCustomizations()
             Rownd.config.customizations.loadingAnimation = LottieAnimation.named("loading")
             Rownd.addEventHandler(RowndEventHandler())
@@ -69,6 +83,12 @@ enum E2ESupport {
                     apiBasePath: config.supertokens.appInfo.apiBasePath
                 )
             )
+
+            if let token = ProcessInfo.processInfo.environment["ROWND_E2E_VERIFY_EMAIL_TOKEN"] {
+                try await verifyEmail(token: token)
+            }
+
+            await E2EReadiness.shared.markReady()
         } catch {
             fatalError("Failed to configure Rownd E2E harness: \(error)")
         }
@@ -79,22 +99,27 @@ enum E2ESupport {
         var request = URLRequest(url: apiURL.appendingPathComponent("reset"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        _ = try await URLSession.shared.data(for: request)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireOK(data: data, response: response)
     }
 
-    static func createSession(userId: String = "ios-e2e-user") async throws {
+    static func createSession() async throws {
         guard let apiURL = apiURL else { throw E2EError.missingApiURL }
-        var request = URLRequest(url: apiURL.appendingPathComponent("test/session"))
+        let environment = ProcessInfo.processInfo.environment
+        let email = environment["ROWND_E2E_EMAIL"] ?? "ios-e2e-user@example.com"
+        let firstName = environment["ROWND_E2E_FIRST_NAME"] ?? "Existing"
+        var request = URLRequest(url: apiURL.appendingPathComponent("test/profile-session"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: ["userId": userId])
-
-        _ = try await URLSession.shared.data(for: request)
-        _ = try await Rownd.getAccessToken(throwIfMissing: true)
-        Rownd.user.set(data: [
-            "user_id": AnyCodable(userId),
-            "email": AnyCodable("\(userId)@example.com")
+        request.setValue("header", forHTTPHeaderField: "st-auth-mode")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "email": email,
+            "firstName": firstName
         ])
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireOK(data: data, response: response)
+        _ = try await Rownd.getAccessToken(throwIfMissing: true)
     }
 
     static func updateProfile() async throws {
@@ -104,30 +129,55 @@ enum E2ESupport {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: [
             "data": [
-                "user_id": "ios-e2e-user",
                 "first_name": "E2E"
             ]
         ])
 
         _ = try await URLSession.shared.data(for: request)
         Rownd.user.set(data: [
-            "user_id": AnyCodable("ios-e2e-user"),
             "first_name": AnyCodable("E2E")
         ])
+    }
+
+    static func verifyEmail(token: String) async throws {
+        guard let apiURL = apiURL else { throw E2EError.missingApiURL }
+        var request = URLRequest(url: apiURL.appendingPathComponent("auth/user/email/verify"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "method": "token",
+            "token": token
+        ])
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireOK(data: data, response: response)
+    }
+
+    private static func requireOK(data: Data, response: URLResponse) throws {
+        guard let response = response as? HTTPURLResponse,
+              (200..<300).contains(response.statusCode),
+              let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              payload["status"] as? String == "OK" else {
+            throw E2EError.unexpectedResponse
+        }
     }
 }
 
 enum E2EError: Error {
     case missingApiURL
+    case unexpectedResponse
 }
 
 struct E2EStatusView: View {
     @StateObject var authState = Rownd.getInstance().state().subscribe { $0.auth }
     @StateObject var user = Rownd.getInstance().state().subscribe { $0.user.data }
+    @StateObject private var readiness = E2EReadiness.shared
 
     var body: some View {
         if E2ESupport.isEnabled {
             VStack {
+                Text(readiness.isReady ? "ready" : "loading")
+                    .accessibilityIdentifier("e2e-sdk-state")
                 Text(authState.current.isAuthenticated ? "authenticated" : "signed-out")
                     .accessibilityIdentifier("e2e-auth-state")
                 Text((user.current["user_id"]?.value as? String) ?? "no-user")
