@@ -5,20 +5,10 @@ import SuperTokensIOS
 
 internal enum SuperTokensSessionBridge {
     private static let adoptionLock = NSLock()
-    private static let accessTokenStorageKey = "st-storage-item-st-access-token"
+    // Only the refresh-token slot is still touched directly, by the adopt-over-
+    // existing-session path below (a granular refresh-token swap the core SDK has no
+    // primitive for). All other reads/writes/clears go through the core SDK.
     private static let refreshTokenStorageKey = "st-storage-item-st-refresh-token"
-    private static let frontTokenStorageKey = "supertokens-ios-fronttoken-key"
-    private static let lastAccessTokenUpdateStorageKey = "st-storage-item-st-last-access-token-update"
-    private static let refreshTokenFrontendStorageKey = "st-storage-item-sIRTFrontend"
-    private static let antiCSRFStorageKey = "supertokens-ios-anticsrf-key"
-    private static let sessionStorageKeys = [
-        accessTokenStorageKey,
-        refreshTokenStorageKey,
-        frontTokenStorageKey,
-        lastAccessTokenUpdateStorageKey,
-        refreshTokenFrontendStorageKey,
-        antiCSRFStorageKey,
-    ]
     internal static var storageOverride: SuperTokensSessionStorage?
 
     static func doesSessionExist() async -> Bool {
@@ -34,15 +24,15 @@ internal enum SuperTokensSessionBridge {
     }
 
     static func getRefreshToken() -> String? {
-        storage().get(refreshTokenStorageKey)
+        SuperTokens.getRefreshToken()
     }
 
     static func getFrontToken() -> String? {
-        storage().get(frontTokenStorageKey)
+        SuperTokens.getFrontToken()
     }
 
     static func getAntiCSRF() -> String? {
-        storage().get(antiCSRFStorageKey)
+        SuperTokens.getAntiCSRF()
     }
 
     static func attemptRefresh() async -> Bool {
@@ -66,7 +56,7 @@ internal enum SuperTokensSessionBridge {
 
     @discardableResult
     static func clearLocalSessionArtifacts() -> Bool {
-        clearLocalSessionArtifactsInCurrentThread()
+        SuperTokens.clearSessionLocally()
     }
 
     // WKWebView requests do not traverse SuperTokensURLProtocol, so Hub-complete
@@ -141,42 +131,20 @@ internal enum SuperTokensSessionBridge {
             return true
         }
 
-        let previousValues = sessionStorageKeys.reduce(into: [String: String]()) { values, key in
-            values[key] = storage.get(key)
-        }
-        guard storage.set(accessTokenStorageKey, value: accessToken),
-              storage.set(refreshTokenStorageKey, value: refreshToken) else {
-            logger.warning("Skipping SuperTokens session bootstrap because session tokens could not be stored")
-            rollbackSessionArtifacts(previousValues, storage: storage)
-            return false
-        }
-
-        if let antiCSRF, !antiCSRF.isEmpty {
-            guard storage.set(antiCSRFStorageKey, value: antiCSRF) else {
-                logger.warning("SuperTokens session bootstrap could not store anti-CSRF token")
-                rollbackSessionArtifacts(previousValues, storage: storage)
-                return false
-            }
-        } else if !storage.remove(antiCSRFStorageKey) {
-            logger.warning("SuperTokens session bootstrap could not clear the previous anti-CSRF token")
-            rollbackSessionArtifacts(previousValues, storage: storage)
-            return false
-        }
-
-        guard storage.set(frontTokenStorageKey, value: adoptedFrontToken),
-              storage.set(lastAccessTokenUpdateStorageKey, value: "\(Int64(Date().timeIntervalSince1970 * 1000))"),
-              storage.remove(refreshTokenFrontendStorageKey) else {
-            logger.warning("Skipping SuperTokens session bootstrap because session metadata could not be stored")
-            rollbackSessionArtifacts(previousValues, storage: storage)
-            return false
-        }
-
-        guard SuperTokens.doesSessionExist(),
-              SuperTokens.getAccessToken() == accessToken,
-              storage.get(refreshTokenStorageKey) == refreshToken,
-              (try? SuperTokens.getUserId()) == expectedUserId else {
-            logger.warning("Skipping SuperTokens session bootstrap because the adopted session could not be verified")
-            rollbackSessionArtifacts(previousValues, storage: storage)
+        // Greenfield install: there is no existing session to preserve, so write the
+        // full token set through the core SDK's own validated path — a single source
+        // of truth — instead of re-implementing the keychain writes here.
+        // installSession is atomic: it validates the front token, rolls its own
+        // storage back on any write failure, and returns true only on a fully
+        // successful write. The token identity was already checked by validatedUserId
+        // above, so a successful install needs no separate read-back verification.
+        guard SuperTokens.installSession(
+            accessToken: accessToken,
+            refreshToken: refreshToken,
+            frontToken: adoptedFrontToken,
+            antiCSRFToken: antiCSRF
+        ) else {
+            logger.warning("Skipping SuperTokens session bootstrap because the session could not be installed")
             return false
         }
 
@@ -246,46 +214,6 @@ internal enum SuperTokensSessionBridge {
             ?? storage.remove(refreshTokenStorageKey)
         if !didRestore {
             logger.warning("SuperTokens session bootstrap could not restore the previous refresh token")
-        }
-    }
-
-    @discardableResult
-    private static func clearLocalSessionArtifactsInCurrentThread() -> Bool {
-        let storage = storage()
-        var didClear = true
-        didClear = storage.remove(accessTokenStorageKey) && didClear
-        didClear = storage.remove(refreshTokenStorageKey) && didClear
-        didClear = storage.remove(frontTokenStorageKey) && didClear
-        didClear = storage.remove(lastAccessTokenUpdateStorageKey) && didClear
-        didClear = storage.remove(refreshTokenFrontendStorageKey) && didClear
-        didClear = storage.remove(antiCSRFStorageKey) && didClear
-
-        let userDefaults = UserDefaults.standard
-        userDefaults.removeObject(forKey: accessTokenStorageKey)
-        userDefaults.removeObject(forKey: refreshTokenStorageKey)
-        userDefaults.removeObject(forKey: frontTokenStorageKey)
-        userDefaults.removeObject(forKey: lastAccessTokenUpdateStorageKey)
-        userDefaults.removeObject(forKey: refreshTokenFrontendStorageKey)
-        userDefaults.removeObject(forKey: antiCSRFStorageKey)
-        return didClear
-    }
-
-    private static func rollbackSessionArtifacts(
-        _ previousValues: [String: String],
-        storage: SuperTokensSessionStorage
-    ) {
-        let didRestore = sessionStorageKeys.reduce(true) { didRestore, key in
-            let didUpdate: Bool
-            if let value = previousValues[key] {
-                didUpdate = storage.set(key, value: value)
-            } else {
-                didUpdate = storage.remove(key)
-            }
-            return didUpdate && didRestore
-        }
-
-        if !didRestore {
-            logger.warning("SuperTokens session bootstrap could not restore the previous session")
         }
     }
 
