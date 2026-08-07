@@ -36,7 +36,11 @@ open class RowndCustomizations: Encodable {
 
     open var loadingAnimationUiView: UIView?
 
-    public var defaultFontSize: CGFloat = UIFontMetrics(forTextStyle: .body).scaledFont(for: .preferredFont(forTextStyle: .body)).pointSize - 5
+    public var defaultFontSize: CGFloat = RowndCustomizations.scaledDefaultFontSize()
+
+    static func scaledDefaultFontSize(compatibleWith traitCollection: UITraitCollection? = nil) -> CGFloat {
+        UIFontMetrics(forTextStyle: .body).scaledValue(for: 12, compatibleWith: traitCollection)
+    }
 
     internal var loadingAnimationView: UIView? {
         if let animationView = loadingAnimationUiView {
