@@ -5,22 +5,31 @@ import SuperTokensIOS
 
 internal enum SuperTokensSessionBridge {
     private static let adoptionLock = NSLock()
+    // A single serial queue for every core session operation — install, clear,
+    // reads, refresh, sign-out. Routing them all through one queue keeps them
+    // strictly ordered, so a session installed from one task can never be observed
+    // as missing because a concurrent (or orphaned) operation interleaved between
+    // the install and a later read. Replaces the previous per-call `Task.detached`,
+    // whose independent tasks could race one another.
+    private static let sessionQueue = DispatchQueue(label: "io.rownd.supertokens.session", qos: .userInitiated)
     // Only the refresh-token slot is still touched directly, by the adopt-over-
     // existing-session path below (a granular refresh-token swap the core SDK has no
     // primitive for). All other reads/writes/clears go through the core SDK.
     private static let refreshTokenStorageKey = "st-storage-item-st-refresh-token"
     internal static var storageOverride: SuperTokensSessionStorage?
 
+    private static func onSessionQueue<T>(_ work: @escaping () -> T) async -> T {
+        await withCheckedContinuation { continuation in
+            sessionQueue.async { continuation.resume(returning: work()) }
+        }
+    }
+
     static func doesSessionExist() async -> Bool {
-        await Task.detached(priority: .userInitiated) {
-            SuperTokens.doesSessionExist()
-        }.value
+        await onSessionQueue { SuperTokens.doesSessionExist() }
     }
 
     static func getAccessToken() async -> String? {
-        await Task.detached(priority: .userInitiated) {
-            SuperTokens.getAccessToken()
-        }.value
+        await onSessionQueue { SuperTokens.getAccessToken() }
     }
 
     static func getRefreshToken() -> String? {
@@ -36,22 +45,22 @@ internal enum SuperTokensSessionBridge {
     }
 
     static func attemptRefresh() async -> Bool {
-        await Task.detached(priority: .userInitiated) {
+        await onSessionQueue {
             (try? SuperTokens.attemptRefreshingSession()) == true
                 && SuperTokens.doesSessionExist()
-        }.value
+        }
     }
 
     static func signOut() async {
-        await Task.detached(priority: .userInitiated) {
-            await withCheckedContinuation { continuation in
-                SuperTokens.signOut { _ in
-                    continuation.resume()
-                }
-            }
-
-            _ = clearLocalSessionArtifacts()
-        }.value
+        await onSessionQueue {
+            // Block the session queue for the duration of sign-out so no read or
+            // install interleaves with it. The core resolves the completion handler
+            // on every path (0.5.3), so this can't hang.
+            let semaphore = DispatchSemaphore(value: 0)
+            SuperTokens.signOut { _ in semaphore.signal() }
+            semaphore.wait()
+            _ = SuperTokens.clearSessionLocally()
+        }
     }
 
     @discardableResult
@@ -70,6 +79,29 @@ internal enum SuperTokensSessionBridge {
         refreshSession: () throws -> Bool = SuperTokens.attemptRefreshingSession
     ) -> Bool {
         precondition(!Thread.isMainThread, "bootstrapSession must be called off the main thread")
+        // Run the whole bootstrap on the shared session queue so the install and its
+        // internal reads/refresh can't interleave with a concurrent read, clear, or
+        // sign-out from another task.
+        return sessionQueue.sync {
+            bootstrapSessionOnQueue(
+                accessToken: accessToken,
+                refreshToken: refreshToken,
+                frontToken: frontToken,
+                antiCSRF: antiCSRF,
+                allowReplacingExistingSession: allowReplacingExistingSession,
+                refreshSession: refreshSession
+            )
+        }
+    }
+
+    private static func bootstrapSessionOnQueue(
+        accessToken: String,
+        refreshToken: String?,
+        frontToken: String?,
+        antiCSRF: String?,
+        allowReplacingExistingSession: Bool,
+        refreshSession: () throws -> Bool
+    ) -> Bool {
         adoptionLock.lock()
         defer { adoptionLock.unlock() }
 

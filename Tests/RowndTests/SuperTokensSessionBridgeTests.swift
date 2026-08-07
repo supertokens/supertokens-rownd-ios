@@ -25,10 +25,17 @@ import Network
         "supertokens-ios-anticsrf-key",
     ]
 
+    // The single in-memory store that each harness installs as both the core
+    // TokenStorage seam and the bridge storageOverride. Assertions read session
+    // artifacts through this rather than UserDefaults.standard, which core purges
+    // after every write.
+    private static var activeStore = InMemorySessionStore()
+
     private static func resetToKnownState() {
         SuperTokensSessionBridge.storageOverride = nil
         SuperTokens.resetForTests()
         FrontToken.clearInMemoryCache()
+        activeStore.reset()
         for key in allSessionKeys {
             UserDefaults.standard.removeObject(forKey: key)
         }
@@ -57,9 +64,9 @@ import Network
 
             #expect(succeeded)
             #expect(await SuperTokensSessionBridge.getAccessToken() == accessToken)
-            #expect(UserDefaults.standard.string(forKey: "st-storage-item-st-refresh-token") == refreshToken)
-            #expect(UserDefaults.standard.string(forKey: "supertokens-ios-fronttoken-key") != nil)
-            #expect(UserDefaults.standard.string(forKey: "st-storage-item-st-last-access-token-update") != nil)
+            #expect(Self.activeStore.get("st-storage-item-st-refresh-token") == refreshToken)
+            #expect(Self.activeStore.get("supertokens-ios-fronttoken-key") != nil)
+            #expect(Self.activeStore.get("st-storage-item-st-last-access-token-update") != nil)
         }
     }
 
@@ -74,9 +81,9 @@ import Network
             #expect(!succeeded)
             #expect(await !SuperTokensSessionBridge.doesSessionExist())
             #expect(await SuperTokensSessionBridge.getAccessToken() == nil)
-            #expect(UserDefaults.standard.string(forKey: "st-storage-item-st-refresh-token") == nil)
-            #expect(UserDefaults.standard.string(forKey: "supertokens-ios-fronttoken-key") == nil)
-            #expect(UserDefaults.standard.string(forKey: "st-storage-item-st-last-access-token-update") == nil)
+            #expect(Self.activeStore.get("st-storage-item-st-refresh-token") == nil)
+            #expect(Self.activeStore.get("supertokens-ios-fronttoken-key") == nil)
+            #expect(Self.activeStore.get("st-storage-item-st-last-access-token-update") == nil)
         }
     }
 
@@ -108,7 +115,7 @@ import Network
             }.value
 
             #expect(await !SuperTokensSessionBridge.doesSessionExist())
-            #expect(UserDefaults.standard.string(forKey: "supertokens-ios-anticsrf-key") == nil)
+            #expect(Self.activeStore.get("supertokens-ios-anticsrf-key") == nil)
         }
     }
 
@@ -148,7 +155,7 @@ import Network
                 )
             }.value
 
-            let originalFrontToken = UserDefaults.standard.string(forKey: "supertokens-ios-fronttoken-key")
+            let originalFrontToken = Self.activeStore.get("supertokens-ios-fronttoken-key")
 
             let succeeded = await Task.detached {
                 SuperTokensSessionBridge.bootstrapSession(
@@ -166,8 +173,8 @@ import Network
 
             #expect(succeeded)
             #expect(await SuperTokensSessionBridge.getAccessToken() == replacementAccessToken)
-            #expect(UserDefaults.standard.string(forKey: "st-storage-item-st-refresh-token") == replacementRefreshToken)
-            #expect(UserDefaults.standard.string(forKey: "supertokens-ios-fronttoken-key") != originalFrontToken)
+            #expect(Self.activeStore.get("st-storage-item-st-refresh-token") == replacementRefreshToken)
+            #expect(Self.activeStore.get("supertokens-ios-fronttoken-key") != originalFrontToken)
         }
     }
 
@@ -223,8 +230,8 @@ import Network
 
             #expect(firstSucceeded)
             #expect(secondSucceeded)
-            #expect(UserDefaults.standard.string(forKey: "st-storage-item-st-refresh-token") == refreshToken)
-            #expect(UserDefaults.standard.string(forKey: "supertokens-ios-anticsrf-key") == "original-anti-csrf")
+            #expect(Self.activeStore.get("st-storage-item-st-refresh-token") == refreshToken)
+            #expect(Self.activeStore.get("supertokens-ios-anticsrf-key") == "original-anti-csrf")
         }
     }
 
@@ -305,13 +312,13 @@ import Network
             }.value
 
             #expect(await SuperTokensSessionBridge.getAccessToken() == accessToken)
-            #expect(UserDefaults.standard.string(forKey: "st-storage-item-st-refresh-token") == refreshToken)
+            #expect(Self.activeStore.get("st-storage-item-st-refresh-token") == refreshToken)
 
             await SuperTokensSessionBridge.signOut()
 
             #expect(await !SuperTokensSessionBridge.doesSessionExist())
             #expect(await SuperTokensSessionBridge.getAccessToken() == nil)
-            #expect(UserDefaults.standard.string(forKey: "supertokens-ios-fronttoken-key") == nil)
+            #expect(Self.activeStore.get("supertokens-ios-fronttoken-key") == nil)
         }
     }
 
@@ -366,7 +373,7 @@ import Network
             }.value
 
             #expect(await SuperTokensSessionBridge.getAccessToken() == accessToken)
-            #expect(UserDefaults.standard.string(forKey: "st-storage-item-st-refresh-token") == refreshToken)
+            #expect(Self.activeStore.get("st-storage-item-st-refresh-token") == refreshToken)
 
             await Rownd.signOut()
 
@@ -386,7 +393,7 @@ import Network
                 #expect(Context.currentContext.store.state?.auth.isAuthenticated == false)
             }
             #expect(await !SuperTokensSessionBridge.doesSessionExist())
-            #expect(UserDefaults.standard.string(forKey: "supertokens-ios-fronttoken-key") == nil)
+            #expect(Self.activeStore.get("supertokens-ios-fronttoken-key") == nil)
         }
     }
 
@@ -483,9 +490,11 @@ import Network
             Rownd.isSuperTokensInitialized = false
             Rownd.config.supertokens = Self.supertokensConfig
             _ = try Rownd.initializeSuperTokensIfNeeded()
-            SDKStorage.setTokenStorageForTests(UserDefaultsTokenStorage())
+            let store = InMemorySessionStore()
+            Self.activeStore = store
+            SDKStorage.setTokenStorageForTests(store)
             let previousStorageOverride = SuperTokensSessionBridge.storageOverride
-            SuperTokensSessionBridge.storageOverride = UserDefaultsSessionStorage()
+            SuperTokensSessionBridge.storageOverride = store
             URLProtocol.registerClass(SuperTokensSignOutURLProtocol.self)
 
             defer {
@@ -519,9 +528,11 @@ import Network
                 apiBasePath: "/auth"
             )
             _ = try Rownd.initializeSuperTokensIfNeeded()
-            SDKStorage.setTokenStorageForTests(UserDefaultsTokenStorage())
+            let store = InMemorySessionStore()
+            Self.activeStore = store
+            SDKStorage.setTokenStorageForTests(store)
             let previousStorageOverride = SuperTokensSessionBridge.storageOverride
-            SuperTokensSessionBridge.storageOverride = UserDefaultsSessionStorage()
+            SuperTokensSessionBridge.storageOverride = store
 
             defer {
                 server.stop()
@@ -544,13 +555,11 @@ import Network
     }
 
     private func clearStoredSessionArtifacts() {
+        Self.activeStore.reset()
         let userDefaults = UserDefaults.standard
-        userDefaults.removeObject(forKey: "st-storage-item-st-access-token")
-        userDefaults.removeObject(forKey: "st-storage-item-st-refresh-token")
-        userDefaults.removeObject(forKey: "supertokens-ios-fronttoken-key")
-        userDefaults.removeObject(forKey: "st-storage-item-st-last-access-token-update")
-        userDefaults.removeObject(forKey: "st-storage-item-sIRTFrontend")
-        userDefaults.removeObject(forKey: "supertokens-ios-anticsrf-key")
+        for key in Self.allSessionKeys {
+            userDefaults.removeObject(forKey: key)
+        }
     }
 
     private func callFireAndForgetSignOut() {
@@ -590,38 +599,41 @@ import Network
     }
 }
 
-private final class UserDefaultsTokenStorage: TokenStorage {
-    func get(_ name: String) -> String? {
-        UserDefaults.standard.string(forKey: name)
-    }
+// One in-memory store, shared by the core `TokenStorage` seam and the bridge's
+// `SuperTokensSessionStorage`, so the core SDK reads/writes and the adopt-path's
+// direct storage access stay on a single backing during tests.
+//
+// It must NOT be backed by UserDefaults.standard: core's `SDKStorage.set` writes to
+// the token storage and then calls `UserDefaults.standard.removeObject(forKey:)` to
+// purge the legacy-migration copy. A UserDefaults.standard-backed double is that same
+// store, so every write would immediately erase itself and no session would ever be
+// visible to a subsequent read. An in-memory dictionary sidesteps the legacy purge.
+final class InMemorySessionStore: TokenStorage, SuperTokensSessionStorage, @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [String: String] = [:]
 
-    func set(_ name: String, value: String) -> Bool {
-        UserDefaults.standard.set(value, forKey: name)
-        return true
-    }
-
-    func remove(_ name: String) -> Bool {
-        UserDefaults.standard.removeObject(forKey: name)
-        return true
-    }
-}
-
-// Backs the bridge's `storage()` with the same UserDefaults.standard the core test
-// storage uses, so the adopt-over-existing path (the only remaining direct storage
-// user) and the core SDK reads/writes stay on one shared store during tests.
-private final class UserDefaultsSessionStorage: SuperTokensSessionStorage {
     func get(_ key: String) -> String? {
-        UserDefaults.standard.string(forKey: key)
+        lock.lock(); defer { lock.unlock() }
+        return values[key]
     }
 
+    @discardableResult
     func set(_ key: String, value: String) -> Bool {
-        UserDefaults.standard.set(value, forKey: key)
+        lock.lock(); defer { lock.unlock() }
+        values[key] = value
         return true
     }
 
+    @discardableResult
     func remove(_ key: String) -> Bool {
-        UserDefaults.standard.removeObject(forKey: key)
+        lock.lock(); defer { lock.unlock() }
+        values.removeValue(forKey: key)
         return true
+    }
+
+    func reset() {
+        lock.lock(); defer { lock.unlock() }
+        values.removeAll()
     }
 }
 
