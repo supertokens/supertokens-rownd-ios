@@ -1,5 +1,9 @@
 # Changelog
 
+## <small>0.1.5 (2026-07-31)</small>
+
+* fix: Add appVariantId in config and send it during login requests ([b6b3d5e](https://github.com/supertokens/supertokens-rownd-ios/commit/b6b3d5e))
+
 ## <small>0.1.4 (2026-07-27)</small>
 
 * fix: mark session clear as opt in and prevent rownd session removal ([bda8f2f](https://github.com/supertokens/supertokens-rownd-ios/commit/bda8f2f))
