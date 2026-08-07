@@ -1,5 +1,13 @@
 # Changelog
 
+## <small>0.1.6 (2026-08-07)</small>
+
+* chore: bump version ([ba21240](https://github.com/supertokens/supertokens-rownd-ios/commit/ba21240))
+* test: Add complete email change E2E coverage ([bd1d072](https://github.com/supertokens/supertokens-rownd-ios/commit/bd1d072))
+* fix: Add appVariantId in config and send it during login requests ([b6b3d5e](https://github.com/supertokens/supertokens-rownd-ios/commit/b6b3d5e))
+* fix: Adopt OTP sessions over existing native sessions ([e42bd33](https://github.com/supertokens/supertokens-rownd-ios/commit/e42bd33))
+* fix: Scope and reconcile profile updates ([76737cc](https://github.com/supertokens/supertokens-rownd-ios/commit/76737cc))
+
 ## <small>0.1.5 (2026-07-31)</small>
 
 * fix: Add appVariantId in config and send it during login requests ([b6b3d5e](https://github.com/supertokens/supertokens-rownd-ios/commit/b6b3d5e))
