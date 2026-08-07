@@ -1,5 +1,11 @@
 # Changelog
 
+## <small>0.1.7 (2026-08-07)</small>
+
+* chore: Fix packages ([91516b1](https://github.com/supertokens/supertokens-rownd-ios/commit/91516b1))
+* fix: install/clear/read Hub sessions through the core SDK (single source of truth) ([79b3d38](https://github.com/supertokens/supertokens-rownd-ios/commit/79b3d38))
+* fix: serialize bridge session operations and green the session test suite ([bc24da0](https://github.com/supertokens/supertokens-rownd-ios/commit/bc24da0))
+
 ## <small>0.1.6 (2026-08-07)</small>
 
 * chore: bump version ([ba21240](https://github.com/supertokens/supertokens-rownd-ios/commit/ba21240))
