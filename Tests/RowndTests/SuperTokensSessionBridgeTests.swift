@@ -12,6 +12,38 @@ import Network
         apiBasePath: "/auth"
     )
 
+    // Every SuperTokens session artifact key, so setup/teardown can guarantee a
+    // known-empty starting state. UserDefaults.standard persists on the simulator
+    // across test processes, so without this a cold run inherits a prior run's
+    // session and the first bootstrap sees a stale "session already exists".
+    private static let allSessionKeys = [
+        "st-storage-item-st-access-token",
+        "st-storage-item-st-refresh-token",
+        "supertokens-ios-fronttoken-key",
+        "st-storage-item-st-last-access-token-update",
+        "st-storage-item-sIRTFrontend",
+        "supertokens-ios-anticsrf-key",
+    ]
+
+    private static func resetToKnownState() {
+        SuperTokensSessionBridge.storageOverride = nil
+        SuperTokens.resetForTests()
+        FrontToken.clearInMemoryCache()
+        for key in allSessionKeys {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
+    }
+
+    // swift-testing instantiates the suite fresh per test, so init()/deinit act as
+    // per-test setup/teardown: start and end each test from a guaranteed-clean state.
+    init() {
+        Self.resetToKnownState()
+    }
+
+    // Note: deinit for a value type isn't invoked by swift-testing the way a class
+    // teardown would be, so each harness also cleans up on exit; resetToKnownState in
+    // init() is the authoritative guarantee.
+
     @Test func bootstrapSessionCreatesVisibleSession() async throws {
         try await withMockedSuperTokensSession {
             let accessToken = makeSuperTokensTestJWT(expiresIn: 3600)
@@ -283,33 +315,26 @@ import Network
         }
     }
 
-    @Test func localCleanupRemovesAllSuperTokensSessionArtifacts() async throws {
+    @Test func localCleanupClearsSessionThroughCore() async throws {
         try await withMockedSuperTokensSession {
-            let storage = RecordingSessionStorage()
-            let previousStorage = SuperTokensSessionBridge.storageOverride
-            SuperTokensSessionBridge.storageOverride = storage
-            defer {
-                SuperTokensSessionBridge.storageOverride = previousStorage
-            }
-
-            let keys = [
-                "st-storage-item-st-access-token",
-                "st-storage-item-st-refresh-token",
-                "supertokens-ios-fronttoken-key",
-                "st-storage-item-st-last-access-token-update",
-                "st-storage-item-sIRTFrontend",
-                "supertokens-ios-anticsrf-key"
-            ]
-            for key in keys {
-                UserDefaults.standard.set("value", forKey: key)
-            }
+            let accessToken = makeSuperTokensTestJWT(expiresIn: 3600)
+            let refreshToken = makeSuperTokensTestJWT(expiresIn: 7200)
+            await Task.detached {
+                _ = SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: accessToken,
+                    refreshToken: refreshToken,
+                    antiCSRF: "anti-csrf-token"
+                )
+            }.value
+            #expect(await SuperTokensSessionBridge.doesSessionExist())
 
             #expect(SuperTokensSessionBridge.clearLocalSessionArtifacts())
 
-            for key in keys {
-                #expect(UserDefaults.standard.string(forKey: key) == nil)
-            }
-            #expect(Set(storage.removedKeys) == Set(keys))
+            // The clear now routes through the core SDK (single source of truth);
+            // verify the session is gone rather than asserting on hand-rolled keys.
+            #expect(await !SuperTokensSessionBridge.doesSessionExist())
+            #expect(SuperTokensSessionBridge.getFrontToken() == nil)
+            #expect(SuperTokensSessionBridge.getAntiCSRF() == nil)
         }
     }
 
@@ -447,13 +472,27 @@ import Network
         _ operation: @escaping () async throws -> Void
     ) async throws {
         try await withGlobalTestLock {
+            // Force a clean SuperTokens init for every test. Another suite's harness
+            // (withLocalSignOutServerSession) resets SuperTokens in its teardown while
+            // leaving Rownd's isSuperTokensInitialized flag set, which would otherwise
+            // make initializeSuperTokensIfNeeded short-circuit and leave
+            // SuperTokens.isInitCalled false — breaking the core APIs the bridge now
+            // routes through.
+            let previousIsInitialized = Rownd.isSuperTokensInitialized
+            SuperTokens.resetForTests()
+            Rownd.isSuperTokensInitialized = false
             Rownd.config.supertokens = Self.supertokensConfig
             _ = try Rownd.initializeSuperTokensIfNeeded()
             SDKStorage.setTokenStorageForTests(UserDefaultsTokenStorage())
+            let previousStorageOverride = SuperTokensSessionBridge.storageOverride
+            SuperTokensSessionBridge.storageOverride = UserDefaultsSessionStorage()
             URLProtocol.registerClass(SuperTokensSignOutURLProtocol.self)
 
             defer {
                 URLProtocol.unregisterClass(SuperTokensSignOutURLProtocol.self)
+                SuperTokensSessionBridge.storageOverride = previousStorageOverride
+                SuperTokens.resetForTests()
+                Rownd.isSuperTokensInitialized = previousIsInitialized
             }
 
             clearStoredSessionArtifacts()
@@ -481,10 +520,13 @@ import Network
             )
             _ = try Rownd.initializeSuperTokensIfNeeded()
             SDKStorage.setTokenStorageForTests(UserDefaultsTokenStorage())
+            let previousStorageOverride = SuperTokensSessionBridge.storageOverride
+            SuperTokensSessionBridge.storageOverride = UserDefaultsSessionStorage()
 
             defer {
                 server.stop()
                 SuperTokens.resetForTests()
+                SuperTokensSessionBridge.storageOverride = previousStorageOverride
                 Rownd.config.supertokens = originalSuperTokensConfig
                 Rownd.isSuperTokensInitialized = originalIsSuperTokensInitialized
             }
@@ -560,6 +602,25 @@ private final class UserDefaultsTokenStorage: TokenStorage {
 
     func remove(_ name: String) -> Bool {
         UserDefaults.standard.removeObject(forKey: name)
+        return true
+    }
+}
+
+// Backs the bridge's `storage()` with the same UserDefaults.standard the core test
+// storage uses, so the adopt-over-existing path (the only remaining direct storage
+// user) and the core SDK reads/writes stay on one shared store during tests.
+private final class UserDefaultsSessionStorage: SuperTokensSessionStorage {
+    func get(_ key: String) -> String? {
+        UserDefaults.standard.string(forKey: key)
+    }
+
+    func set(_ key: String, value: String) -> Bool {
+        UserDefaults.standard.set(value, forKey: key)
+        return true
+    }
+
+    func remove(_ key: String) -> Bool {
+        UserDefaults.standard.removeObject(forKey: key)
         return true
     }
 }
