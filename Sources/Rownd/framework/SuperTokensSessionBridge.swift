@@ -183,14 +183,16 @@ internal enum SuperTokensSessionBridge {
         return true
     }
 
-    static func syncRowndAuthStateFromSuperTokens() async {
-        guard let accessToken = await getAccessToken() else { return }
+    @discardableResult
+    static func syncRowndAuthStateFromSuperTokens() async -> Bool {
+        guard let accessToken = await getAccessToken() else { return false }
 
         await MainActor.run {
             Context.currentContext.store.dispatch(
                 SetAuthState(payload: AuthState(accessToken: accessToken, refreshToken: nil))
             )
         }
+        return true
     }
 
     static func buildFrontToken(from accessToken: String) -> String {

@@ -4,7 +4,7 @@ public struct RowndDeepLinkHandlerModifier: ViewModifier {
     public func body(content: Content) -> some View {
         content
             .onOpenURL { url in
-                logger.debug("SwiftUI onOpenURL received: \(url.absoluteString)")
+                logger.debug("SwiftUI onOpenURL received: \(Redact.urlForLogging(url))")
                 let handled = Rownd.handleSmartLink(url: url)
                 logger.debug("SwiftUI onOpenURL handled by Rownd: \(handled)")
             }
@@ -13,7 +13,7 @@ public struct RowndDeepLinkHandlerModifier: ViewModifier {
                     logger.debug("SwiftUI universal link activity missing URL")
                     return
                 }
-                logger.debug("SwiftUI universal link received: \(url.absoluteString)")
+                logger.debug("SwiftUI universal link received: \(Redact.urlForLogging(url))")
                 let handled = Rownd.handleSmartLink(url: url)
                 logger.debug("SwiftUI universal link handled by Rownd: \(handled)")
             }

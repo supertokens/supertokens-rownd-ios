@@ -15,8 +15,6 @@ public protocol RowndDeepLinkHandlerDelegate {
 }
 
 class SmartLinks {
-    private static var lastHandledDeepLink: URL?
-
     static func handleSmartLinkLaunchBehavior(launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) {
         if !Bundle.main.bundlePath.hasSuffix(".appex") {
             var launchUrl: URL?
@@ -58,22 +56,16 @@ class SmartLinks {
             return false
         }
 
-        logger.debug("Handling smart link: \(url.absoluteString)")
+        logger.debug("Handling smart link: \(Redact.urlForLogging(url))")
 
         if let hubUrl = hubUrl(for: url) {
-            if lastHandledDeepLink == url {
-                logger.debug("Smart link already handled: \(url.absoluteString)")
-                return true
-            }
-
-            lastHandledDeepLink = url
-            logger.debug("Smart link maps to Hub URL: \(hubUrl.absoluteString)")
+            logger.debug("Smart link maps to Hub URL: \(Redact.urlForLogging(hubUrl))")
             Rownd.openHubDeepLink(hubUrl)
             return true
         }
 
         if let host = url.host, matchesSignInLinkPattern(host) {
-            logger.trace("handling url: \(String(describing: url.absoluteString))")
+            logger.trace("Handling legacy smart link: \(Redact.urlForLogging(url))")
 
             if url.path.starts(with: "/verified") {
                 return false
@@ -86,7 +78,7 @@ class SmartLinks {
                 return false
             }
 
-            logger.warning("Legacy Rownd smart links are not supported by the SuperTokens-backed iOS SDK: \(url.absoluteString)")
+            logger.warning("Legacy Rownd smart links are not supported by the SuperTokens-backed iOS SDK: \(Redact.urlForLogging(url))")
             return false
         }
 
@@ -96,7 +88,7 @@ class SmartLinks {
 
     private static func hubUrl(for url: URL) -> URL? {
         guard let host = url.host?.trimmingCharacters(in: CharacterSet(charactersIn: "/")) else {
-            logger.debug("Smart link URL has no host: \(url.absoluteString)")
+            logger.debug("Smart link URL has no host: \(Redact.urlForLogging(url))")
             return nil
         }
 

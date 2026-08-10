@@ -36,6 +36,12 @@ type CapturedRequest = {
   rowndAppKey?: string;
   body?: unknown;
   field?: string;
+  pendingVerificationId?: string;
+  responseSessionHeaders?: {
+    accessToken: boolean;
+    refreshToken: boolean;
+    frontToken: boolean;
+  };
   statusCode?: number;
 };
 
@@ -103,11 +109,18 @@ function capturePluginRequest(name: string, req: express.Request, res: express.R
     ...captureRequest(name, req),
     body: req.body,
     field: typeof req.query.field === 'string' ? req.query.field : undefined,
+    pendingVerificationId:
+      typeof req.query.rowndPendingVerificationId === 'string' ? req.query.rowndPendingVerificationId : undefined,
   };
   capturedRequests[name] = capturedRequest;
   res.on('finish', () => {
     capturedRequests[name] = {
       ...capturedRequest,
+      responseSessionHeaders: {
+        accessToken: res.getHeader('st-access-token') !== undefined,
+        refreshToken: res.getHeader('st-refresh-token') !== undefined,
+        frontToken: res.getHeader('front-token') !== undefined,
+      },
       statusCode: res.statusCode,
     };
   });

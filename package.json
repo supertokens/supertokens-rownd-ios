@@ -11,7 +11,7 @@
     "test:e2e:example": "xcodebuild -workspace rownd.xcworkspace -scheme rownd_ios_example -destination 'platform=iOS Simulator,name=iPhone 17' -only-testing:rownd_ios_exampleTests/RowndExampleTests/testExampleAppCanUseHarnessBackedSuperTokensSession test",
     "test:e2e:ui": "xcodebuild -workspace rownd.xcworkspace -scheme rownd_ios_example_e2e -destination 'platform=iOS Simulator,name=iPhone 17' test",
     "test:e2e": "tsx test-server/run-e2e.ts",
-    "test:e2e:local-plugin": "npm install --no-save ../../../supertokens-plugins/packages/rownd-nodejs && npm run test:e2e",
+    "test:e2e:local-plugin": "npm --prefix ../../../supertokens-plugins/packages/rownd-nodejs run build && rm -rf node_modules/@supertokens-plugins/rownd-nodejs && npm install --no-save --package-lock=false --legacy-peer-deps ../../../supertokens-plugins/packages/rownd-nodejs && npm run test:e2e",
     "test:package": "npm run test:package:auth && npm run test:package:rownd && npm run test:package:shared",
     "test:all": "npm run test:package && npm run test:example",
     "release": "release-it"

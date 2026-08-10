@@ -157,7 +157,9 @@ struct LegacySessionMigrationDependencies {
             )
         }.value
     }
-    var syncRowndAuthStateFromSuperTokens: () async -> Void = SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens
+    var syncRowndAuthStateFromSuperTokens: () async -> Void = {
+        _ = await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens()
+    }
     var signOut: () async -> Void = Rownd.signOutForMigrationFailure
     var client: LegacySessionMigrationClient = LegacySessionMigrationClient()
 }

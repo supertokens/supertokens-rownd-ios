@@ -35,6 +35,7 @@ enum MessageType: String, Codable {
     case event = "event"
     case authChallengeInitiated = "auth_challenge_initiated"
     case authChallengeCleared = "auth_challenge_cleared"
+    case verifyEmail = "verify_email"
     case unknown
 
     enum CodingKeys: String, CodingKey {
@@ -67,6 +68,7 @@ enum MessagePayload: Decodable {
     case event(RowndEvent)
     case authChallengeInitiated(PayloadAuthChallengeInitiated)
     case authChallengeCleared
+    case verifyEmail(VerifyEmailMessage)
 
     enum CodingKeys: String, CodingKey {
         case type
@@ -133,6 +135,10 @@ enum MessagePayload: Decodable {
             
         case .authChallengeCleared:
             self = .authChallengeCleared
+
+        case .verifyEmail:
+            let payload = try objectContainer.decode(VerifyEmailMessage.self)
+            self = .verifyEmail(payload)
         }
     }
     
@@ -143,6 +149,14 @@ enum MessagePayload: Decodable {
         enum CodingKeys: String, CodingKey {
             case challengeId = "challenge_id"
             case userIdentifier = "user_identifier"
+        }
+    }
+
+    public struct VerifyEmailMessage: Codable {
+        var requestId: String
+
+        enum CodingKeys: String, CodingKey {
+            case requestId = "request_id"
         }
     }
 

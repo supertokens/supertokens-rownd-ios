@@ -60,6 +60,21 @@ enum E2ESupport {
         return try JSONDecoder().decode(E2EHarnessConfig.self, from: data)
     }
 
+    static func sessionHandle(from accessToken: String?) -> String? {
+        guard let accessToken else { return nil }
+        let parts = accessToken.split(separator: ".")
+        guard parts.count > 1 else { return nil }
+        var payload = String(parts[1])
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        payload += String(repeating: "=", count: (4 - payload.count % 4) % 4)
+        guard let data = Data(base64Encoded: payload),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return json["sessionHandle"] as? String
+    }
+
     static func configureRownd(launchOptions: [UIApplication.LaunchOptionsKey: Any]?) async {
         do {
             let config = try await loadConfig()
@@ -84,8 +99,11 @@ enum E2ESupport {
                 )
             )
 
-            if let token = ProcessInfo.processInfo.environment["ROWND_E2E_VERIFY_EMAIL_TOKEN"] {
-                try await verifyEmail(token: token)
+            if let deepLink = ProcessInfo.processInfo.environment["ROWND_E2E_DEEP_LINK"] {
+                guard let deepLinkURL = URL(string: deepLink),
+                      Rownd.handleSmartLink(url: deepLinkURL) else {
+                    throw E2EError.invalidDeepLink
+                }
             }
 
             await E2EReadiness.shared.markReady()
@@ -139,20 +157,6 @@ enum E2ESupport {
         ])
     }
 
-    static func verifyEmail(token: String) async throws {
-        guard let apiURL = apiURL else { throw E2EError.missingApiURL }
-        var request = URLRequest(url: apiURL.appendingPathComponent("auth/user/email/verify"))
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: [
-            "method": "token",
-            "token": token
-        ])
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        try requireOK(data: data, response: response)
-    }
-
     private static func requireOK(data: Data, response: URLResponse) throws {
         guard let response = response as? HTTPURLResponse,
               (200..<300).contains(response.statusCode),
@@ -164,6 +168,7 @@ enum E2ESupport {
 }
 
 enum E2EError: Error {
+    case invalidDeepLink
     case missingApiURL
     case unexpectedResponse
 }
@@ -180,6 +185,8 @@ struct E2EStatusView: View {
                     .accessibilityIdentifier("e2e-sdk-state")
                 Text(authState.current.isAuthenticated ? "authenticated" : "signed-out")
                     .accessibilityIdentifier("e2e-auth-state")
+                Text(E2ESupport.sessionHandle(from: authState.current.accessToken) ?? "no-session")
+                    .accessibilityIdentifier("e2e-session-handle")
                 Text((user.current["user_id"]?.value as? String) ?? "no-user")
                     .accessibilityIdentifier("e2e-user-id")
             }

@@ -34,6 +34,8 @@ final class RowndManageAccountEmailUITests: XCTestCase {
 
         try waitForLabel(app.staticTexts["e2e-scenario-state"], toEqual: "e2e_session_created")
         try waitForLabel(app.staticTexts["e2e-auth-state"], toEqual: "authenticated")
+        let initiatingSessionHandle = app.staticTexts["e2e-session-handle"].label
+        XCTAssertNotEqual(initiatingSessionHandle, "no-session")
         XCTAssertTrue(app.staticTexts["e2e-home-screen"].waitForExistence(timeout: 10))
 
         try openProfile(in: app)
@@ -61,10 +63,21 @@ final class RowndManageAccountEmailUITests: XCTestCase {
 
         try waitForValue(emailField, toEqual: initialEmail)
         let verification = try await waitForVerificationEmail(email: editedEmail)
-        let token = try XCTUnwrap(verification["token"] as? String)
+        let link = try XCTUnwrap(verification["link"] as? String)
+        let verificationURL = try XCTUnwrap(URLComponents(string: link))
+        let queryItems = Dictionary(uniqueKeysWithValues: (verificationURL.queryItems ?? []).map {
+            ($0.name, $0.value ?? "")
+        })
+        let token = try XCTUnwrap(queryItems["token"])
+        XCTAssertFalse(token.isEmpty)
+        XCTAssertFalse(token.hasPrefix("rownd-pending-email-v1."))
+        XCTAssertFalse(queryItems["rowndPendingVerificationId", default: ""].isEmpty)
+        XCTAssertEqual(queryItems["apiDomain"], backendURL.absoluteString)
+        XCTAssertEqual(queryItems["apiBasePath"], "/auth")
+        let deepLink = try makeNativeDeepLink(from: link)
 
         app.terminate()
-        app.launchEnvironment["ROWND_E2E_VERIFY_EMAIL_TOKEN"] = token
+        app.launchEnvironment["ROWND_E2E_DEEP_LINK"] = deepLink
         app.launch()
 
         try waitForLabel(app.staticTexts["e2e-sdk-state"], toEqual: "ready")
@@ -72,9 +85,20 @@ final class RowndManageAccountEmailUITests: XCTestCase {
         let verificationRequest = try await waitForCapturedEmailVerification()
         XCTAssertEqual(verificationRequest["statusCode"] as? Int, 200)
         XCTAssertEqual(verificationRequest["authorizationCount"] as? Int, 1)
+        XCTAssertEqual(
+            verificationRequest["pendingVerificationId"] as? String,
+            queryItems["rowndPendingVerificationId"]
+        )
+        let responseSessionHeaders = try XCTUnwrap(
+            verificationRequest["responseSessionHeaders"] as? [String: Bool]
+        )
+        XCTAssertEqual(responseSessionHeaders["accessToken"], true)
+        XCTAssertEqual(responseSessionHeaders["refreshToken"], true)
+        XCTAssertEqual(responseSessionHeaders["frontToken"], true)
+        try waitForLabel(app.staticTexts["e2e-session-handle"], toDifferFrom: initiatingSessionHandle)
 
         app.terminate()
-        app.launchEnvironment.removeValue(forKey: "ROWND_E2E_VERIFY_EMAIL_TOKEN")
+        app.launchEnvironment.removeValue(forKey: "ROWND_E2E_DEEP_LINK")
         app.launch()
 
         try waitForLabel(app.staticTexts["e2e-sdk-state"], toEqual: "ready")
@@ -83,6 +107,17 @@ final class RowndManageAccountEmailUITests: XCTestCase {
         let verifiedEmailField = app.webViews.firstMatch.textFields.firstMatch
         XCTAssertTrue(verifiedEmailField.waitForExistence(timeout: 10))
         try waitForValue(verifiedEmailField, toEqual: editedEmail)
+    }
+
+    private func makeNativeDeepLink(from link: String) throws -> String {
+        let source = try XCTUnwrap(URLComponents(string: link))
+        var deepLink = URLComponents()
+        deepLink.scheme = "rowndsupertokens"
+        deepLink.host = "account"
+        deepLink.path = "/verify-email"
+        deepLink.queryItems = source.queryItems
+        deepLink.fragment = source.fragment
+        return try XCTUnwrap(deepLink.url?.absoluteString)
     }
 
     private func openProfile(in app: XCUIApplication) throws {
@@ -134,6 +169,20 @@ final class RowndManageAccountEmailUITests: XCTestCase {
     ) throws {
         let expectation = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "label == %@", label),
+            object: element
+        )
+        guard XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed else {
+            throw UITestError.timedOutWaitingForElement
+        }
+    }
+
+    private func waitForLabel(
+        _ element: XCUIElement,
+        toDifferFrom label: String,
+        timeout: TimeInterval = 15
+    ) throws {
+        let expectation = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label != %@ AND label != %@", label, "no-session"),
             object: element
         )
         guard XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed else {

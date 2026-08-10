@@ -415,8 +415,8 @@ import AnyCodable
         try assertSuperTokensOnlyHeaders(updateRequest)
         let verification = try await waitForVerificationEmail()
         #expect(verification["email"] as? String == editedEmail)
-        let token = try #require(verification["token"] as? String)
-        let verificationResponse = try await verifyEmail(token: token)
+        let link = try #require(verification["link"] as? String)
+        let verificationResponse = try await verifyEmail(link: link)
         #expect(verificationResponse.body["status"] as? String == "OK")
 
         let profile = try await getJSON(path: "auth/plugin/rownd/user")
@@ -436,7 +436,7 @@ import AnyCodable
         #expect(protected["userId"] as? String == userId)
     }
 
-    @Test func verifiedEmailChangePreservesThirdPartyIdentityAndRotatesSession() async throws {
+    @Test func verifiedEmailChangeLinksPasswordlessToThirdPartyOnlyAccount() async throws {
         try await TestInfrastructure.prepare()
 
         let signIn = try await SuperTokensThirdPartySignInClient(
@@ -462,16 +462,19 @@ import AnyCodable
         let originalProviderUserId = try #require(originalProvider["thirdPartyUserId"] as? String)
         let originalProviderEmail = try #require(originalProvider["email"] as? String)
         #expect(originalMethods.count == 1)
-
         let targetEmail = uniqueEmail(prefix: "ios-thirdparty-email")
         Rownd.user.set(field: "email", value: AnyCodable(targetEmail))
 
         let updateRequest = try await waitForEmailUpdateRequest()
         try assertSuccessfulSingleEmailUpdate(updateRequest, email: targetEmail)
+        try assertSuperTokensOnlyHeaders(updateRequest)
         let verification = try await waitForVerificationEmail()
-        let token = try #require(verification["token"] as? String)
-        let verificationResponse = try await verifyEmail(token: token)
+        #expect(verification["email"] as? String == targetEmail)
+        let deliveredToken = try #require(verification["token"] as? String)
+        let link = try #require(verification["link"] as? String)
+        let verificationResponse = try await verifyEmail(link: link)
         #expect(verificationResponse.body["status"] as? String == "OK")
+        #expect(verificationResponse.token == deliveredToken)
 
         let replacementAccessToken = try #require(
             header(verificationResponse.response, named: "st-access-token")
@@ -492,9 +495,17 @@ import AnyCodable
 
         let capturedRequests = try await getJSON(path: "captured-requests")
         let emailVerify = try #require(capturedRequests["emailVerify"] as? [String: Any])
-        #expect(emailVerify["authorization"] as? String == "Bearer \(originalAccessToken)")
+        let verificationAuthorization = try #require(emailVerify["authorization"] as? String)
+        #expect(try sessionHandle(fromAuthorization: verificationAuthorization) == originalSessionHandle)
         #expect(emailVerify["authorizationCount"] as? Int == 1)
         #expect(emailVerify["rowndAppKey"] == nil)
+        #expect(emailVerify["pendingVerificationId"] as? String == verificationResponse.pendingVerificationId)
+        let verifyBody = try #require(emailVerify["body"] as? [String: Any])
+        #expect(verifyBody["token"] as? String == deliveredToken)
+        let responseSessionHeaders = try #require(emailVerify["responseSessionHeaders"] as? [String: Any])
+        #expect(responseSessionHeaders["accessToken"] as? Bool == true)
+        #expect(responseSessionHeaders["refreshToken"] as? Bool == true)
+        #expect(responseSessionHeaders["frontToken"] as? Bool == true)
 
         let updatedAccount = try await getJSON(path: "test/account")
         #expect(updatedAccount["userId"] as? String == userId)
@@ -727,8 +738,38 @@ import AnyCodable
         #expect(verifiedData["email"] as? String == verifiedEmail)
     }
 
-    private func verifyEmail(token: String) async throws -> (body: [String: Any], response: HTTPURLResponse) {
-        var request = URLRequest(url: TestInfrastructure.backendURL.appendingPathComponent("auth/user/email/verify"))
+    private func verifyEmail(link: String) async throws -> (
+        body: [String: Any],
+        response: HTTPURLResponse,
+        token: String,
+        pendingVerificationId: String
+    ) {
+        let linkComponents = try #require(URLComponents(string: link))
+        #expect(linkComponents.path == "/account/verify-email")
+        let queryItems = linkComponents.queryItems ?? []
+        let tokenItems = queryItems.filter { $0.name == "token" }
+        try #require(tokenItems.count == 1)
+        let token = try #require(tokenItems[0].value)
+        try #require(!token.isEmpty)
+        #expect(!token.hasPrefix("rownd-pending-email-v1."))
+        let pendingVerificationItems = queryItems.filter {
+            $0.name == "rowndPendingVerificationId"
+        }
+        try #require(pendingVerificationItems.count == 1)
+        let pendingVerificationId = try #require(pendingVerificationItems[0].value)
+        try #require(!pendingVerificationId.isEmpty)
+
+        var endpoint = try #require(URLComponents(
+            url: TestInfrastructure.backendURL.appendingPathComponent("auth/user/email/verify"),
+            resolvingAgainstBaseURL: false
+        ))
+        endpoint.queryItems = [
+            URLQueryItem(
+                name: "rowndPendingVerificationId",
+                value: pendingVerificationId
+            )
+        ]
+        var request = URLRequest(url: try #require(endpoint.url))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: [
@@ -740,7 +781,12 @@ import AnyCodable
         let statusCode = try #require((response as? HTTPURLResponse)?.statusCode)
         #expect(statusCode == 200)
         let body = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
-        return (body, try #require(response as? HTTPURLResponse))
+        return (
+            body,
+            try #require(response as? HTTPURLResponse),
+            token,
+            pendingVerificationId
+        )
     }
 
     private func uniqueEmail(prefix: String) -> String {
@@ -753,6 +799,25 @@ import AnyCodable
         #expect(authorization.hasPrefix("Bearer "))
         #expect(request["authorizationCount"] as? Int == 1)
         #expect(request["rowndAppKey"] as? String == nil)
+    }
+
+    private func sessionHandle(fromAuthorization authorization: String) throws -> String {
+        let prefix = "Bearer "
+        try #require(authorization.hasPrefix(prefix))
+        let accessToken = String(authorization.dropFirst(prefix.count))
+        let segments = accessToken.split(separator: ".", omittingEmptySubsequences: false)
+        try #require(segments.count == 3)
+
+        var encodedPayload = String(segments[1])
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        encodedPayload.append(String(repeating: "=", count: (4 - encodedPayload.count % 4) % 4))
+
+        let payloadData = try #require(Data(base64Encoded: encodedPayload))
+        let payload = try #require(
+            try JSONSerialization.jsonObject(with: payloadData) as? [String: Any]
+        )
+        return try #require(payload["sessionHandle"] as? String)
     }
 
     private func getJSON(path: String) async throws -> [String: Any] {

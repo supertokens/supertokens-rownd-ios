@@ -199,7 +199,7 @@ public class Rownd: NSObject {
     }
 
     internal static func openHubDeepLink(_ url: URL) {
-        logger.debug("Opening Hub deep link: \(url.absoluteString)")
+        logger.debug("Opening Hub deep link: \(Redact.urlForLogging(url))")
         config.pendingHubDeepLinkUrl = url
         inst.displayHub(.deepLink, jsFnOptions: nil)
     }
@@ -442,8 +442,8 @@ public class Rownd: NSObject {
 
         Task { @MainActor in
             let hubController = getHubViewController()
-            displayViewControllerOnTop(hubController)
             hubController.loadNewPage(targetPage: page, jsFnOptions: jsFnOptions)
+            displayViewControllerOnTop(hubController)
         }
     }
 
@@ -463,22 +463,20 @@ public class Rownd: NSObject {
             .filter({ $0.isKeyWindow }).first?.rootViewController
     }
 
-    private func displayViewControllerOnTop(_ viewController: UIViewController) {
-        Task { @MainActor in
-            let rootViewController = getRootViewController()
+    @MainActor private func displayViewControllerOnTop(_ viewController: UIViewController) {
+        let rootViewController = getRootViewController()
 
-            // Don't try to present again if it's already presented
-            guard bottomSheetController.presentingViewController == nil else {
-                return
-            }
-
-            // TODO: Eventually, replace this with native iOS 15+ sheetPresentationController
-            // But, we can't replace it yet (2022) since there are too many devices running iOS 14.
-            bottomSheetController.controller = viewController
-            bottomSheetController.modalPresentationStyle = .overFullScreen
-
-            rootViewController?.present(self.bottomSheetController, animated: true, completion: nil)
+        // Don't try to present again if it's already presented
+        guard bottomSheetController.presentingViewController == nil else {
+            return
         }
+
+        // TODO: Eventually, replace this with native iOS 15+ sheetPresentationController
+        // But, we can't replace it yet (2022) since there are too many devices running iOS 14.
+        bottomSheetController.controller = viewController
+        bottomSheetController.modalPresentationStyle = .overFullScreen
+
+        rootViewController?.present(self.bottomSheetController, animated: true, completion: nil)
     }
 
     @MainActor internal static func isDisplayingHub() -> Bool {
