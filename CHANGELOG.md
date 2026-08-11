@@ -1,5 +1,11 @@
 # Changelog
 
+## <small>0.1.8 (2026-08-11)</small>
+
+* chore: Update the supertokens-ios version ([663c1b9](https://github.com/supertokens/supertokens-rownd-ios/commit/663c1b9))
+* test: Fix e2e test setup ([7140278](https://github.com/supertokens/supertokens-rownd-ios/commit/7140278))
+* fix: Handle native pending email verification ([5575f89](https://github.com/supertokens/supertokens-rownd-ios/commit/5575f89))
+
 ## <small>0.1.7 (2026-08-07)</small>
 
 * chore: Fix packages ([91516b1](https://github.com/supertokens/supertokens-rownd-ios/commit/91516b1))
