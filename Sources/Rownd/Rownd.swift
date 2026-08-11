@@ -32,6 +32,9 @@ public class Rownd: NSObject {
     internal static var customerWebViews = CustomerWebViewManager()
     @MainActor private static var instantUsers: InstantUsers?
     internal static var isSuperTokensInitialized = false
+    private static let smartLinkStateLock = NSLock()
+    private static var isConfigurationComplete = false
+    private static var pendingSmartLinkUrls: [URL] = []
     internal static var displayHubHandler: ((HubPageSelector, Encodable?) -> Void)?
 
     // Run processAutomations() every second to support time-based automations
@@ -46,6 +49,9 @@ public class Rownd: NSObject {
         appVariantId: String? = nil,
         supertokens: RowndSuperTokensConfig
     ) async -> RowndState {
+        smartLinkStateLock.lock()
+        isConfigurationComplete = false
+        smartLinkStateLock.unlock()
         do {
             let validatedConfig = try validateSuperTokensConfig(supertokens)
             config.supertokens = validatedConfig
@@ -105,8 +111,31 @@ public class Rownd: NSObject {
         }
 
         let store = Context.currentContext.store
-        if store.state.isStateLoaded && !store.state.auth.isAuthenticated {
+        let launchUrl = launchOptions?[.url] as? URL
+        if launchUrl != nil {
             SmartLinks.handleSmartLinkLaunchBehavior(launchOptions: launchOptions)
+        }
+        var handledDeferredSmartLink = false
+        while true {
+            smartLinkStateLock.lock()
+            let deferredSmartLinkUrls = pendingSmartLinkUrls
+            pendingSmartLinkUrls.removeAll()
+            if deferredSmartLinkUrls.isEmpty {
+                isConfigurationComplete = true
+                smartLinkStateLock.unlock()
+                break
+            }
+            smartLinkStateLock.unlock()
+
+            handledDeferredSmartLink = true
+            for deferredSmartLinkUrl in deferredSmartLinkUrls where deferredSmartLinkUrl != launchUrl {
+                SmartLinks.handleSmartLink(url: deferredSmartLinkUrl)
+            }
+        }
+        if store.state.isStateLoaded && !store.state.auth.isAuthenticated {
+            if launchUrl == nil && !handledDeferredSmartLink {
+                SmartLinks.handleSmartLinkLaunchBehavior(launchOptions: launchOptions)
+            }
 
             if store.state.appConfig.config?.hub?.auth?.signInMethods?.google?.enabled == true {
                 do {
@@ -144,11 +173,19 @@ public class Rownd: NSObject {
     @available(*, deprecated, renamed: "handleSmartLink")
     @discardableResult
     public static func handleSignInLink(url: URL?) -> Bool {
-        return SmartLinks.handleSmartLink(url: url)
+        return handleSmartLink(url: url)
     }
 
     @discardableResult
     public static func handleSmartLink(url: URL?) -> Bool {
+        guard let url, SmartLinks.canHandleSmartLink(url: url) else { return false }
+        smartLinkStateLock.lock()
+        if !isConfigurationComplete {
+            pendingSmartLinkUrls.append(url)
+            smartLinkStateLock.unlock()
+            return true
+        }
+        smartLinkStateLock.unlock()
         return SmartLinks.handleSmartLink(url: url)
     }
 

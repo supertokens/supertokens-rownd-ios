@@ -13,6 +13,18 @@ final class RowndManageAccountEmailUITests: XCTestCase {
     }
 
     func testEditingEmailKeepsVerifiedValueUntilNewEmailIsVerified() async throws {
+        try await runEmailVerificationScenario(delivery: .directInjection)
+    }
+
+    func testEditingEmailThroughSafariOpensAppAndPersistsVerifiedProfile() async throws {
+        try await runEmailVerificationScenario(delivery: .safari)
+    }
+
+    func testSystemDispatchOpensAppAndPersistsVerifiedProfile() async throws {
+        try await runEmailVerificationScenario(delivery: .systemDispatch)
+    }
+
+    private func runEmailVerificationScenario(delivery: VerificationLinkDelivery) async throws {
         let suffix = UUID().uuidString.lowercased()
         let initialEmail = "ios-ui-old-\(suffix)@example.com"
         let editedEmail = "ios-ui-new-\(suffix)@example.com"
@@ -74,11 +86,24 @@ final class RowndManageAccountEmailUITests: XCTestCase {
         XCTAssertFalse(queryItems["rowndPendingVerificationId", default: ""].isEmpty)
         XCTAssertEqual(queryItems["apiDomain"], backendURL.absoluteString)
         XCTAssertEqual(queryItems["apiBasePath"], "/auth")
-        let deepLink = try makeNativeDeepLink(from: link)
-
-        app.terminate()
-        app.launchEnvironment["ROWND_E2E_DEEP_LINK"] = deepLink
-        app.launch()
+        switch delivery {
+        case .directInjection:
+            let deepLink = try makeNativeDeepLink(from: link)
+            app.terminate()
+            app.launchEnvironment["ROWND_E2E_DEEP_LINK"] = deepLink
+            app.launch()
+        case .safari:
+            try openVerificationLinkInSafari(link, app: app)
+        case .systemDispatch:
+            let deepLink = try XCTUnwrap(URL(string: makeNativeDeepLink(from: link)))
+            app.terminate()
+            if #available(iOS 16.4, *) {
+                app.open(deepLink)
+            } else {
+                throw XCTSkip("System URL dispatch requires iOS 16.4 or newer")
+            }
+            XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10), "Custom URL scheme did not dispatch to the app")
+        }
 
         try waitForLabel(app.staticTexts["e2e-sdk-state"], toEqual: "ready")
         try waitForLabel(app.staticTexts["e2e-auth-state"], toEqual: "authenticated")
@@ -107,6 +132,50 @@ final class RowndManageAccountEmailUITests: XCTestCase {
         let verifiedEmailField = app.webViews.firstMatch.textFields.firstMatch
         XCTAssertTrue(verifiedEmailField.waitForExistence(timeout: 10))
         try waitForValue(verifiedEmailField, toEqual: editedEmail)
+    }
+
+    private func openVerificationLinkInSafari(_ link: String, app: XCUIApplication) throws {
+        let safari = XCUIApplication(bundleIdentifier: "com.apple.mobilesafari")
+        safari.launch()
+
+        let addressField = safari.textFields["Address"]
+        XCTAssertTrue(addressField.waitForExistence(timeout: 10))
+        addressField.tap()
+        addressField.press(forDuration: 1)
+        let selectAll = safari.menuItems["Select All"]
+        if selectAll.waitForExistence(timeout: 2) {
+            selectAll.tap()
+        }
+        addressField.typeText(link)
+        safari.keyboards.buttons["Go"].tap()
+
+        let verificationLink = safari.links["Open in app"]
+        XCTAssertTrue(verificationLink.waitForExistence(timeout: 10))
+        try assertBackgrounded(app)
+        verificationLink.tap()
+
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let safariOpenButton = safari.buttons["Open"]
+        let springboardOpenButton = springboard.buttons["Open"]
+        if safariOpenButton.waitForExistence(timeout: 5) {
+            safariOpenButton.tap()
+        } else {
+            XCTAssertTrue(springboardOpenButton.waitForExistence(timeout: 5), "Safari confirmation did not appear")
+            springboardOpenButton.tap()
+        }
+
+        XCTAssertTrue(
+            app.wait(for: .runningForeground, timeout: 10),
+            "Safari did not dispatch the custom URL scheme to the app"
+        )
+    }
+
+    private func assertBackgrounded(_ app: XCUIApplication) throws {
+        let appWasBackgrounded = app.wait(for: .runningBackground, timeout: 2)
+            || app.wait(for: .runningBackgroundSuspended, timeout: 2)
+        guard appWasBackgrounded else {
+            throw UITestError.appDidNotEnterBackground
+        }
     }
 
     private func makeNativeDeepLink(from link: String) throws -> String {
@@ -271,7 +340,14 @@ final class RowndManageAccountEmailUITests: XCTestCase {
     }
 }
 
+private enum VerificationLinkDelivery {
+    case directInjection
+    case safari
+    case systemDispatch
+}
+
 private enum UITestError: Error {
+    case appDidNotEnterBackground
     case emailVerificationNotCaptured
     case elementNotHittable
     case profileDidNotLoad

@@ -15,6 +15,11 @@ public protocol RowndDeepLinkHandlerDelegate {
 }
 
 class SmartLinks {
+    static func canHandleSmartLink(url: URL?) -> Bool {
+        guard let url else { return false }
+        return hubUrl(for: url) != nil
+    }
+
     static func handleSmartLinkLaunchBehavior(launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) {
         if !Bundle.main.bundlePath.hasSuffix(".appex") {
             var launchUrl: URL?

@@ -118,7 +118,7 @@ async function main() {
     assertHarnessRunning();
     await run('npm', ['run', 'test:e2e:example']);
     assertHarnessRunning();
-    await run('npm', ['run', 'test:e2e:ui']);
+    await run('npm', ['run', process.env.IOS_E2E_UI_SCRIPT || 'test:e2e:ui']);
     assertHarnessRunning();
   } finally {
     await shutdown();

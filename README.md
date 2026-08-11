@@ -134,6 +134,8 @@ func application(
 }
 ```
 
+Links delivered while `Rownd.configure()` is still running are queued and handled after configuration completes. `handleSmartLink` returns `false` for URLs that do not match a supported Rownd sign-in or email-verification route, allowing the app to route them elsewhere.
+
 If you configure values through Xcode scheme environment variables, remember those variables are only present when launching from Xcode. Universal links that launch an already installed app will use values from code defaults, build settings, or `Info.plist`.
 
 After initialization, your app will typically call `Rownd.requestSignIn()` at some point, if the user is not already authenticated. This will display the Rownd interface for authenticating the user. Once they complete the sign-in process, an access token and the user's profile information will be available to your app.

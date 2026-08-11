@@ -9,13 +9,23 @@ Then, run the tests by changing the target to `RowndTests` or running individual
 
 ### Integration and E2E tests
 
-The full E2E suite requires Docker, an `iPhone 17` simulator, and a sibling `../supertokens-rownd-hub` checkout. Run `npm install` in both repositories, then run:
+The full E2E suite requires Node.js 18 or newer, Docker, an `iPhone 17` simulator, and a sibling `../supertokens-rownd-hub` checkout. Run `npm install` in both repositories, then run:
 
 ```sh
 npm run test:e2e
 ```
 
-This starts the local SuperTokens Core, backend harness, and dynamic Hub server before running the native integration suite, hosted example test, and rendered manage-account XCUITest. The lower-level `test:integration`, `test:e2e:example`, and `test:e2e:ui` scripts require `npm run test:integration:harness` to already be running.
+This starts the local SuperTokens Core, backend harness, and dynamic Hub server before running the native integration suite, hosted example test, and rendered manage-account XCUITest. The lower-level `test:integration`, `test:e2e:example`, `test:e2e:ui`, and `test:e2e:safari-handoff` scripts require `npm run test:integration:harness` to already be running.
+
+The Safari custom-scheme handoff test runs separately on the simulator because the normal UI suite excludes it:
+
+```sh
+npm run test:e2e:safari-handoff:local-plugin
+```
+
+The local-plugin commands require a plugin checkout at `../../../supertokens-plugins/packages/rownd-nodejs` with its dependencies installed.
+
+The test opens the generated verification link in Safari, confirms the browser-to-app handoff, and verifies replacement-session adoption and the persisted email. The normal suite also verifies custom-scheme delivery with XCTest system dispatch. The Android browser test similarly verifies Chrome-to-app dispatch separately from native verification and replacement-session adoption.
 
 ## Writing tests
 
