@@ -11,6 +11,7 @@ import Rownd
 import Lottie
 import WidgetKit
 import AnyCodable
+import WebKit
 
 struct E2EHarnessConfig: Decodable {
     struct SuperTokens: Decodable {
@@ -33,11 +34,30 @@ final class E2EReadiness: ObservableObject {
     static let shared = E2EReadiness()
 
     @Published private(set) var isReady = false
+    @Published private(set) var signInCompletedCount = 0
 
     private init() {}
 
     func markReady() {
         isReady = true
+    }
+
+    func record(_ event: RowndEvent) {
+        if event.event == .signInCompleted {
+            signInCompletedCount += 1
+        }
+    }
+}
+
+final class E2EEventRecorder: RowndEventHandlerDelegate {
+    static let shared = E2EEventRecorder()
+
+    private init() {}
+
+    func handleRowndEvent(_ event: RowndEvent) {
+        Task { @MainActor in
+            E2EReadiness.shared.record(event)
+        }
     }
 }
 
@@ -77,6 +97,11 @@ enum E2ESupport {
 
     static func configureRownd(launchOptions: [UIApplication.LaunchOptionsKey: Any]?) async {
         do {
+            let shouldResetSession = ProcessInfo.processInfo.environment["ROWND_E2E_RESET_SESSION"] == "1"
+            if shouldResetSession {
+                await clearWebsiteData()
+            }
+
             let config = try await loadConfig()
             UserDefaults.standard.set(config.apiUrl, forKey: "ROWND_E2E_API_URL")
 
@@ -88,6 +113,7 @@ enum E2ESupport {
             Rownd.config.customizations = AppCustomizations()
             Rownd.config.customizations.loadingAnimation = LottieAnimation.named("loading")
             Rownd.addEventHandler(RowndEventHandler())
+            Rownd.addEventHandler(E2EEventRecorder.shared)
 
             await Rownd.configure(
                 launchOptions: launchOptions,
@@ -99,6 +125,10 @@ enum E2ESupport {
                 )
             )
 
+            if shouldResetSession {
+                await Rownd.signOut()
+            }
+
             if let deepLink = ProcessInfo.processInfo.environment["ROWND_E2E_DEEP_LINK"] {
                 guard let deepLinkURL = URL(string: deepLink),
                       Rownd.handleSmartLink(url: deepLinkURL) else {
@@ -109,6 +139,18 @@ enum E2ESupport {
             await E2EReadiness.shared.markReady()
         } catch {
             fatalError("Failed to configure Rownd E2E harness: \(error)")
+        }
+    }
+
+    @MainActor
+    private static func clearWebsiteData() async {
+        await withCheckedContinuation { continuation in
+            WKWebsiteDataStore.default().removeData(
+                ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(),
+                modifiedSince: .distantPast
+            ) {
+                continuation.resume()
+            }
         }
     }
 
@@ -189,6 +231,10 @@ struct E2EStatusView: View {
                     .accessibilityIdentifier("e2e-session-handle")
                 Text((user.current["user_id"]?.value as? String) ?? "no-user")
                     .accessibilityIdentifier("e2e-user-id")
+                Text(authState.current.challengeId == nil ? "clear" : "active")
+                    .accessibilityIdentifier("e2e-challenge-state")
+                Text(String(readiness.signInCompletedCount))
+                    .accessibilityIdentifier("e2e-sign-in-completed-count")
             }
         }
     }

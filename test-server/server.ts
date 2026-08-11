@@ -28,6 +28,9 @@ type HarnessCounters = {
   migrate: number;
   protected: number;
   refreshOnce: number;
+  passwordlessCreate: number;
+  passwordlessConsume: number;
+  stSignOut: number;
 };
 
 type CapturedRequest = {
@@ -49,6 +52,12 @@ type CapturedVerificationEmail = {
   email: string;
   link: string;
   token: string;
+};
+
+type CapturedPasswordlessEmail = {
+  email: string;
+  urlWithLinkCode?: string;
+  userInputCode?: string;
 };
 
 type MigrationMode = 'normal' | 'migrate401' | 'migrate409' | 'legacyRefreshFailure' | 'migrateWithoutRefreshHeader';
@@ -88,10 +97,15 @@ const counters: HarnessCounters = {
   migrate: 0,
   protected: 0,
   refreshOnce: 0,
+  passwordlessCreate: 0,
+  passwordlessConsume: 0,
+  stSignOut: 0,
 };
 
 const capturedRequests: Record<string, CapturedRequest | undefined> = {};
 let latestVerificationEmail: CapturedVerificationEmail | undefined;
+let latestPasswordlessEmail: CapturedPasswordlessEmail | undefined;
+const passwordlessConsumeStatuses: number[] = [];
 let migrationMode: MigrationMode = 'normal';
 
 function captureRequest(name: string, req: express.Request) {
@@ -140,12 +154,17 @@ function resetCounters() {
   counters.migrate = 0;
   counters.protected = 0;
   counters.refreshOnce = 0;
+  counters.passwordlessCreate = 0;
+  counters.passwordlessConsume = 0;
+  counters.stSignOut = 0;
 
   for (const key of Object.keys(capturedRequests)) {
     delete capturedRequests[key];
   }
 
   latestVerificationEmail = undefined;
+  latestPasswordlessEmail = undefined;
+  passwordlessConsumeStatuses.length = 0;
   migrationMode = 'normal';
 }
 
@@ -269,8 +288,18 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
       }),
       Passwordless.init({
         contactMethod: 'EMAIL_OR_PHONE',
-        flowType: 'MAGIC_LINK',
-        emailDelivery: { service: { sendEmail: async () => {} } },
+        flowType: 'USER_INPUT_CODE_AND_MAGIC_LINK',
+        emailDelivery: {
+          service: {
+            sendEmail: async (input) => {
+              latestPasswordlessEmail = {
+                email: input.email,
+                urlWithLinkCode: input.urlWithLinkCode?.replace('/auth/verify', '/account/login'),
+                userInputCode: input.userInputCode,
+              };
+            },
+          },
+        },
         smsDelivery: { service: { sendSms: async () => {} } },
       }),
       EmailVerification.init({
@@ -359,6 +388,16 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
   );
   app.use(express.json());
   app.use((req, res, next) => {
+    if (req.method === 'POST' && req.path === '/auth/signinup/code') {
+      counters.passwordlessCreate += 1;
+    }
+    if (req.method === 'POST' && req.path === '/auth/signinup/code/consume') {
+      counters.passwordlessConsume += 1;
+      res.on('finish', () => passwordlessConsumeStatuses.push(res.statusCode));
+    }
+    if (req.method === 'POST' && req.path === '/auth/signout') {
+      counters.stSignOut += 1;
+    }
     if (req.method === 'POST' && req.path === '/auth/session/refresh') {
       counters.stRefresh += 1;
     }
@@ -547,6 +586,29 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
     }
 
     res.json({ status: 'OK', ...latestVerificationEmail });
+  });
+
+  app.get('/test/passwordless/latest', (_req, res) => {
+    if (!latestPasswordlessEmail) {
+      res.json({ status: 'PENDING' });
+      return;
+    }
+
+    res.json({ status: 'OK', ...latestPasswordlessEmail });
+  });
+
+  app.get('/test/passwordless/consumes', (_req, res) => {
+    res.json({ count: counters.passwordlessConsume, statuses: passwordlessConsumeStatuses });
+  });
+
+  app.get('/test/passwordless/consumes/settled', async (_req, res) => {
+    const initialCount = counters.passwordlessConsume;
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    res.json({
+      count: counters.passwordlessConsume,
+      changedDuringObservation: counters.passwordlessConsume !== initialCount,
+      statuses: passwordlessConsumeStatuses,
+    });
   });
 
   app.post('/test/profile-session', async (req: any, res: any) => {

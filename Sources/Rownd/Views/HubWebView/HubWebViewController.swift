@@ -209,11 +209,36 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
         webView: WKWebView,
         baseURL: String = Rownd.config.baseUrl
     ) -> Bool {
-        guard message.webView === webView,
-              message.frameInfo.isMainFrame,
-              hasTrustedSecurityOrigin(message.frameInfo.securityOrigin, baseURL: baseURL),
-              let sourceURL = message.frameInfo.request.url,
-              sourceURL == webView.url else {
+        canHandleHubMessage(
+            messageWebViewMatches: message.webView === webView,
+            isMainFrame: message.frameInfo.isMainFrame,
+            securityOriginProtocol: message.frameInfo.securityOrigin.protocol,
+            securityOriginHost: message.frameInfo.securityOrigin.host,
+            securityOriginPort: message.frameInfo.securityOrigin.port,
+            sourceURL: message.frameInfo.request.url,
+            currentURL: webView.url,
+            baseURL: baseURL
+        )
+    }
+
+    static func canHandleHubMessage(
+        messageWebViewMatches: Bool,
+        isMainFrame: Bool,
+        securityOriginProtocol: String,
+        securityOriginHost: String,
+        securityOriginPort: Int,
+        sourceURL: URL?,
+        currentURL: URL?,
+        baseURL: String
+    ) -> Bool {
+        guard messageWebViewMatches,
+              isMainFrame,
+              let trustedURL = URL(string: baseURL),
+              securityOriginProtocol.lowercased() == trustedURL.scheme?.lowercased(),
+              securityOriginHost.lowercased() == trustedURL.host?.lowercased(),
+              effectivePort(scheme: securityOriginProtocol, port: securityOriginPort) == effectivePort(scheme: trustedURL.scheme, port: trustedURL.port),
+              let sourceURL,
+              sourceURL == currentURL else {
             return false
         }
 

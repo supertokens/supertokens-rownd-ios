@@ -28,18 +28,23 @@ final class RowndManageAccountEmailUITests: XCTestCase {
         let suffix = UUID().uuidString.lowercased()
         let initialEmail = "ios-ui-old-\(suffix)@example.com"
         let editedEmail = "ios-ui-new-\(suffix)@example.com"
-        _ = try await request("POST", path: "reset")
 
         let app = XCUIApplication()
+        app.terminate()
+        addTeardownBlock { app.terminate() }
+        _ = try await request("POST", path: "reset")
         app.launchEnvironment = [
             "ROWND_E2E": "1",
             "ROWND_E2E_CONFIG_URL": backendURL.appendingPathComponent("config").absoluteString,
             "ROWND_E2E_EMAIL": initialEmail,
             "ROWND_E2E_FIRST_NAME": "Existing",
+            "ROWND_E2E_RESET_SESSION": "1",
         ]
         app.launch()
+        app.launchEnvironment.removeValue(forKey: "ROWND_E2E_RESET_SESSION")
 
         try waitForLabel(app.staticTexts["e2e-sdk-state"], toEqual: "ready")
+        try waitForLabel(app.staticTexts["e2e-auth-state"], toEqual: "signed-out")
         let createSessionButton = app.buttons["e2e-create-session-button"]
         try scrollToElement(createSessionButton, in: app)
         createSessionButton.tap()

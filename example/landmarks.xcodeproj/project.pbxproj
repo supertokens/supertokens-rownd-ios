@@ -12,6 +12,7 @@
 		B30010012E00200000A10001 /* RowndExampleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B30010002E00200000A10001 /* RowndExampleTests.swift */; };
 		B30010032E00200000A10001 /* Rownd in Frameworks */ = {isa = PBXBuildFile; productRef = B30010022E00200000A10001 /* Rownd */; };
 		B30011012E00200000A10001 /* RowndManageAccountEmailUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B30011002E00200000A10001 /* RowndManageAccountEmailUITests.swift */; };
+		B30011112E00200000A10001 /* RowndRealHubAuthenticationUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B30011102E00200000A10001 /* RowndRealHubAuthenticationUITests.swift */; };
 		B317F2792BEBE11F0094A927 /* Rownd in Frameworks */ = {isa = PBXBuildFile; productRef = B317F2782BEBE11F0094A927 /* Rownd */; };
 		B32C8A482BD6AD3F0082668F /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B32C8A472BD6AD3F0082668F /* WidgetKit.framework */; };
 		B32C8A4A2BD6AD3F0082668F /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B32C8A492BD6AD3F0082668F /* SwiftUI.framework */; };
@@ -128,6 +129,7 @@
 		B30010002E00200000A10001 /* RowndExampleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RowndExampleTests.swift; sourceTree = "<group>"; };
 		B30010042E00200000A10001 /* rownd_ios_exampleTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = rownd_ios_exampleTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		B30011002E00200000A10001 /* RowndManageAccountEmailUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RowndManageAccountEmailUITests.swift; sourceTree = "<group>"; };
+		B30011102E00200000A10001 /* RowndRealHubAuthenticationUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RowndRealHubAuthenticationUITests.swift; sourceTree = "<group>"; };
 		B30011022E00200000A10001 /* rownd_ios_exampleUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = rownd_ios_exampleUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		B32C8A462BD6AD3F0082668F /* rownd_widget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = rownd_widget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		B32C8A472BD6AD3F0082668F /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WidgetKit.framework; path = System/Library/Frameworks/WidgetKit.framework; sourceTree = SDKROOT; };
@@ -240,6 +242,7 @@
 			isa = PBXGroup;
 			children = (
 				B30011002E00200000A10001 /* RowndManageAccountEmailUITests.swift */,
+				B30011102E00200000A10001 /* RowndRealHubAuthenticationUITests.swift */,
 			);
 			path = rownd_ios_exampleUITests;
 			sourceTree = "<group>";
@@ -639,6 +642,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				B30011012E00200000A10001 /* RowndManageAccountEmailUITests.swift in Sources */,
+				B30011112E00200000A10001 /* RowndRealHubAuthenticationUITests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

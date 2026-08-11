@@ -116,6 +116,7 @@ struct ContentView: View {
                         scenarioStatus = "email_requested"
                         Rownd.requestSignIn(with: .email)
                     }
+                    .accessibilityIdentifier("e2e-sign-in-email-button")
 
                     FlowButton("Direct Google login") {
                         scenarioStatus = "direct_google_requested"
@@ -177,6 +178,7 @@ struct ContentView: View {
                 FlowButton(isFetchingProtected ? "Fetching..." : "Fetch protected resource") {
                     Task { await fetchProtectedResource() }
                 }
+                .accessibilityIdentifier("e2e-protected-button")
                 .disabled(isFetchingProtected)
 
                 FlowButton(refreshSimulationCompleted ? "Reset refresh test" : refreshTestButtonTitle) {
@@ -196,6 +198,7 @@ struct ContentView: View {
                 }
 
                 Text(protectedResult.isEmpty ? "Protected response will appear here." : protectedResult)
+                    .accessibilityIdentifier("e2e-protected-result")
                     .font(.system(.footnote, design: .monospaced))
                     .frame(maxWidth: .infinity, minHeight: 80, alignment: .topLeading)
                     .padding(12)
