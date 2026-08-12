@@ -2,7 +2,7 @@ import Foundation
 
 enum ExampleAppConfig {
     private static let defaultApiDomain = "http://127.0.0.1:3137"
-    private static let defaultHubBaseUrl = "https://staging.supertokens-rownd-hub.pages.dev"
+    private static let defaultHubBaseUrl = "https://rownd-hub.supertokens.com"
     private static let defaultAppKey = "test_app_key"
     private static let defaultApiBasePath = "/auth"
     private static let defaultAppGroupPrefix = "group.rowndexample"

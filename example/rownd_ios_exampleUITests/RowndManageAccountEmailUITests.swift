@@ -12,7 +12,7 @@ final class RowndManageAccountEmailUITests: XCTestCase {
         continueAfterFailure = false
     }
 
-    func testEditingEmailKeepsVerifiedValueUntilNewEmailIsVerified() async throws {
+    func testEditingEmailKeepsVerifiedValueAndCanCloseWebViewAfterVerification() async throws {
         try await runEmailVerificationScenario(delivery: .directInjection)
     }
 
@@ -126,6 +126,11 @@ final class RowndManageAccountEmailUITests: XCTestCase {
         XCTAssertEqual(responseSessionHeaders["refreshToken"], true)
         XCTAssertEqual(responseSessionHeaders["frontToken"], true)
         try waitForLabel(app.staticTexts["e2e-session-handle"], toDifferFrom: initiatingSessionHandle)
+
+        let closeButton = app.webViews.firstMatch.buttons["Close"]
+        XCTAssertTrue(closeButton.waitForExistence(timeout: 10))
+        closeButton.tap()
+        XCTAssertTrue(app.webViews.firstMatch.waitForNonExistence(timeout: 10))
 
         app.terminate()
         app.launchEnvironment.removeValue(forKey: "ROWND_E2E_DEEP_LINK")

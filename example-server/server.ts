@@ -62,7 +62,7 @@ const apiBasePath = process.env.API_BASE_PATH ?? "/auth";
 const apiDomain = process.env.API_DOMAIN ?? `http://localhost:${port}`;
 const allowedOrigins = (
   process.env.ALLOWED_ORIGINS ??
-  "https://staging.supertokens-rownd-hub.pages.dev"
+  "https://rownd-hub.supertokens.com"
 )
   .split(",")
   .map((origin) => origin.trim())
@@ -112,7 +112,7 @@ SuperTokens.init({
     appName: process.env.APP_NAME ?? "Rownd iOS Example",
     apiDomain,
     websiteDomain:
-      allowedOrigins[0] ?? "https://staging.supertokens-rownd-hub.pages.dev",
+      allowedOrigins[0] ?? "https://rownd-hub.supertokens.com",
     apiBasePath,
   },
   recipeList: [
