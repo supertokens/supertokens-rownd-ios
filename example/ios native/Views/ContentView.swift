@@ -87,8 +87,8 @@ struct ContentView: View {
                 StatusRow(label: "Example", value: "all-authentication-methods-ios")
                 StatusRow(label: "Scenario", value: scenarioStatus)
                 StatusRow(label: "User", value: userId)
-                E2EStatusView()
                 if E2ESupport.isEnabled {
+                    E2EStatusView()
                     Text(scenarioStatus)
                         .accessibilityIdentifier("e2e-scenario-state")
                 }

@@ -4,13 +4,15 @@ import Testing
 @testable import Rownd
 
 @Suite(.serialized) struct LegacySessionMigratorTests {
-    @Test func skipsWhenSuperTokensSessionAlreadyExists() async throws {
+    @Test func synchronizesWhenSuperTokensSessionAlreadyExists() async throws {
         try await withIsolatedStore {
             var didBootstrap = false
+            var syncCount = 0
             var calls = MigrationCalls()
             var dependencies = makeDependencies(calls: calls)
             dependencies.doesSuperTokensSessionExist = { true }
             dependencies.bootstrapSession = { _ in didBootstrap = true; return true }
+            dependencies.syncRowndAuthStateFromSuperTokens = { syncCount += 1 }
 
             await LegacySessionMigrator.migrateIfNeeded(
                 authState: AuthState(accessToken: validLegacyToken(), refreshToken: "legacy-refresh-token"),
@@ -18,6 +20,7 @@ import Testing
             )
 
             #expect(!didBootstrap)
+            #expect(syncCount == 1)
             #expect(calls.migrateAccessTokens.isEmpty)
             #expect(calls.refreshTokens.isEmpty)
         }

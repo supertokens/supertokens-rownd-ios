@@ -15,7 +15,7 @@ The full E2E suite requires Node.js 18 or newer, Docker, an `iPhone 17` simulato
 npm run test:e2e
 ```
 
-This starts the local SuperTokens Core, backend harness, and dynamic Hub server before running the native integration suite, hosted example test, and rendered XCUITests. The UI suite covers real-Hub OTP and magic-link authentication through the WKWebView bridge, restored-session sign-out, and pending-email verification. The lower-level `test:integration`, `test:e2e:example`, `test:e2e:ui`, and `test:e2e:safari-handoff` scripts require `npm run test:integration:harness` to already be running.
+This starts the local SuperTokens Core, backend harness, and dynamic Hub server before running the native integration suite, hosted example test, and rendered XCUITests. The UI suite covers real-Hub OTP and magic-link authentication through the WKWebView bridge, restored-session sign-out, relaunch reconciliation of persisted legacy Rownd state against an existing SuperTokens session without remigration, and pending-email verification. The lower-level `test:integration`, `test:e2e:example`, `test:e2e:ui`, and `test:e2e:safari-handoff` scripts require `npm run test:integration:harness` to already be running.
 
 The Safari custom-scheme handoff test runs separately on the simulator because the normal UI suite excludes it:
 

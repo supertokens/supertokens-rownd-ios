@@ -180,7 +180,10 @@ enum LegacySessionMigrator {
         authState: AuthState,
         dependencies: LegacySessionMigrationDependencies
     ) async {
-        guard await !dependencies.doesSuperTokensSessionExist() else { return }
+        if await dependencies.doesSuperTokensSessionExist() {
+            await dependencies.syncRowndAuthStateFromSuperTokens()
+            return
+        }
         guard var legacyAccessToken = authState.accessToken, !legacyAccessToken.isEmpty else { return }
         guard !isSuperTokensAccessToken(legacyAccessToken) else { return }
 
