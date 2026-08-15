@@ -1,5 +1,11 @@
 # Changelog
 
+## <small>0.1.9 (2026-08-15)</small>
+
+* fix: Fix rownd lazy migration regression ([bbf7595](https://github.com/supertokens/supertokens-rownd-ios/commit/bbf7595))
+* test: Confirm that you can close the email verification webview ([e51981b](https://github.com/supertokens/supertokens-rownd-ios/commit/e51981b))
+* test: Extend e2e tests ([35a896a](https://github.com/supertokens/supertokens-rownd-ios/commit/35a896a))
+
 ## <small>0.1.8 (2026-08-11)</small>
 
 * chore: Update the supertokens-ios version ([663c1b9](https://github.com/supertokens/supertokens-rownd-ios/commit/663c1b9))
