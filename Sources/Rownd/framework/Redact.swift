@@ -8,14 +8,25 @@
 import Foundation
 
 struct Redact {
+    static func urlForLogging(_ url: URL) -> String {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return "[invalid URL]"
+        }
+
+        components.user = nil
+        components.password = nil
+        components.query = nil
+        components.fragment = nil
+        return components.string ?? "[invalid URL]"
+    }
+
     static func redactSensitiveKeys(in jsonString: String?) -> String {
 
         guard let jsonString = jsonString else {
             return ""
         }
 
-        // Define the regular expression pattern to find accessToken or refreshToken
-        let pattern = #"\\?"(accessToken|refreshToken|refresh_token|access_token)\\?"\s*:\s*\\?"[^"\\]*\\?""#
+        let pattern = #"\\?"(accessToken|refreshToken|refresh_token|access_token|frontToken|front_token|antiCSRF|antiCsrf|anti_csrf)\\?"\s*:\s*\\?"[^"\\]*\\?""#
 
         // Use regular expression to search for the pattern
         let regex = try! NSRegularExpression(pattern: pattern, options: [])

@@ -46,12 +46,20 @@ extension RowndState {
 
     internal func save() {
         debouncer.debounce(action: {
-            if let encoded = try? self.toJson() {
-                Storage.shared.set(encoded, forKey: STORAGE_STATE_KEY)
-                DarwinNotificationManager.shared.postNotification(name: "io.rownd.events.StateUpdated")
-                log.trace("Wrote state to storage \(Redact.redactSensitiveKeys(in: encoded).data(using: .utf8)?.prettyPrintedJSONString)")
-            }
+            self.saveImmediately()
         })
+    }
+
+    @discardableResult
+    internal func saveImmediately() -> Bool {
+        guard let encoded = try? toJson(),
+              Storage.shared.set(encoded, forKey: STORAGE_STATE_KEY) else {
+            return false
+        }
+
+        DarwinNotificationManager.shared.postNotification(name: "io.rownd.events.StateUpdated")
+        log.trace("Wrote state to storage \(Redact.redactSensitiveKeys(in: encoded).data(using: .utf8)?.prettyPrintedJSONString)")
+        return true
     }
 
     @discardableResult

@@ -32,6 +32,9 @@ public class Rownd: NSObject {
     internal static var customerWebViews = CustomerWebViewManager()
     @MainActor private static var instantUsers: InstantUsers?
     internal static var isSuperTokensInitialized = false
+    private static let smartLinkStateLock = NSLock()
+    private static var isConfigurationComplete = false
+    private static var pendingSmartLinkUrls: [URL] = []
     internal static var displayHubHandler: ((HubPageSelector, Encodable?) -> Void)?
 
     // Run processAutomations() every second to support time-based automations
@@ -43,8 +46,12 @@ public class Rownd: NSObject {
     public static func configure(
         launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil,
         appKey: String?,
+        appVariantId: String? = nil,
         supertokens: RowndSuperTokensConfig
     ) async -> RowndState {
+        smartLinkStateLock.lock()
+        isConfigurationComplete = false
+        smartLinkStateLock.unlock()
         do {
             let validatedConfig = try validateSuperTokensConfig(supertokens)
             config.supertokens = validatedConfig
@@ -56,14 +63,38 @@ public class Rownd: NSObject {
         if let _appKey = appKey {
             config.appKey = _appKey
         }
+        config.appVariantId = appVariantId
 
+        let installationPreparation: InstallationSessionManager.Preparation
         do {
+            installationPreparation = try InstallationSessionManager.prepareForInitialization(
+                config: config.supertokens
+            )
             try initializeSuperTokensIfNeeded()
         } catch {
             fatalError("Failed to initialize SuperTokens: \(error)")
         }
 
-        let state = await inst.inflateStoreCache()
+        var state = await inst.inflateStoreCache()
+        let preparedAuthState = InstallationSessionManager.authStateAfterPreparation(
+            state.auth,
+            didClearSuperTokensSession: installationPreparation.didClearSuperTokensSession
+        )
+        var persistPreparedState: (() -> Bool)?
+        if let preparedState = await MainActor.run(body: {
+            applyPreparedAuthState(preparedAuthState, to: Context.currentContext.store)
+        }) {
+            state = preparedState
+            persistPreparedState = { state.saveImmediately() }
+        }
+        do {
+            try InstallationSessionManager.completeInitialization(
+                installationPreparation,
+                persistPreparedState: persistPreparedState
+            )
+        } catch {
+            fatalError("Failed to initialize SuperTokens: \(error)")
+        }
         await LegacySessionMigrator.migrateIfNeeded(authState: state.auth)
 
         // Skip the rest within app extensions
@@ -80,8 +111,31 @@ public class Rownd: NSObject {
         }
 
         let store = Context.currentContext.store
-        if store.state.isStateLoaded && !store.state.auth.isAuthenticated {
+        let launchUrl = launchOptions?[.url] as? URL
+        if launchUrl != nil {
             SmartLinks.handleSmartLinkLaunchBehavior(launchOptions: launchOptions)
+        }
+        var handledDeferredSmartLink = false
+        while true {
+            smartLinkStateLock.lock()
+            let deferredSmartLinkUrls = pendingSmartLinkUrls
+            pendingSmartLinkUrls.removeAll()
+            if deferredSmartLinkUrls.isEmpty {
+                isConfigurationComplete = true
+                smartLinkStateLock.unlock()
+                break
+            }
+            smartLinkStateLock.unlock()
+
+            handledDeferredSmartLink = true
+            for deferredSmartLinkUrl in deferredSmartLinkUrls where deferredSmartLinkUrl != launchUrl {
+                SmartLinks.handleSmartLink(url: deferredSmartLinkUrl)
+            }
+        }
+        if store.state.isStateLoaded && !store.state.auth.isAuthenticated {
+            if launchUrl == nil && !handledDeferredSmartLink {
+                SmartLinks.handleSmartLinkLaunchBehavior(launchOptions: launchOptions)
+            }
 
             if store.state.appConfig.config?.hub?.auth?.signInMethods?.google?.enabled == true {
                 do {
@@ -119,11 +173,19 @@ public class Rownd: NSObject {
     @available(*, deprecated, renamed: "handleSmartLink")
     @discardableResult
     public static func handleSignInLink(url: URL?) -> Bool {
-        return SmartLinks.handleSmartLink(url: url)
+        return handleSmartLink(url: url)
     }
 
     @discardableResult
     public static func handleSmartLink(url: URL?) -> Bool {
+        guard let url, SmartLinks.canHandleSmartLink(url: url) else { return false }
+        smartLinkStateLock.lock()
+        if !isConfigurationComplete {
+            pendingSmartLinkUrls.append(url)
+            smartLinkStateLock.unlock()
+            return true
+        }
+        smartLinkStateLock.unlock()
         return SmartLinks.handleSmartLink(url: url)
     }
 
@@ -174,29 +236,44 @@ public class Rownd: NSObject {
     }
 
     internal static func openHubDeepLink(_ url: URL) {
+        logger.debug("Opening Hub deep link: \(Redact.urlForLogging(url))")
         config.pendingHubDeepLinkUrl = url
         inst.displayHub(.deepLink, jsFnOptions: nil)
     }
 
     public static func signOut(scope: RowndSignoutScope) throws {
-        switch scope {
-        case .all:
-            Task {
-                do {
-                    try await Auth.signOutUser()
-                    await performLocalSignOut()
-                } catch {
-                    logger.error(
-                        "Failed to sign out user from all sessions: \(String(describing: error))")
-                }
+        Task {
+            do {
+                try await signOut(scope: scope)
+            } catch {
+                logger.error(
+                    "Failed to sign out user from all sessions: \(String(describing: error))")
             }
         }
+    }
 
+    public static func signOut(scope: RowndSignoutScope) async throws {
+        switch scope {
+        case .all:
+            try await Auth.signOutUser()
+            await performLocalSignOut()
+        }
     }
 
     public static func signOut() {
         Task {
             await performLocalSignOut()
+        }
+    }
+
+    public static func signOut() async {
+        await performLocalSignOut()
+    }
+
+    public static func signOut(completion: @escaping (Error?) -> Void) {
+        Task {
+            await performLocalSignOut()
+            completion(nil)
         }
     }
 
@@ -247,42 +324,6 @@ public class Rownd: NSObject {
         Context.currentContext.eventListeners.append(handler)
     }
 
-    // This is an internal test function used only to manually test
-    // ensuring refresh tokens are only used once when attempting
-    // to fetch new access tokens
-    @available(
-        *, deprecated,
-        message: "Internal test use only. This method may change any time without warning."
-    )
-    public static func _refreshToken() {
-        Task {
-            do {
-                let refreshResp = try await Context.currentContext.authenticator.refreshToken()
-                print("refresh 1: \(String(describing: refreshResp))")
-            } catch {
-                print("Error refreshing token 1: \(String(describing: error))")
-            }
-        }
-
-        Task {
-            do {
-                let refreshResp = try await Context.currentContext.authenticator.refreshToken()
-                print("refresh 2: \(String(describing: refreshResp))")
-            } catch {
-                print("Error refreshing token 2: \(String(describing: error))")
-            }
-        }
-
-        Task {
-            do {
-                let refreshResp = try await Context.currentContext.authenticator.refreshToken()
-                print("refresh 3: \(String(describing: refreshResp))")
-            } catch {
-                print("Error refreshing token 3: \(String(describing: error))")
-            }
-        }
-    }
-
     internal static func determineSignInOptions(_ signInOptions: RowndSignInOptions?)
         -> RowndSignInOptions?
     {
@@ -300,7 +341,7 @@ public class Rownd: NSObject {
             if store.state.appConfig.config?.hub?.auth?.useExplicitSignUpFlow != true {
                 signInOptions?.intent = nil
                 logger.error(
-                    "Sign in with intent: SignIn/SignUp is not enabled. Turn it on in the Rownd platform"
+                    "Explicit sign-in/sign-up intent is not enabled in the backend app config. Expected config.hub.auth.use_explicit_sign_up_flow=true."
                 )
             }
         }
@@ -315,6 +356,7 @@ public class Rownd: NSObject {
     internal static func validateSuperTokensConfig(_ config: RowndSuperTokensConfig) throws
         -> RowndSuperTokensConfig
     {
+        var config = config
         if config.appName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             throw RowndError("SuperTokens appName must not be empty")
         }
@@ -327,11 +369,27 @@ public class Rownd: NSObject {
             throw RowndError("SuperTokens apiBasePath must not be empty")
         }
 
+        var normalizedBasePath = config.apiBasePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        while normalizedBasePath.hasSuffix("/") && normalizedBasePath.count > 1 {
+            normalizedBasePath.removeLast()
+        }
+        config.apiBasePath = normalizedBasePath
+
         return config
     }
 
     internal static func requireSuperTokensConfig() throws -> RowndSuperTokensConfig {
         try config.requireSuperTokensConfig()
+    }
+
+    @MainActor
+    internal static func applyPreparedAuthState(
+        _ preparedAuthState: AuthState,
+        to store: Store<RowndState>
+    ) -> RowndState? {
+        guard preparedAuthState != store.state.auth else { return nil }
+        store.dispatch(SetAuthState(payload: preparedAuthState))
+        return store.state
     }
 
     @discardableResult
@@ -357,6 +415,7 @@ public class Rownd: NSObject {
             apiDomain: supertokens.apiDomain,
             apiBasePath: supertokens.apiBasePath,
             tokenTransferMethod: .header,
+            keychainAccessGroup: supertokens.keychainAccessGroup,
             eventHandler: debugEventHandler,
             preAPIHook: debugPreAPIHook,
             postAPIHook: debugPostAPIHook
@@ -420,8 +479,8 @@ public class Rownd: NSObject {
 
         Task { @MainActor in
             let hubController = getHubViewController()
-            displayViewControllerOnTop(hubController)
             hubController.loadNewPage(targetPage: page, jsFnOptions: jsFnOptions)
+            displayViewControllerOnTop(hubController)
         }
     }
 
@@ -441,22 +500,20 @@ public class Rownd: NSObject {
             .filter({ $0.isKeyWindow }).first?.rootViewController
     }
 
-    private func displayViewControllerOnTop(_ viewController: UIViewController) {
-        Task { @MainActor in
-            let rootViewController = getRootViewController()
+    @MainActor private func displayViewControllerOnTop(_ viewController: UIViewController) {
+        let rootViewController = getRootViewController()
 
-            // Don't try to present again if it's already presented
-            guard bottomSheetController.presentingViewController == nil else {
-                return
-            }
-
-            // TODO: Eventually, replace this with native iOS 15+ sheetPresentationController
-            // But, we can't replace it yet (2022) since there are too many devices running iOS 14.
-            bottomSheetController.controller = viewController
-            bottomSheetController.modalPresentationStyle = .overFullScreen
-
-            rootViewController?.present(self.bottomSheetController, animated: true, completion: nil)
+        // Don't try to present again if it's already presented
+        guard bottomSheetController.presentingViewController == nil else {
+            return
         }
+
+        // TODO: Eventually, replace this with native iOS 15+ sheetPresentationController
+        // But, we can't replace it yet (2022) since there are too many devices running iOS 14.
+        bottomSheetController.controller = viewController
+        bottomSheetController.modalPresentationStyle = .overFullScreen
+
+        rootViewController?.present(self.bottomSheetController, animated: true, completion: nil)
     }
 
     @MainActor internal static func isDisplayingHub() -> Bool {

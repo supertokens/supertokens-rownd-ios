@@ -14,6 +14,7 @@ struct ContentView: View {
     @StateObject private var authState = Rownd.getInstance().state().subscribe { $0.auth }
     @StateObject private var user = Rownd.getInstance().state().subscribe { $0.user }
     @StateObject private var state = Rownd.getInstance().state().subscribe { $0 }
+    @StateObject private var e2eReadiness = E2EReadiness.shared
 
     @State private var scenarioStatus = "idle"
     @State private var protectedResult = ""
@@ -47,7 +48,6 @@ struct ContentView: View {
 
                 if isAuthenticated {
                     postLoginCard
-                        .accessibilityIdentifier("e2e-home-screen")
                 } else {
                     loginCard
                 }
@@ -88,6 +88,10 @@ struct ContentView: View {
                 StatusRow(label: "Scenario", value: scenarioStatus)
                 StatusRow(label: "User", value: userId)
                 E2EStatusView()
+                if E2ESupport.isEnabled {
+                    Text(scenarioStatus)
+                        .accessibilityIdentifier("e2e-scenario-state")
+                }
             }
         }
     }
@@ -112,6 +116,7 @@ struct ContentView: View {
                         scenarioStatus = "email_requested"
                         Rownd.requestSignIn(with: .email)
                     }
+                    .accessibilityIdentifier("e2e-sign-in-email-button")
 
                     FlowButton("Direct Google login") {
                         scenarioStatus = "direct_google_requested"
@@ -136,6 +141,7 @@ struct ContentView: View {
                         Text("Post-login page")
                             .font(.title2)
                             .fontWeight(.semibold)
+                            .accessibilityIdentifier("e2e-home-screen")
                         Text("Use the protected request to verify the SuperTokens session and claims.")
                             .foregroundStyle(.secondary)
                     }
@@ -158,11 +164,6 @@ struct ContentView: View {
                             presentEditName = true
                         }
 
-                        Button("Refresh token") {
-                            Rownd._refreshToken()
-                        }
-                        .accessibilityIdentifier("e2e-refresh-token-button")
-
                         Button("Sign out") {
                             Rownd.signOut()
                             scenarioStatus = "signed_out"
@@ -177,6 +178,7 @@ struct ContentView: View {
                 FlowButton(isFetchingProtected ? "Fetching..." : "Fetch protected resource") {
                     Task { await fetchProtectedResource() }
                 }
+                .accessibilityIdentifier("e2e-protected-button")
                 .disabled(isFetchingProtected)
 
                 FlowButton(refreshSimulationCompleted ? "Reset refresh test" : refreshTestButtonTitle) {
@@ -196,6 +198,7 @@ struct ContentView: View {
                 }
 
                 Text(protectedResult.isEmpty ? "Protected response will appear here." : protectedResult)
+                    .accessibilityIdentifier("e2e-protected-result")
                     .font(.system(.footnote, design: .monospaced))
                     .frame(maxWidth: .infinity, minHeight: 80, alignment: .topLeading)
                     .padding(12)
@@ -232,12 +235,19 @@ struct ContentView: View {
 
                 FlowButton("E2E sign in") {
                     Task {
-                        try? await E2ESupport.resetHarness()
-                        try? await E2ESupport.createSession()
-                        scenarioStatus = "e2e_session_created"
+                        scenarioStatus = "e2e_session_creating"
+                        do {
+                            await Rownd.signOut()
+                            try await E2ESupport.resetHarness()
+                            try await E2ESupport.createSession()
+                            scenarioStatus = "e2e_session_created"
+                        } catch {
+                            scenarioStatus = "e2e_session_failed"
+                        }
                     }
                 }
                 .accessibilityIdentifier("e2e-create-session-button")
+                .disabled(!e2eReadiness.isReady)
 
                 FlowButton("E2E update profile") {
                     Task {

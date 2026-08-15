@@ -37,6 +37,7 @@ public struct UserState: Hashable {
     public var meta: UserStateData? = [:]
     public var state: UserStateVal = .enabled
     public var authLevel: UserAuthLevel = .unknown
+    internal var activeSaveOperations: Set<UUID> = []
 }
 
 extension UserState: Codable {
@@ -87,10 +88,12 @@ extension UserState: Codable {
     }
 
     public func set(field: String, value: AnyCodable) {
-        var userData = self.data
-        userData[field] = value
         DispatchQueue.main.async {
-            Context.currentContext.store.dispatch(UserData.save(userData))
+            var optimisticData = Context.currentContext.store.state.user.data
+            optimisticData[field] = value
+            Context.currentContext.store.dispatch(
+                UserData.save([field: value], optimisticData: optimisticData)
+            )
         }
     }
 
@@ -123,6 +126,16 @@ struct SetUserError: Action {
     var errorMessage: String
 }
 
+struct SetUserSaveLoading: Action {
+    var operationId: UUID
+    var isLoading: Bool
+}
+
+struct ReconcileUserData: Action {
+    var expectedData: UserStateData
+    var replacementData: UserStateData
+}
+
 struct SetUserState: Action {
     var payload: UserState
 }
@@ -136,9 +149,30 @@ func userReducer(action: Action, state: UserState?) -> UserState {
     case let action as SetUserData:
         state.data = action.data
         state.meta = action.meta ?? [:]
-        state.isLoading = false
+        state.isLoading = !state.activeSaveOperations.isEmpty
+        state.isErrored = false
+        state.errorMessage = nil
+    case let action as ReconcileUserData:
+        let affectedFields = Set(action.expectedData.keys).union(action.replacementData.keys)
+        for field in affectedFields where state.data[field] == action.expectedData[field] {
+            if let replacement = action.replacementData[field] {
+                state.data[field] = replacement
+            } else {
+                state.data.removeValue(forKey: field)
+            }
+        }
+    case let action as SetUserSaveLoading:
+        if action.isLoading {
+            state.activeSaveOperations.insert(action.operationId)
+        } else {
+            state.activeSaveOperations.remove(action.operationId)
+        }
+        state.isLoading = !state.activeSaveOperations.isEmpty
     case let action as SetUserLoading:
-        state.isLoading = action.isLoading
+        state.isLoading = action.isLoading || !state.activeSaveOperations.isEmpty
+    case let action as SetUserError:
+        state.isErrored = action.isErrored
+        state.errorMessage = action.errorMessage
     case let action as SetAuthState:
         if !action.payload.isAuthenticated {
             state = UserState()
@@ -197,6 +231,7 @@ extension UserStateResponse {
 
 class UserData {
     private static var fetchTask: Task<UserStateResponse?, Error>?
+    internal static var testingRequestSession: URLSession?
 
     private enum PluginRequestError: Error {
         case statusCode(Int)
@@ -215,7 +250,7 @@ class UserData {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await (testingRequestSession ?? URLSession.shared).data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw PluginRequestError.nonHTTPResponse
         }
@@ -276,7 +311,7 @@ class UserData {
                 }
 
                 throw RowndError(
-                    "Failed to retireve user: \(error.localizedDescription)"
+                    "Failed to retrieve user: \(error.localizedDescription)"
                 )
             }
         }
@@ -331,58 +366,67 @@ class UserData {
         return save(Context.currentContext.store.state.user.data)
     }
 
-    static func save(_ data: [String: AnyCodable]) -> Thunk<RowndState> {
+    static func save(
+        _ data: [String: AnyCodable],
+        optimisticData: [String: AnyCodable]? = nil
+    ) -> Thunk<RowndState> {
         return Thunk<RowndState> { dispatch, getState in
-            guard let state = getState() else { return }
-            guard !state.user.isLoading else { return }
+            let startSave = {
+                guard let state = getState(), state.auth.isAuthenticated else { return }
 
-            DispatchQueue.main.async {
-                dispatch(SetUserData(data: data, meta: state.user.meta))
+                let previousData = state.user.data
+                let expectedData = optimisticData ?? data
+                let operationId = UUID()
+                dispatch(SetUserData(data: expectedData, meta: state.user.meta))
+                dispatch(SetUserSaveLoading(operationId: operationId, isLoading: true))
+
+                Task {
+                    defer {
+                        DispatchQueue.main.async {
+                            dispatch(SetUserSaveLoading(operationId: operationId, isLoading: false))
+                        }
+                    }
+
+                    let userDataPayload = UserDataPayload(data: data)
+
+                    do {
+                        let user: UserStateResponse? = try await sendPluginRequest(
+                            path: "/user",
+                            method: "PUT",
+                            body: JSONEncoder().encode(userDataPayload)
+                        )
+
+                        logger.debug("Decoded user response: \(String(describing: user))")
+
+                        DispatchQueue.main.async {
+                            dispatch(
+                                ReconcileUserData(
+                                    expectedData: expectedData,
+                                    replacementData: user?.data ?? [:]
+                                ))
+                        }
+                    } catch {
+                        logger.error("Failed to save user profile: \(String(describing: error))")
+                        DispatchQueue.main.async {
+                            dispatch(
+                                ReconcileUserData(
+                                    expectedData: expectedData,
+                                    replacementData: previousData
+                                ))
+                            dispatch(
+                                SetUserError(
+                                    errorMessage:
+                                        "The user profile could not be saved: \(String(describing: error))"
+                                ))
+                        }
+                    }
+                }
             }
 
-            Task {
-                guard state.auth.isAuthenticated else {
-                    return
-                }
-
-                DispatchQueue.main.async {
-                    dispatch(SetUserLoading(isLoading: true))
-                }
-
-                defer {
-                    DispatchQueue.main.async {
-                        dispatch(SetUserLoading(isLoading: false))
-                    }
-                }
-
-                // Handle data that should be encrypted
-                var updatedUserState = UserState()
-                updatedUserState.data = data
-
-                let userDataPayload = UserDataPayload(data: data)
-
-                do {
-                    let user: UserStateResponse? = try await sendPluginRequest(
-                        path: "/user",
-                        method: "PUT",
-                        body: JSONEncoder().encode(userDataPayload)
-                    )
-
-                    logger.debug("Decoded user response: \(String(describing: user))")
-
-                    DispatchQueue.main.async {
-                        dispatch(SetUserData(data: user?.data ?? [:], meta: state.user.meta))
-                    }
-                } catch {
-                    logger.error("Failed to save user profile: \(String(describing: error))")
-                    DispatchQueue.main.async {
-                        dispatch(
-                            SetUserError(
-                                errorMessage:
-                                    "The user profile could not be saved: \(String(describing: error))"
-                            ))
-                    }
-                }
+            if Thread.isMainThread {
+                startSave()
+            } else {
+                DispatchQueue.main.async(execute: startSave)
             }
         }
     }

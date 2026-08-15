@@ -114,8 +114,8 @@
         "repositoryURL": "https://github.com/supertokens/supertokens-ios",
         "state": {
           "branch": null,
-          "revision": "53e43aceaf48e7e29eeb3daffa987d825634b76f",
-          "version": "0.4.3"
+          "revision": "04a4570a7d44bdaf01ddfadb63f5d79f8c6a1808",
+          "version": "0.5.4"
         }
       },
       {

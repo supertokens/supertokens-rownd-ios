@@ -120,7 +120,8 @@ class AppleSignUpCoordinator: NSObject, ASAuthorizationControllerDelegate, ASAut
 
                 Task { [userAppleSignInData] in
                     do {
-                        let signInResponse = try await signInClient.signInWithApple(authorizationCode: authCode)
+                        let clientType = Context.currentContext.store.state.appConfig.config?.hub?.auth?.signInMethods?.apple?.iosClientType
+                        let signInResponse = try await signInClient.signInWithApple(authorizationCode: authCode, clientType: clientType)
                         await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens()
 
                         Task { @MainActor in
@@ -183,32 +184,36 @@ class AppleSignUpCoordinator: NSObject, ASAuthorizationControllerDelegate, ASAut
                     if let userStateResponse = try await UserData.fetchUserData(state) {
                         var userData = state.user.data
                         userData.merge(userStateResponse.data) { (current, _) in current }
+                        var appleUserData: [String: AnyCodable] = [:]
 
                         let defaults = UserDefaults.standard
                         // use UserDefault values for Email and fullName if available
                         if let userAppleSignInData = defaults.object(forKey: appleSignInDataKey) as? Data {
                             let decoder = JSONDecoder()
                             if let loadedAppleSignInData = try? decoder.decode(AppleSignInData.self, from: userAppleSignInData) {
-                                userData["email"] = AnyCodable(loadedAppleSignInData.email)
-                                userData["first_name"] = AnyCodable(loadedAppleSignInData.firstName)
-                                userData["last_name"] = AnyCodable(loadedAppleSignInData.lastName)
-                                userData["full_name"] = AnyCodable(loadedAppleSignInData.fullName)
+                                appleUserData = loadedAppleSignInData.toDictionary()
                             }
                             
                             // Remove the data since we no longer need it for subsequent signins.
                             defaults.removeObject(forKey: appleSignInDataKey)
                         } else {
                             if let email = email {
-                                userData["email"] = AnyCodable(email)
-                                userData["first_name"] = AnyCodable(fullName?.givenName)
-                                userData["last_name"] = AnyCodable(fullName?.familyName)
-                                userData["full_name"] = AnyCodable(String("\(fullName?.givenName) \(fullName?.familyName)"))
+                                let name = [fullName?.givenName, fullName?.familyName]
+                                    .compactMap { $0 }
+                                    .joined(separator: " ")
+                                appleUserData = AppleSignInData(
+                                    email: email,
+                                    firstName: fullName?.givenName,
+                                    lastName: fullName?.familyName,
+                                    fullName: name.isEmpty ? nil : name
+                                ).toDictionary()
                             }
                         }
 
-                        if !userData.isEmpty {
-                            dispatch(UserData.save(userData))
-                            logger.debug("UserData to save after signin: \(String(describing: userData))")
+                        if !appleUserData.isEmpty {
+                            userData.merge(appleUserData) { (_, updated) in updated }
+                            dispatch(UserData.save(appleUserData, optimisticData: userData))
+                            logger.debug("UserData to save after signin: \(String(describing: appleUserData))")
                         }
                     } else {
                         // Handle the case where userStateResponse is nil

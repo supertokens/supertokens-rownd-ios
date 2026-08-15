@@ -1,3 +1,49 @@
+# Changelog
+
+## <small>0.1.8 (2026-08-11)</small>
+
+* chore: Update the supertokens-ios version ([663c1b9](https://github.com/supertokens/supertokens-rownd-ios/commit/663c1b9))
+* test: Fix e2e test setup ([7140278](https://github.com/supertokens/supertokens-rownd-ios/commit/7140278))
+* fix: Handle native pending email verification ([5575f89](https://github.com/supertokens/supertokens-rownd-ios/commit/5575f89))
+
+## <small>0.1.7 (2026-08-07)</small>
+
+* chore: Fix packages ([91516b1](https://github.com/supertokens/supertokens-rownd-ios/commit/91516b1))
+* fix: install/clear/read Hub sessions through the core SDK (single source of truth) ([79b3d38](https://github.com/supertokens/supertokens-rownd-ios/commit/79b3d38))
+* fix: serialize bridge session operations and green the session test suite ([bc24da0](https://github.com/supertokens/supertokens-rownd-ios/commit/bc24da0))
+
+## <small>0.1.6 (2026-08-07)</small>
+
+* chore: bump version ([ba21240](https://github.com/supertokens/supertokens-rownd-ios/commit/ba21240))
+* test: Add complete email change E2E coverage ([bd1d072](https://github.com/supertokens/supertokens-rownd-ios/commit/bd1d072))
+* fix: Add appVariantId in config and send it during login requests ([b6b3d5e](https://github.com/supertokens/supertokens-rownd-ios/commit/b6b3d5e))
+* fix: Adopt OTP sessions over existing native sessions ([e42bd33](https://github.com/supertokens/supertokens-rownd-ios/commit/e42bd33))
+* fix: Scope and reconcile profile updates ([76737cc](https://github.com/supertokens/supertokens-rownd-ios/commit/76737cc))
+
+## <small>0.1.5 (2026-07-31)</small>
+
+* fix: Add appVariantId in config and send it during login requests ([b6b3d5e](https://github.com/supertokens/supertokens-rownd-ios/commit/b6b3d5e))
+
+## <small>0.1.4 (2026-07-27)</small>
+
+* fix: mark session clear as opt in and prevent rownd session removal ([bda8f2f](https://github.com/supertokens/supertokens-rownd-ios/commit/bda8f2f))
+* chore: release v0.1.3 ([fa36084](https://github.com/supertokens/supertokens-rownd-ios/commit/fa36084))
+
+## <small>0.1.2 (2026-07-09)</small>
+
+* chore: Add debug logs ([a969845](https://github.com/supertokens/supertokens-rownd-ios/commit/a969845))
+
+## <small>0.1.1 (2026-07-06)</small>
+
+* chore: Rename cocoapod package ([adba350](https://github.com/supertokens/supertokens-rownd-ios/commit/adba350))
+
+## Unreleased
+
+* security: optionally clear retained SuperTokens sessions on markerless launches without removing legacy Rownd migration state
+* breaking: require SuperTokens configuration and remove unsupported legacy auth paths
+* breaking: remove native passkey APIs/routes and Firebase connection-action APIs/routes from the SuperTokens-backed SDK
+* breaking: remove legacy smart-link auth and public legacy token exchange APIs
+
 
 
 ## <small>3.14.10 (2026-03-18)</small>
@@ -541,7 +587,7 @@
 
 ## [1.8.1](https://github.com/rownd/ios/compare/1.8.0...1.8.1) (2022-09-16)
 
-# Changelog
+
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 

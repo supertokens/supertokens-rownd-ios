@@ -21,6 +21,16 @@ import Testing
             )
 
             #expect(try Rownd.validateSuperTokensConfig(validConfig) == validConfig)
+            #expect(!validConfig.clearSessionOnNewInstallation)
+            #expect(
+                try Rownd.validateSuperTokensConfig(
+                    RowndSuperTokensConfig(
+                        appName: "Example App",
+                        apiDomain: "https://api.example.com",
+                        apiBasePath: "/auth///"
+                    )
+                ).apiBasePath == "/auth"
+            )
             try expectValidationError(
                 RowndSuperTokensConfig(appName: "", apiDomain: "https://api.example.com"),
                 expectedMessage: "SuperTokens appName must not be empty"
@@ -65,6 +75,10 @@ import Testing
                 apiDomain: "https://api.example.com",
                 apiBasePath: "/auth"
             )
+            let markerKey = markInstallation(for: expectedConfig)
+            defer {
+                _ = Storage.shared.remove(forKey: markerKey)
+            }
 
             let responseData = """
             {
@@ -178,6 +192,7 @@ import Testing
         try await withGlobalTestLock {
             var config = RowndConfig()
             config.appKey = "app_test"
+            config.appVariantId = "variant_123"
             config.supertokens = RowndSuperTokensConfig(
                 appName: "Example App",
                 apiDomain: "https://api.example.com",
@@ -196,6 +211,7 @@ import Testing
             #expect(queryItems["config"] == "encoded-config")
             #expect(queryItems["sign_in"] == "encoded-sign-in")
             #expect(queryItems["appKey"] == "app_test")
+            #expect(queryItems["appVariantId"] == "variant_123")
             #expect(queryItems["apiDomain"] == "https://api.example.com")
             #expect(queryItems["apiBasePath"] == "/custom-auth")
         }
@@ -232,22 +248,31 @@ import Testing
             Rownd.config.enableSmartLinkPasteBehavior = false
             Rownd.isSuperTokensInitialized = false
 
+            let firstConfig = RowndSuperTokensConfig(
+                appName: "Example App",
+                apiDomain: "https://first.example.com",
+                apiBasePath: "/auth"
+            )
+            let secondConfig = RowndSuperTokensConfig(
+                appName: "Example App",
+                apiDomain: "https://second.example.com",
+                apiBasePath: "/auth"
+            )
+            let firstMarkerKey = markInstallation(for: firstConfig)
+            let secondMarkerKey = markInstallation(for: secondConfig)
+            defer {
+                _ = Storage.shared.remove(forKey: firstMarkerKey)
+                _ = Storage.shared.remove(forKey: secondMarkerKey)
+            }
+
             _ = await Rownd.configure(
                 appKey: "app_test",
-                supertokens: RowndSuperTokensConfig(
-                    appName: "Example App",
-                    apiDomain: "https://first.example.com",
-                    apiBasePath: "/auth"
-                )
+                supertokens: firstConfig
             )
 
             _ = await Rownd.configure(
                 appKey: "app_test",
-                supertokens: RowndSuperTokensConfig(
-                    appName: "Example App",
-                    apiDomain: "https://second.example.com",
-                    apiBasePath: "/auth"
-                )
+                supertokens: secondConfig
             )
 
             #expect(Rownd.isSuperTokensInitialized)
@@ -268,6 +293,12 @@ import Testing
         } catch {
             Issue.record("Unexpected validation error: \(error)")
         }
+    }
+
+    private func markInstallation(for config: RowndSuperTokensConfig) -> String {
+        let markerKey = InstallationSessionManager.installationMarkerKey(config: config)
+        #expect(Storage.shared.setInstallationMarker(forKey: markerKey))
+        return markerKey
     }
 
     private func decodeJsonObject(_ json: String) throws -> [String: Any] {

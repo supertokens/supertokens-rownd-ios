@@ -56,21 +56,24 @@ class Storage: NSObject, NSFilePresenter {
         return try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true).appendingPathComponent(defaultContainerName)
     }
 
-    private func writeToStorage(_ value: String, fileUrl: URL) {
-
+    private func writeToStorage(_ value: String, fileUrl: URL) -> Bool {
         let fileCoordinator: NSFileCoordinator = NSFileCoordinator(filePresenter: self)
-        let errorPointer: NSErrorPointer = nil
-        fileCoordinator.coordinate(writingItemAt: fileUrl, options: .forReplacing, error: errorPointer) { url in
+        var coordinationError: NSError?
+        var didWrite = false
+        fileCoordinator.coordinate(writingItemAt: fileUrl, options: .forReplacing, error: &coordinationError) { url in
             do {
                 try value.write(to: url, atomically: false, encoding: .utf8)
+                didWrite = true
             } catch {
                 Self.log.error("Writing state failed \(String(describing: error))")
             }
         }
 
-        if let error = errorPointer?.pointee {
+        if let error = coordinationError {
             Self.log.error("Storage write coordination failed: \(error.localizedDescription).")
         }
+
+        return didWrite && coordinationError == nil
     }
 
     private func readFromStorage(_ fileUrl: URL) -> String? {
@@ -115,31 +118,123 @@ class Storage: NSObject, NSFilePresenter {
         return value
     }
 
-    func set(_ value: String, forKey key: String) {
+    @discardableResult
+    func remove(forKey key: String) -> Bool {
+        var didRemove = true
+        var urls: [URL] = []
+
+        if let sharedFileUrl = computeSharedStoragePath(Rownd.config.appGroupPrefix) {
+            urls.append(sharedFileUrl.appendingPathComponent(key))
+        }
+        if let appFileUrl = computeAppStoragePath() {
+            urls.append(appFileUrl.appendingPathComponent(key))
+        }
+
+        for url in urls where FileManager.default.fileExists(atPath: url.path) {
+            do {
+                try FileManager.default.removeItem(at: url)
+            } catch {
+                didRemove = false
+                Self.log.error("Removing stored state failed: \(String(describing: error))")
+            }
+        }
+
+        userDefaultsStore?.removeObject(forKey: key)
+        return didRemove
+    }
+
+    func hasInstallationMarker(forKey key: String) -> Bool {
+        let markerURL: URL?
+        if Bundle.main.bundlePath.hasSuffix(".appex") {
+            markerURL = computeSharedStoragePath(Rownd.config.appGroupPrefix)?.appendingPathComponent(key)
+                ?? computeAppStoragePath()?.appendingPathComponent(key)
+        } else {
+            markerURL = computeAppStoragePath()?.appendingPathComponent(key)
+        }
+
+        guard let markerURL else { return false }
+        return FileManager.default.fileExists(atPath: markerURL.path)
+    }
+
+    @discardableResult
+    func setInstallationMarker(forKey key: String) -> Bool {
+        let urls = installationMarkerURLs(forKey: key)
+
+        for url in urls {
+            do {
+                try FileManager.default.createDirectory(
+                    at: url.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try Data("true".utf8).write(to: url, options: .atomic)
+                var resourceValues = URLResourceValues()
+                resourceValues.isExcludedFromBackup = true
+                var mutableURL = url
+                try mutableURL.setResourceValues(resourceValues)
+            } catch {
+                Self.log.error("Writing installation marker failed: \(String(describing: error))")
+                for markerURL in urls where FileManager.default.fileExists(atPath: markerURL.path) {
+                    try? FileManager.default.removeItem(at: markerURL)
+                }
+                return false
+            }
+        }
+
+        return true
+    }
+
+    private func installationMarkerURLs(forKey key: String) -> [URL] {
+        var urls: [URL] = []
+
+        if let sharedURL = computeSharedStoragePath(Rownd.config.appGroupPrefix) {
+            urls.append(sharedURL.appendingPathComponent(key))
+        }
+        if let appURL = computeAppStoragePath() {
+            urls.append(appURL.appendingPathComponent(key))
+        }
+
+        return urls
+    }
+
+    @discardableResult
+    func set(_ value: String, forKey key: String) -> Bool {
+        var didWrite = true
 
         // If shared folder enabled, write to that
         if let sharedFileUrl = computeSharedStoragePath(Rownd.config.appGroupPrefix) {
-            writeToStorage(value, fileUrl: sharedFileUrl.appendingPathComponent(key))
-            Self.log.debug("Successfully wrote to \(String(describing: sharedFileUrl.appendingPathComponent(key)))")
+            let sharedURL = sharedFileUrl.appendingPathComponent(key)
+            let didWriteSharedValue = writeToStorage(value, fileUrl: sharedURL)
+            didWrite = didWriteSharedValue && didWrite
+            if didWriteSharedValue {
+                Self.log.debug("Successfully wrote to \(String(describing: sharedURL))")
+            }
         }
 
         // Always write to default
         appFileIf: if let appFileUrl = computeAppStoragePath() {
-            if !FileManager.default.fileExists(atPath: appFileUrl.absoluteString) {
+            if !FileManager.default.fileExists(atPath: appFileUrl.path) {
                 do {
                     try FileManager.default.createDirectory(at: appFileUrl, withIntermediateDirectories: true, attributes: nil)
                 } catch {
                     Self.log.error("Failed to create storage directory: \(String(describing: error))")
+                    didWrite = false
                     break appFileIf
                 }
             }
 
-            writeToStorage(value, fileUrl: appFileUrl.appendingPathComponent(key))
-            Self.log.debug("Successfully wrote to \(String(describing: appFileUrl.appendingPathComponent(key)))")
+            let appURL = appFileUrl.appendingPathComponent(key)
+            let didWriteAppValue = writeToStorage(value, fileUrl: appURL)
+            didWrite = didWriteAppValue && didWrite
+            if didWriteAppValue {
+                Self.log.debug("Successfully wrote to \(String(describing: appURL))")
+            }
+        } else {
+            didWrite = false
         }
 
         // We no longer want to use UserDefaults for state, so we'll remove this later.
         // Mainly keeping it around for backward compat purposes. Remove in v5.0 or later.
         userDefaultsStore?.set(value, forKey: key)
+        return didWrite
     }
 }

@@ -2,11 +2,13 @@
 
 The Rownd SDK for iOS provides authentication, account and user profile management, deep linking, and more for native iPhone, iPad, and even macOS applications.
 
-Using the Rownd platform, you can easily bring the same authentication that's on your website to your mobile apps. Or if you only authenticate users on your mobile apps, you can streamline the authentication process using Rownd's passwordless sign-in links, enabling you to seamlessly authenticate users from an app link sent to their email or phone number.
+Using the Rownd platform, you can easily bring the same authentication that's on your website to your mobile apps. Or if you only authenticate users on your mobile apps, you can streamline authentication using Rownd's passwordless sign-in links, one-time codes, or both, delivered by email or SMS.
 
 Once a user is authenticated, you can retrieve and update their profile information on the fly using native APIs. Leverage Rownd's pre-built mobile app components to give users profile management tools.
 
 ## Installation
+
+### Swift Package Manager
 
 In Xcode, select your project file, select the main target, then scroll down to the "frameworks" section to add a package dependency to your project. See the [official documentation](https://developer.apple.com/documentation/xcode/adding-package-dependencies-to-your-app) for specific steps.
 
@@ -17,6 +19,22 @@ https://github.com/supertokens/supertokens-rownd-ios.git
 ```
 
 Select the `Rownd` package product and add it to your app target.
+
+### CocoaPods
+
+Add the pod to your `Podfile`:
+
+```ruby
+pod 'RowndSupertokens'
+```
+
+Then run:
+
+```sh
+pod install
+```
+
+The CocoaPods package exposes the same Swift module, so app code should still use `import Rownd`.
 
 ## Usage
 
@@ -54,6 +72,12 @@ Configuration notes:
 - `Rownd.config.deepLinkScheme` should be the custom URL scheme your app registers and the SDK accepts, for example `rowndsupertokens` or your app-specific scheme.
 - `RowndSuperTokensConfig.apiDomain` should point at the backend that hosts your SuperTokens plugin routes. `Rownd.configure()` also assigns this value to `Rownd.config.apiUrl`.
 - `RowndSuperTokensConfig.apiBasePath` must match your backend SuperTokens API base path, usually `/auth`.
+- `appVariantId` is optional. Set it when this app belongs to a Rownd app variant so Hub and native Google sign-in include it in authentication requests.
+- Set `RowndSuperTokensConfig.clearSessionOnNewInstallation` to `true` to clear retained SuperTokens credentials when the installation marker is missing. It defaults to `false`, and marker tracking is still established when cleanup is disabled.
+- Enabling cleanup in the first marker-aware release also clears existing SuperTokens sessions once. To avoid that adoption-time reset, first release with the default disabled, then enable cleanup after the installed population has established markers. Users who skip the marker-establishing release are still reset when they first launch a cleanup-enabled release.
+- Installation cleanup never removes legacy `RowndState`, allowing existing Rownd sessions to migrate to SuperTokens without requiring users to sign in again. SuperTokens-derived compatibility auth is cleared with the native session.
+
+When sharing sessions with app extensions, configure the same `Rownd.config.appGroupPrefix`, `keychainAccessGroup`, API domain, base path, and installation cleanup setting in the containing app and every extension. The app group shares the installation marker while the Keychain access group shares the credentials. App offloading preserves app data and therefore preserves the session. Deleting the app removes its local marker; retained SuperTokens credentials are cleared on the next containing-app launch when cleanup is enabled.
 
 #### Handling deep links and universal links
 
@@ -109,6 +133,8 @@ func application(
     return Rownd.handleSmartLink(url: url)
 }
 ```
+
+Links delivered while `Rownd.configure()` is still running are queued and handled after configuration completes. `handleSmartLink` returns `false` for URLs that do not match a supported Rownd sign-in or email-verification route, allowing the app to route them elsewhere.
 
 If you configure values through Xcode scheme environment variables, remember those variables are only present when launching from Xcode. Universal links that launch an already installed app will use values from code defaults, build settings, or `Info.plist`.
 
@@ -271,10 +297,10 @@ It's possible to access the Rownd state from within an app extension, like a wid
 
 Follow these steps to configure your app and extension to work with Rownd:
 
-1. Add an [app group](https://developer.apple.com/documentation/xcode/configuring-app-groups) entitlement to both your app and any extensions that will use Rownd.
+1. Add an [app group](https://developer.apple.com/documentation/xcode/configuring-app-groups) entitlement and a shared [Keychain access group](https://developer.apple.com/documentation/security/sharing-access-to-keychain-items-among-a-collection-of-apps) to both your app and any extensions that will use Rownd.
    This app group **must** be named like this: `<prefix>.io.rownd.sdk`. For example, if you work at a company with the acme.com domain, your app group might look like this: `com.acme.app.io.rownd.sdk`. Rownd will store its data in this app group. Your app should store data in a separate app group to prevent any collisions.
 
-2. In your app's `AppDelegate` file as well as your extension's entry point, set the app group prefix you defined above via `Rownd.config.appGroupPrefix = "<prefix>"` (e.g., `Rownd.config.appGroupPrefix = "com.acme.app"`)
+2. In your app's `AppDelegate` file as well as your extension's entry point, set the app group prefix you defined above via `Rownd.config.appGroupPrefix = "<prefix>"` (e.g., `Rownd.config.appGroupPrefix = "com.acme.app"`). Pass the same Keychain access group to `RowndSuperTokensConfig` in both targets.
 
 3. In your extension, call `Rownd.configure()` prior to accessing authentication state. Here's an example:
 
@@ -286,7 +312,8 @@ Follow these steps to configure your app and extension to work with Rownd:
             supertokens: RowndSuperTokensConfig(
                 appName: "Your App",
                 apiDomain: "https://api.example.com",
-                apiBasePath: "/auth"
+                apiBasePath: "/auth",
+                keychainAccessGroup: "YOUR_TEAM_ID.com.acme.app.shared"
             )
         )
 
@@ -448,7 +475,30 @@ Some of the `requestSignIn()` methods accept an optional `RowndSignInOptions` pa
 
 ### Rownd.signOut() -> Void
 
-Clears the user's access token, removes the user's profile data, and returns the user to a completely unauthenticated state.
+Starts local sign-out and returns immediately. This API is retained for compatibility, but it is fire-and-forget: SuperTokens may still be building or sending `/auth/signout` after this function returns.
+
+Do not use this overload when your app clears app storage, or other local state immediately after sign-out. Clearing storage too early can remove the tokens before the sign-out request attaches its `Authorization` header.
+
+### Rownd.signOut() async -> Void
+
+Waits for local Rownd sign-out and SuperTokens sign-out to complete before returning. Use this overload before destructive cleanup:
+
+```swift
+await Rownd.signOut()
+clearAppStorage()
+```
+
+If you cannot use Swift concurrency, use the completion overload:
+
+```swift
+Rownd.signOut { error in
+    guard error == nil else {
+        return
+    }
+
+    clearAppStorage()
+}
+```
 
 ### Rownd.signOut(scope: RowndSignoutScope) -> Void
 

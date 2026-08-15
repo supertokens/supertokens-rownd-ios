@@ -15,7 +15,10 @@ public protocol RowndDeepLinkHandlerDelegate {
 }
 
 class SmartLinks {
-    private static var lastHandledDeepLink: URL?
+    static func canHandleSmartLink(url: URL?) -> Bool {
+        guard let url else { return false }
+        return hubUrl(for: url) != nil
+    }
 
     static func handleSmartLinkLaunchBehavior(launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) {
         if !Bundle.main.bundlePath.hasSuffix(".appex") {
@@ -54,21 +57,20 @@ class SmartLinks {
     @discardableResult
     public static func handleSmartLink(url: URL?) -> Bool {
         guard let url = url else {
+            logger.debug("Smart link ignored: URL is nil")
             return false
         }
 
-        if let hubUrl = hubUrl(for: url) {
-            if lastHandledDeepLink == url {
-                return true
-            }
+        logger.debug("Handling smart link: \(Redact.urlForLogging(url))")
 
-            lastHandledDeepLink = url
+        if let hubUrl = hubUrl(for: url) {
+            logger.debug("Smart link maps to Hub URL: \(Redact.urlForLogging(hubUrl))")
             Rownd.openHubDeepLink(hubUrl)
             return true
         }
 
         if let host = url.host, matchesSignInLinkPattern(host) {
-            logger.trace("handling url: \(String(describing: url.absoluteString))")
+            logger.trace("Handling legacy smart link: \(Redact.urlForLogging(url))")
 
             if url.path.starts(with: "/verified") {
                 return false
@@ -81,19 +83,22 @@ class SmartLinks {
                 return false
             }
 
-            logger.warning("Legacy Rownd smart links are not supported by the SuperTokens-backed iOS SDK: \(url.absoluteString)")
+            logger.warning("Legacy Rownd smart links are not supported by the SuperTokens-backed iOS SDK: \(Redact.urlForLogging(url))")
             return false
         }
 
+        logger.debug("Smart link ignored: no matching Hub URL or sign-in link pattern")
         return false
     }
 
     private static func hubUrl(for url: URL) -> URL? {
         guard let host = url.host?.trimmingCharacters(in: CharacterSet(charactersIn: "/")) else {
+            logger.debug("Smart link URL has no host: \(Redact.urlForLogging(url))")
             return nil
         }
 
         guard var components = URLComponents(string: Rownd.config.baseUrl) else {
+            logger.debug("Invalid Rownd Hub base URL: \(Rownd.config.baseUrl)")
             return nil
         }
 
@@ -104,10 +109,12 @@ class SmartLinks {
         } else if url.scheme == "https", host == components.host || matchesSignInLinkPattern(host) {
             hubPath = url.path
         } else {
+            logger.debug("Smart link host/scheme did not match: scheme=\(url.scheme ?? "nil") host=\(host) baseHost=\(components.host ?? "nil") pattern=\(Rownd.config.signInLinkPattern)")
             return nil
         }
 
         guard hubPath == "/account/login" || hubPath == "/account/verify-email" else {
+            logger.debug("Smart link path is unsupported: \(hubPath)")
             return nil
         }
 

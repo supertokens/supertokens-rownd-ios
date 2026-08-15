@@ -1,16 +1,15 @@
 import Foundation
 import Testing
+@testable import SuperTokensIOS
 
 @testable import Rownd
 
 struct TestInfrastructure {
+    private static let sessionStorage = InMemorySuperTokensSessionStorage()
+
     static let backendURL = URL(
         string: ProcessInfo.processInfo.environment["TEST_BACKEND_URL"] ?? "http://127.0.0.1:3100"
     )!
-    static let hubURL = URL(
-        string: ProcessInfo.processInfo.environment["TEST_HUB_URL"] ?? "http://127.0.0.1:8787"
-    )!
-
     static let supertokensConfig = RowndSuperTokensConfig(
         appName: "Rownd iOS Integration Tests",
         apiDomain: backendURL.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")),
@@ -24,10 +23,14 @@ struct TestInfrastructure {
 
         Rownd.config.supertokens = supertokensConfig
         _ = try Rownd.initializeSuperTokensIfNeeded()
+        SDKStorage.setTokenStorageForTests(sessionStorage)
+        SuperTokensSessionBridge.storageOverride = sessionStorage
+        _ = SDKStorage.clearSessionStorage()
 
         if await SuperTokensSessionBridge.doesSessionExist() {
             await SuperTokensSessionBridge.signOut()
         }
+        SuperTokensSessionBridge.clearLocalSessionArtifacts()
     }
 
     static func waitForBackend(timeout: TimeInterval = 30) async throws {
@@ -35,6 +38,25 @@ struct TestInfrastructure {
     }
 
     static func waitForHub(timeout: TimeInterval = 30) async throws {
+        let hubURL: URL
+        if let configuredURL = ProcessInfo.processInfo.environment["TEST_HUB_URL"],
+            let url = URL(string: configuredURL)
+        {
+            hubURL = url
+        } else {
+            let configURL = backendURL.appendingPathComponent("config")
+            let (data, response) = try await URLSession.shared.data(from: configURL)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+                throw RowndError("Failed to load the integration harness config")
+            }
+
+            let config = try JSONDecoder().decode(HarnessConfig.self, from: data)
+            guard let url = URL(string: config.hubBaseUrl) else {
+                throw RowndError("The integration harness returned an invalid Hub URL")
+            }
+            hubURL = url
+        }
+
         try await waitForHealth(url: hubURL.appendingPathComponent("health"), timeout: timeout)
     }
 
@@ -64,4 +86,28 @@ struct TestInfrastructure {
         let statusCode = try #require((response as? HTTPURLResponse)?.statusCode)
         #expect(statusCode == 200)
     }
+
+}
+
+private struct HarnessConfig: Decodable {
+    let hubBaseUrl: String
+}
+
+private final class InMemorySuperTokensSessionStorage: TokenStorage, SuperTokensSessionStorage {
+    private var values: [String: String] = [:]
+
+    func get(_ name: String) -> String? {
+        values[name]
+    }
+
+    func set(_ name: String, value: String) -> Bool {
+        values[name] = value
+        return true
+    }
+
+    func remove(_ key: String) -> Bool {
+        values.removeValue(forKey: key)
+        return true
+    }
+
 }

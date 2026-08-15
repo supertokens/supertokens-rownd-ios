@@ -114,14 +114,23 @@ struct LegacySessionMigrationClient {
         switch httpResponse.statusCode {
         case 200..<300:
             guard let accessToken = httpResponse.headerValue(named: "st-access-token"), !accessToken.isEmpty else {
+                SuperTokensSessionBridge.clearLocalSessionArtifacts()
                 throw RowndError("Rownd migration response did not include st-access-token")
+            }
+            guard let refreshToken = httpResponse.headerValue(named: "st-refresh-token"), !refreshToken.isEmpty else {
+                SuperTokensSessionBridge.clearLocalSessionArtifacts()
+                throw RowndError("Rownd migration response did not include st-refresh-token")
+            }
+            guard let frontToken = httpResponse.headerValue(named: "front-token"), !frontToken.isEmpty else {
+                SuperTokensSessionBridge.clearLocalSessionArtifacts()
+                throw RowndError("Rownd migration response did not include front-token")
             }
 
             return .migrated(
                 SuperTokensSessionTokens(
                     accessToken: accessToken,
-                    refreshToken: httpResponse.headerValue(named: "st-refresh-token"),
-                    frontToken: httpResponse.headerValue(named: "front-token"),
+                    refreshToken: refreshToken,
+                    frontToken: frontToken,
                     antiCSRF: httpResponse.headerValue(named: "anti-csrf")
                 )
             )
@@ -137,17 +146,20 @@ struct LegacySessionMigrationClient {
 
 struct LegacySessionMigrationDependencies {
     var doesSuperTokensSessionExist: () async -> Bool = SuperTokensSessionBridge.doesSessionExist
-    var bootstrapSession: (SuperTokensSessionTokens) async -> Void = { tokens in
+    var bootstrapSession: (SuperTokensSessionTokens) async -> Bool = { tokens in
         await Task.detached(priority: .userInitiated) {
             SuperTokensSessionBridge.bootstrapSession(
                 accessToken: tokens.accessToken,
                 refreshToken: tokens.refreshToken,
                 frontToken: tokens.frontToken,
-                antiCSRF: tokens.antiCSRF
+                antiCSRF: tokens.antiCSRF,
+                allowReplacingExistingSession: false
             )
         }.value
     }
-    var syncRowndAuthStateFromSuperTokens: () async -> Void = SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens
+    var syncRowndAuthStateFromSuperTokens: () async -> Void = {
+        _ = await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens()
+    }
     var signOut: () async -> Void = Rownd.signOutForMigrationFailure
     var client: LegacySessionMigrationClient = LegacySessionMigrationClient()
 }
@@ -216,7 +228,14 @@ enum LegacySessionMigrator {
 
             switch result {
             case .migrated(let tokens):
-                await dependencies.bootstrapSession(tokens)
+                guard hasCompleteNativeSessionTokens(tokens) else {
+                    logger.warning("Skipping SuperTokens session bootstrap because migration returned incomplete session headers")
+                    return
+                }
+                guard await dependencies.bootstrapSession(tokens) else {
+                    logger.warning("Skipping legacy session migration completion because the SuperTokens session could not be adopted")
+                    return
+                }
                 await dependencies.syncRowndAuthStateFromSuperTokens()
                 await clearLegacyRefreshToken()
             case .sessionAlreadyExists:
@@ -237,6 +256,9 @@ enum LegacySessionMigrator {
         do {
             return try await client.migrate(legacyAccessToken: legacyAccessToken)
         } catch {
+            guard error is URLError else {
+                throw error
+            }
             return try await client.migrate(legacyAccessToken: legacyAccessToken)
         }
     }
@@ -247,6 +269,12 @@ enum LegacySessionMigrator {
             authState.refreshToken = nil
             Context.currentContext.store.dispatch(SetAuthState(payload: authState))
         }
+    }
+
+    private static func hasCompleteNativeSessionTokens(_ tokens: SuperTokensSessionTokens) -> Bool {
+        !tokens.accessToken.isEmpty
+            && tokens.refreshToken?.isEmpty == false
+            && tokens.frontToken?.isEmpty == false
     }
 
     private static func isAccessTokenValid(_ accessToken: String) -> Bool {

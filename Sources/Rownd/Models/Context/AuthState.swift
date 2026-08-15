@@ -68,6 +68,11 @@ extension AuthState: Codable {
         }
     }
 
+    static func isSuperTokensAccessToken(_ accessToken: String?) -> Bool {
+        guard let accessToken, let jwt = try? decode(jwt: accessToken) else { return false }
+        return isSuperTokensAccessToken(jwt)
+    }
+
     private static func isSuperTokensAccessToken(_ jwt: JWT) -> Bool {
         jwt.claim(name: "sessionHandle").string != nil
             || jwt.claim(name: "tId").string != nil
@@ -267,6 +272,13 @@ class Auth {
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
+        guard let accessToken = await SuperTokensSessionBridge.getAccessToken(), !accessToken.isEmpty else {
+            throw RowndError("Cannot sign out all sessions without a SuperTokens access token")
+        }
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("session", forHTTPHeaderField: "rid")
+        request.setValue("1.18", forHTTPHeaderField: "fdi-version")
+        request.setValue("header", forHTTPHeaderField: "st-auth-mode")
 
         let (_, response) = try await URLSession.shared.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {

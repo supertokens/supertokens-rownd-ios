@@ -6,6 +6,8 @@ import Testing
 @Suite(.serialized) struct SuperTokensThirdPartySignInClientTests {
     @Test func googleExchangePostsSigninupPayload() async throws {
         try await withGlobalTestLock {
+            let originalConfig = Rownd.config
+            defer { Rownd.config = originalConfig }
             ThirdPartySignInURLProtocol.reset()
             ThirdPartySignInURLProtocol.responseBody = #"{"status":"OK","createdNewRecipeUser":true}"#.data(using: .utf8)!
 
@@ -37,6 +39,31 @@ import Testing
         }
     }
 
+    @Test func googleExchangeIncludesAppVariantId() async throws {
+        try await withGlobalTestLock {
+            let originalConfig = Rownd.config
+            defer { Rownd.config = originalConfig }
+            Rownd.config.appVariantId = "variant_123"
+            ThirdPartySignInURLProtocol.reset()
+            ThirdPartySignInURLProtocol.responseBody = #"{"status":"OK","createdNewRecipeUser":true}"#.data(using: .utf8)!
+
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.protocolClasses = [ThirdPartySignInURLProtocol.self]
+            let client = SuperTokensThirdPartySignInClient(
+                apiDomain: "https://auth.example.com",
+                apiBasePath: "/auth",
+                session: URLSession(configuration: configuration)
+            )
+
+            _ = try await client.signInWithGoogle(idToken: "google-id-token")
+
+            #expect(
+                ThirdPartySignInURLProtocol.lastRequest?.url?.absoluteString
+                    == "https://auth.example.com/auth/signinup?app_variant_id=variant_123"
+            )
+        }
+    }
+
     @Test func appleExchangePostsAuthorizationCodeSigninupPayload() async throws {
         try await withGlobalTestLock {
             ThirdPartySignInURLProtocol.reset()
@@ -62,12 +89,36 @@ import Testing
             let body = try #require(ThirdPartySignInURLProtocol.lastRequestBody)
             let json = try JSONSerialization.jsonObject(with: body) as? [String: Any]
             #expect(json?["thirdPartyId"] as? String == "apple")
+            #expect(json?["clientType"] == nil)
             #expect(json?["oAuthTokens"] == nil)
 
             let redirectURIInfo = json?["redirectURIInfo"] as? [String: Any]
             #expect(redirectURIInfo?["redirectURIOnProviderDashboard"] as? String == "")
             let queryParams = redirectURIInfo?["redirectURIQueryParams"] as? [String: Any]
             #expect(queryParams?["code"] as? String == "apple-auth-code")
+        }
+    }
+
+    @Test func appleExchangeIncludesClientTypeWhenProvided() async throws {
+        try await withGlobalTestLock {
+            ThirdPartySignInURLProtocol.reset()
+            ThirdPartySignInURLProtocol.responseBody = #"{"status":"OK","createdNewRecipeUser":false}"#.data(using: .utf8)!
+
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.protocolClasses = [ThirdPartySignInURLProtocol.self]
+            let session = URLSession(configuration: configuration)
+            let client = SuperTokensThirdPartySignInClient(
+                apiDomain: "https://auth.example.com",
+                apiBasePath: "/auth",
+                session: session
+            )
+
+            _ = try await client.signInWithApple(authorizationCode: "apple-auth-code", clientType: "ios")
+
+            let body = try #require(ThirdPartySignInURLProtocol.lastRequestBody)
+            let json = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+            #expect(json?["thirdPartyId"] as? String == "apple")
+            #expect(json?["clientType"] as? String == "ios")
         }
     }
 

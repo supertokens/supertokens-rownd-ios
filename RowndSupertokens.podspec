@@ -1,20 +1,22 @@
 Pod::Spec.new do |s|
-  s.name             = "Rownd"
-  s.version          = "3.14.10"
-  s.summary          = "Rownd bindings for iOS"
+  s.name             = "RowndSupertokens"
+  s.module_name      = "Rownd"
+  s.version          = "0.1.8"
+  s.summary          = "SuperTokens Rownd bindings for iOS"
   s.description      = <<-DESC
                         Rownd is a user management platform designed to make authentication
-                        and user lifecycle easy, frictionless, and seamless for both devs and end-users
+                        and user lifecycle easy, frictionless, and seamless for both devs and end-users.
+                        This SDK integrates Rownd with SuperTokens-backed authentication.
                         DESC
-  s.homepage         = "https://github.com/rownd/ios"
+  s.homepage         = "https://github.com/supertokens/supertokens-rownd-ios"
   s.license          = { :type => "Apache 2.0", :file => "LICENSE.txt" }
   s.author           = {
-    "Rownd" => "support@rownd.io",
+    "SuperTokens" => "support@supertokens.com",
   }
-  s.documentation_url = "https://github.com/rownd/ios"
+  s.documentation_url = "https://github.com/supertokens/supertokens-rownd-ios"
   s.source            = {
-    :git => "https://github.com/rownd/ios.git",
-    :tag => s.version.to_s
+    :git => "https://github.com/supertokens/supertokens-rownd-ios.git",
+    :tag => "v#{s.version}"
   }
 
   s.ios.deployment_target     = '14.0'
@@ -27,7 +29,7 @@ Pod::Spec.new do |s|
   s.dependency 'GoogleSignIn', '~> 7.0.0'
   s.dependency 'lottie-ios', '~> 4.5.0'
   s.dependency 'Factory', '~> 1.2.8'
-  s.dependency 'SuperTokensIOS', '~> 0.4.2'
+  s.dependency 'SuperTokensIOS', '~> 0.5.4'
 
   s.dependency 'LBBottomSheet'
   s.dependency 'AnyCodable'

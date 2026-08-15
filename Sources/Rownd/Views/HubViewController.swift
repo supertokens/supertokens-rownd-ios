@@ -42,7 +42,7 @@ public class HubViewController: UIViewController, HubViewProtocol, BottomSheetHo
             URLQueryItem(name: "appKey", value: config.appKey),
             URLQueryItem(name: "apiDomain", value: config.supertokens.apiDomain),
             URLQueryItem(name: "apiBasePath", value: config.supertokens.apiBasePath)
-        ]
+        ] + (config.appVariantId.map { [URLQueryItem(name: "appVariantId", value: $0)] } ?? [])
 
         return hubLoaderUrl
     }
@@ -72,26 +72,27 @@ public class HubViewController: UIViewController, HubViewProtocol, BottomSheetHo
         hubWebController.view.autoresizingMask = .flexibleHeight
     }
 
-    public func loadNewPage(targetPage: HubPageSelector, jsFnOptions: Encodable?) {
-        DispatchQueue.main.async {
-            self.targetPage = targetPage
+    @MainActor public func loadNewPage(targetPage: HubPageSelector, jsFnOptions: Encodable?) {
+        self.targetPage = targetPage
 
-            if targetPage == .deepLink, let url = Rownd.config.consumePendingHubDeepLinkUrl() {
+        if targetPage == .deepLink {
+            guard isViewLoaded else { return }
+            if let url = Rownd.config.consumePendingHubDeepLinkUrl() {
                 self.hubWebController.setUrl(url: url)
-                return
             }
+            return
+        }
 
-            if let jsFnOptions = jsFnOptions {
-                do {
-                    self.hubWebController.jsFunctionArgsAsJson = try jsFnOptions.asJsonString()
-                } catch {
-                    logger.error("Failed to encode JS options to pass to function: \(String(describing: error))")
-                }
+        if let jsFnOptions = jsFnOptions {
+            do {
+                self.hubWebController.jsFunctionArgsAsJson = try jsFnOptions.asJsonString()
+            } catch {
+                logger.error("Failed to encode JS options to pass to function: \(String(describing: error))")
             }
+        }
 
-            if self.hubWebController.webView.url != nil {
-                self.hubWebController.webViewOnLoad(webView: self.hubWebController.webView, targetPage: targetPage, jsFnOptions: jsFnOptions)
-            }
+        if self.hubWebController.webView.url != nil {
+            self.hubWebController.webViewOnLoad(webView: self.hubWebController.webView, targetPage: targetPage, jsFnOptions: jsFnOptions)
         }
     }
 

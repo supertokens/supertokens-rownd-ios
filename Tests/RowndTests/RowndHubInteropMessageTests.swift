@@ -18,6 +18,18 @@ import Foundation
         #expect(payload.antiCSRF == "anti-csrf-token")
     }
 
+    @Test func authenticationMessageDecodesUserTypePayload() throws {
+        let message = try RowndHubInteropMessage.fromJson(message: #"{"type":"authentication","payload":{"access_token":"access-token","refresh_token":"refresh-token","front_token":"front-token","user_type":"new_user","app_variant_user_type":"existing_user"}}"#)
+
+        guard case .authentication(let payload) = message.payload else {
+            Issue.record("Expected authentication payload")
+            return
+        }
+
+        #expect(payload.userType == "new_user")
+        #expect(payload.appVariantUserType == "existing_user")
+    }
+
     @Test func authenticationMessageDecodesFrontToken() throws {
         let message = try RowndHubInteropMessage.fromJson(message: #"{"type":"authentication","payload":{"access_token":"access-token","refresh_token":"refresh-token","front_token":"front-token"}}"#)
 
@@ -46,6 +58,32 @@ import Foundation
         #expect(HubWebViewController.canHandleAuthentication(on: .deepLink))
         #expect(!HubWebViewController.canHandleAuthentication(on: .manageAccount))
         #expect(!HubWebViewController.canHandleAuthentication(on: nil))
+    }
+
+    @Test func failedSessionAdoptionSkipsAuthenticationCompletion() async {
+        var didSyncAuthState = false
+        var didComplete = false
+
+        await HubWebViewController.completeAuthenticationAfterAdoption(
+            succeeded: false,
+            syncAuthState: { didSyncAuthState = true },
+            completion: { didComplete = true }
+        )
+
+        #expect(!didSyncAuthState)
+        #expect(!didComplete)
+    }
+
+    @Test func successfulSessionAdoptionSyncsBeforeAuthenticationCompletion() async {
+        var steps: [String] = []
+
+        await HubWebViewController.completeAuthenticationAfterAdoption(
+            succeeded: true,
+            syncAuthState: { steps.append("sync") },
+            completion: { steps.append("complete") }
+        )
+
+        #expect(steps == ["sync", "complete"])
     }
 
     @Test func authenticationCompletionEmitsSignInCompletedEvent() async throws {
@@ -77,6 +115,44 @@ import Foundation
             )
 
             #expect(eventHandler.events.map(\.event) == [.signInCompleted])
+        }
+    }
+
+    @Test func authenticationCompletionEmitsSignInCompletedUserTypeData() async throws {
+        try await withGlobalTestLock {
+            let originalContext = Context.currentContext
+            let isolatedStore = createStore()
+            _ = Context(isolatedStore)
+            defer {
+                Context.currentContext = originalContext
+            }
+
+            await MainActor.run {
+                RowndEventEmitter.resetForTests()
+                Context.currentContext.eventListeners.removeAll()
+                Context.currentContext.store.dispatch(SetClockSync(clockSyncState: .synced))
+                Context.currentContext.store.dispatch(SetAuthState(payload: AuthState(
+                    accessToken: generateJwt(expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970)
+                )))
+            }
+
+            let eventHandler = RecordingRowndEventHandler()
+            Rownd.addEventHandler(eventHandler)
+
+            await HubWebViewController.completeAuthentication(
+                store: Context.currentContext.store,
+                initialJsFunctionArgsAsJson: "{}",
+                currentJsFunctionArgsAsJson: { "{}" },
+                hideHub: {},
+                eventData: [
+                    "user_type": "new_user",
+                    "app_variant_user_type": "existing_user"
+                ]
+            )
+
+            let event = try #require(eventHandler.events.first)
+            #expect(event.data?["user_type"]??.value as? String == "new_user")
+            #expect(event.data?["app_variant_user_type"]??.value as? String == "existing_user")
         }
     }
 

@@ -1,7 +1,6 @@
-import { spawn } from 'node:child_process';
-import type { Server } from 'node:http';
+import { spawn, type ChildProcess } from 'node:child_process';
 import path from 'node:path';
-import express from 'express';
+import { stopChild } from './process';
 import { startIntegrationHarness } from './server';
 
 // The Rownd plugin creates a default Rownd client during init. That client starts
@@ -12,12 +11,15 @@ process.on('unhandledRejection', (reason) => {
     return;
   }
   console.error('Unhandled rejection:', reason);
-  process.exit(1);
+  void shutdown(1);
 });
 
 let harness: Awaited<ReturnType<typeof startIntegrationHarness>> | undefined;
-let hubServer: Server | undefined;
+let hubProcess: ChildProcess | undefined;
+let activeCommandProcess: ChildProcess | undefined;
 let isShuttingDown = false;
+let shutdownPromise: Promise<void> | undefined;
+let shutdownExitCode = 0;
 
 const hubRepoDir = path.resolve(process.cwd(), '../supertokens-rownd-hub');
 const hubPort = Number(process.env.E2E_HUB_PORT || 8787);
@@ -27,10 +29,15 @@ function run(command: string, args: string[], cwd: string) {
     cwd,
     stdio: 'inherit',
     shell: false,
+    detached: process.platform !== 'win32',
   });
+  activeCommandProcess = child;
 
   return new Promise<void>((resolve, reject) => {
     child.on('exit', (code) => {
+      if (activeCommandProcess === child) {
+        activeCommandProcess = undefined;
+      }
       if (code === 0) {
         resolve();
         return;
@@ -64,57 +71,75 @@ async function waitForHealth(url: string, timeoutMs = 120_000) {
 async function startHubServer() {
   await run('npm', ['run', 'build'], hubRepoDir);
 
-  const app = express();
-  const distDir = path.join(hubRepoDir, 'dist');
-
-  app.use((_, res, next) => {
-    res.setHeader('Access-Control-Allow-Origin', 'http://127.0.0.1:3100');
-    next();
+  const hubServerPath = path.join(hubRepoDir, 'test/e2e/harness/hub-server.ts');
+  hubProcess = spawn(process.execPath, ['--import', 'tsx', hubServerPath], {
+    cwd: hubRepoDir,
+    stdio: 'inherit',
+    shell: false,
+    env: {
+      ...process.env,
+      E2E_HUB_PORT: String(hubPort),
+    },
   });
 
-  app.get('/health', (_req, res) => {
-    res.json({ status: 'OK' });
+  const startedProcess = hubProcess;
+  const exitedBeforeReady = new Promise<never>((_, reject) => {
+    startedProcess.once('error', reject);
+    startedProcess.once('exit', (code, signal) => {
+      reject(new Error(`Hub server exited before becoming ready (code ${code}, signal ${signal})`));
+    });
   });
 
-  app.use(express.static(distDir));
+  await Promise.race([waitForHealth(`http://127.0.0.1:${hubPort}/health`), exitedBeforeReady]);
 
-  hubServer = await new Promise<Server>((resolve) => {
-    const listeningServer = app.listen(hubPort, '127.0.0.1', () => resolve(listeningServer));
+  startedProcess.on('exit', (code, signal) => {
+    if (!isShuttingDown) {
+      console.error(`Hub server exited unexpectedly (code ${code}, signal ${signal})`);
+      void shutdown(1);
+    }
   });
-
-  await waitForHealth(`http://127.0.0.1:${hubPort}/health`);
 }
 
-async function shutdown(exitCode = 0) {
-  if (isShuttingDown) {
-    return;
+function shutdown(exitCode = 0) {
+  if (exitCode !== 0) {
+    shutdownExitCode = exitCode;
+  }
+
+  if (shutdownPromise) {
+    return shutdownPromise;
   }
 
   isShuttingDown = true;
+  shutdownPromise = (async () => {
+    const errors: unknown[] = [];
+    const commandToStop = activeCommandProcess;
+    const harnessToStop = harness;
+    const hubToStop = hubProcess;
+    activeCommandProcess = undefined;
+    harness = undefined;
+    hubProcess = undefined;
 
+    await stopResource('active command', errors, () => stopChild(commandToStop));
+    await stopResource('iOS integration harness', errors, () => harnessToStop?.stop());
+    await stopResource('Hub server', errors, () => stopChild(hubToStop));
+
+    process.exit(errors.length > 0 ? 1 : shutdownExitCode);
+  })();
+
+  return shutdownPromise;
+}
+
+async function stopResource(
+  name: string,
+  errors: unknown[],
+  stop: () => Promise<unknown> | undefined,
+) {
   try {
-    if (harness) {
-      await harness.stop();
-    }
-    if (hubServer) {
-      await new Promise<void>((resolve, reject) => {
-        hubServer?.close((error) => {
-          if (error) {
-            reject(error);
-            return;
-          }
-
-          resolve();
-        });
-      });
-      hubServer = undefined;
-    }
+    await stop();
   } catch (error) {
-    console.error('Failed to stop iOS integration harness', error);
-    process.exit(1);
+    console.error(`Failed to stop ${name}`, error);
+    errors.push(error);
   }
-
-  process.exit(exitCode);
 }
 
 void startHubServer()
@@ -126,7 +151,7 @@ void startHubServer()
   })
   .catch((error) => {
     console.error('Failed to start iOS integration harness', error);
-    process.exit(1);
+    void shutdown(1);
   });
 
 process.on('SIGINT', () => {

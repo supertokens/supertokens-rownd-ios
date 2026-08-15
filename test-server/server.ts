@@ -2,9 +2,11 @@ import RowndMigrationPlugin, { setRowndClient } from '@supertokens-plugins/rownd
 import cors from 'cors';
 import express from 'express';
 import type { Server } from 'http';
-import { generateKeyPairSync } from 'node:crypto';
-import SuperTokens, { RecipeUserId } from 'supertokens-node';
+import { generateKeyPairSync, randomUUID } from 'node:crypto';
+import SuperTokens from 'supertokens-node';
 import { errorHandler, middleware } from 'supertokens-node/framework/express';
+import AccountLinking from 'supertokens-node/recipe/accountlinking';
+import EmailVerification from 'supertokens-node/recipe/emailverification';
 import Passwordless from 'supertokens-node/recipe/passwordless';
 import Session from 'supertokens-node/recipe/session';
 import { verifySession } from 'supertokens-node/recipe/session/framework/express';
@@ -18,6 +20,7 @@ type HarnessCounters = {
   googleSignIn: number;
   userGet: number;
   userUpdate: number;
+  userFieldUpdate: number;
   userMetaUpdate: number;
   signOut: number;
   stRefresh: number;
@@ -25,6 +28,9 @@ type HarnessCounters = {
   migrate: number;
   protected: number;
   refreshOnce: number;
+  passwordlessCreate: number;
+  passwordlessConsume: number;
+  stSignOut: number;
 };
 
 type CapturedRequest = {
@@ -32,9 +38,29 @@ type CapturedRequest = {
   authorizationCount: number;
   rowndAppKey?: string;
   body?: unknown;
+  field?: string;
+  pendingVerificationId?: string;
+  responseSessionHeaders?: {
+    accessToken: boolean;
+    refreshToken: boolean;
+    frontToken: boolean;
+  };
+  statusCode?: number;
 };
 
-type MigrationMode = 'normal' | 'migrate401' | 'migrate409' | 'legacyRefreshFailure';
+type CapturedVerificationEmail = {
+  email: string;
+  link: string;
+  token: string;
+};
+
+type CapturedPasswordlessEmail = {
+  email: string;
+  urlWithLinkCode?: string;
+  userInputCode?: string;
+};
+
+type MigrationMode = 'normal' | 'migrate401' | 'migrate409' | 'legacyRefreshFailure' | 'migrateWithoutRefreshHeader';
 
 type IntegrationHarness = {
   apiUrl: string;
@@ -43,15 +69,19 @@ type IntegrationHarness = {
 
 const port = Number(process.env.IOS_HARNESS_PORT || 3100);
 const appName = 'Rownd iOS Integration Tests';
-const websiteDomain = 'http://127.0.0.1:5173';
 const hubBaseUrl = process.env.IOS_HUB_BASE_URL || 'http://127.0.0.1:8787';
+const websiteDomain = process.env.IOS_WEBSITE_DOMAIN || new URL(hubBaseUrl).origin;
 const appId = 'app_test_rownd_ios';
 const appKey = 'test_app_key';
+const accountLinkingTestLicense =
+  'N2uEOdEzd1XZZ5VBSTGYaM7Ia4s8wAqRWFAxLqTYrB6GQ=' +
+  'vssOLo3c=PkFgcExkaXs=IA-d9UWccoNKsyUgNhOhcKtM1bjC5OLrYRpTAgN-2EbKYsQGGQRQHuUN4EO1V';
 
 let network: StartedNetwork | undefined;
 let postgresContainer: StartedTestContainer | undefined;
 let coreContainer: StartedTestContainer | undefined;
 let server: Server | undefined;
+let stopPromise: Promise<void> | undefined;
 
 const counters: HarnessCounters = {
   createSession: 0,
@@ -59,6 +89,7 @@ const counters: HarnessCounters = {
   googleSignIn: 0,
   userGet: 0,
   userUpdate: 0,
+  userFieldUpdate: 0,
   userMetaUpdate: 0,
   signOut: 0,
   stRefresh: 0,
@@ -66,17 +97,47 @@ const counters: HarnessCounters = {
   migrate: 0,
   protected: 0,
   refreshOnce: 0,
+  passwordlessCreate: 0,
+  passwordlessConsume: 0,
+  stSignOut: 0,
 };
 
 const capturedRequests: Record<string, CapturedRequest | undefined> = {};
+let latestVerificationEmail: CapturedVerificationEmail | undefined;
+let latestPasswordlessEmail: CapturedPasswordlessEmail | undefined;
+const passwordlessConsumeStatuses: number[] = [];
 let migrationMode: MigrationMode = 'normal';
 
 function captureRequest(name: string, req: express.Request) {
-  capturedRequests[name] = {
+  const capturedRequest: CapturedRequest = {
     authorization: req.header('authorization'),
     authorizationCount: req.rawHeaders.filter((header) => header.toLowerCase() === 'authorization').length,
     rowndAppKey: req.header('x-rownd-app-key'),
   };
+  capturedRequests[name] = capturedRequest;
+  return capturedRequest;
+}
+
+function capturePluginRequest(name: string, req: express.Request, res: express.Response) {
+  const capturedRequest: CapturedRequest = {
+    ...captureRequest(name, req),
+    body: req.body,
+    field: typeof req.query.field === 'string' ? req.query.field : undefined,
+    pendingVerificationId:
+      typeof req.query.rowndPendingVerificationId === 'string' ? req.query.rowndPendingVerificationId : undefined,
+  };
+  capturedRequests[name] = capturedRequest;
+  res.on('finish', () => {
+    capturedRequests[name] = {
+      ...capturedRequest,
+      responseSessionHeaders: {
+        accessToken: res.getHeader('st-access-token') !== undefined,
+        refreshToken: res.getHeader('st-refresh-token') !== undefined,
+        frontToken: res.getHeader('front-token') !== undefined,
+      },
+      statusCode: res.statusCode,
+    };
+  });
 }
 
 function resetCounters() {
@@ -85,6 +146,7 @@ function resetCounters() {
   counters.googleSignIn = 0;
   counters.userGet = 0;
   counters.userUpdate = 0;
+  counters.userFieldUpdate = 0;
   counters.userMetaUpdate = 0;
   counters.signOut = 0;
   counters.stRefresh = 0;
@@ -92,17 +154,34 @@ function resetCounters() {
   counters.migrate = 0;
   counters.protected = 0;
   counters.refreshOnce = 0;
+  counters.passwordlessCreate = 0;
+  counters.passwordlessConsume = 0;
+  counters.stSignOut = 0;
 
   for (const key of Object.keys(capturedRequests)) {
     delete capturedRequests[key];
   }
 
+  latestVerificationEmail = undefined;
+  latestPasswordlessEmail = undefined;
+  passwordlessConsumeStatuses.length = 0;
   migrationMode = 'normal';
 }
 
 export async function startIntegrationHarness(): Promise<IntegrationHarness> {
+  try {
+    return await createIntegrationHarness();
+  } catch (error) {
+    await stopIntegrationHarness();
+    throw error;
+  }
+}
+
+async function createIntegrationHarness(): Promise<IntegrationHarness> {
   resetCounters();
-  const { privateKey: applePrivateKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+  const { privateKey: applePrivateKey } = generateKeyPairSync('ec', {
+    namedCurve: 'P-256',
+  });
   const testApplePrivateKey = applePrivateKey.export({ type: 'sec1', format: 'pem' }).toString();
 
   network = await new Network().start();
@@ -118,7 +197,7 @@ export async function startIntegrationHarness(): Promise<IntegrationHarness> {
     .withWaitStrategy(Wait.forLogMessage('database system is ready to accept connections'))
     .start();
 
-  coreContainer = await new GenericContainer('supertokens/supertokens-postgresql')
+  coreContainer = await new GenericContainer('supertokens/supertokens-postgresql:12.0.10')
     .withNetwork(network)
     .withEnvironment({
       POSTGRESQL_CONNECTION_URI: 'postgresql://supertokens:somepassword@postgres:5432/supertokens',
@@ -128,18 +207,30 @@ export async function startIntegrationHarness(): Promise<IntegrationHarness> {
     .start();
 
   const coreConnectionURI = `http://${coreContainer.getHost()}:${coreContainer.getMappedPort(3567)}`;
+  const licenseResponse = await fetch(`${coreConnectionURI}/ee/license`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ licenseKey: accountLinkingTestLicense }),
+  });
+  if (!licenseResponse.ok) {
+    throw new Error(`Failed to enable account linking: ${licenseResponse.status} ${await licenseResponse.text()}`);
+  }
+
   const app = express();
 
-  const started = await new Promise<{ server: Server; port: number }>((resolve) => {
-    const listeningServer = app.listen(port, () => {
+  const started = await new Promise<{ server: Server; port: number }>((resolve, reject) => {
+    const listeningServer = app.listen(port, '127.0.0.1', () => {
+      listeningServer.removeListener('error', reject);
       const address = listeningServer.address();
 
       if (!address || typeof address === 'string') {
-        throw new Error('Could not determine iOS integration harness port');
+        reject(new Error('Could not determine iOS integration harness port'));
+        return;
       }
 
       resolve({ server: listeningServer, port: address.port });
     });
+    listeningServer.once('error', reject);
   });
 
   server = started.server;
@@ -155,6 +246,12 @@ export async function startIntegrationHarness(): Promise<IntegrationHarness> {
       websiteDomain,
     },
     recipeList: [
+      AccountLinking.init({
+        shouldDoAutomaticAccountLinking: async () => ({
+          shouldAutomaticallyLink: false,
+          shouldRequireVerification: false,
+        }),
+      }),
       Session.init(),
       UserMetadata.init(),
       ThirdParty.init({
@@ -163,7 +260,12 @@ export async function startIntegrationHarness(): Promise<IntegrationHarness> {
             {
               config: {
                 thirdPartyId: 'google',
-                clients: [{ clientId: 'test-google-client-id', clientSecret: 'test-google-client-secret' }],
+                clients: [
+                  {
+                    clientId: 'test-google-client-id',
+                    clientSecret: 'test-google-client-secret',
+                  },
+                ],
               },
             },
             {
@@ -186,9 +288,39 @@ export async function startIntegrationHarness(): Promise<IntegrationHarness> {
       }),
       Passwordless.init({
         contactMethod: 'EMAIL_OR_PHONE',
-        flowType: 'MAGIC_LINK',
-        emailDelivery: { service: { sendEmail: async () => {} } },
+        flowType: 'USER_INPUT_CODE_AND_MAGIC_LINK',
+        emailDelivery: {
+          service: {
+            sendEmail: async (input) => {
+              latestPasswordlessEmail = {
+                email: input.email,
+                urlWithLinkCode: input.urlWithLinkCode?.replace('/auth/verify', '/account/login'),
+                userInputCode: input.userInputCode,
+              };
+            },
+          },
+        },
         smsDelivery: { service: { sendSms: async () => {} } },
+      }),
+      EmailVerification.init({
+        mode: 'OPTIONAL',
+        emailDelivery: {
+          service: {
+            sendEmail: async (input) => {
+              const link = new URL(input.emailVerifyLink);
+              const token = link.searchParams.get('token');
+              if (!token) {
+                throw new Error('Email verification link did not contain a token');
+              }
+
+              latestVerificationEmail = {
+                email: input.user.email,
+                link: input.emailVerifyLink,
+                token,
+              };
+            },
+          },
+        },
       }),
     ],
     experimental: {
@@ -196,15 +328,37 @@ export async function startIntegrationHarness(): Promise<IntegrationHarness> {
         RowndMigrationPlugin.init({
           rowndAppKey: appKey,
           rowndAppSecret: 'rownd-e2e-secret-rownd-e2e-secret',
+          schema: {
+            first_name: {
+              display_name: 'First name',
+              type: 'string',
+              owned_by: 'user',
+              user_visible: true,
+            },
+            email: {
+              display_name: 'Email',
+              type: 'string',
+              owned_by: 'user',
+              user_visible: true,
+            },
+          },
           appConfig: {
             id: appId,
             name: appName,
+            userVerificationFields: ['email'],
             signInMethods: [
               { method: 'google', iosClientId: 'test-google-ios-client-id' },
               { method: 'phone' },
               { method: 'email' },
               { method: 'anonymous' },
             ],
+            profile: {
+              accountInformation: {
+                methods: {
+                  email: { enabled: true },
+                },
+              },
+            },
           },
         }),
       ],
@@ -213,14 +367,15 @@ export async function startIntegrationHarness(): Promise<IntegrationHarness> {
 
   setRowndClient({
     validateToken: async () => ({ user_id: 'ios-test-user' }),
-    fetchUserInfo: async ({ user_id }: { user_id: string }) => ({
-      state: 'enabled',
-      auth_level: 'verified',
-      data: { user_id, email: `${user_id}@example.com` },
-      verified_data: { email: `${user_id}@example.com` },
-      groups: [],
-      meta: {},
-    }) as any,
+    fetchUserInfo: async ({ user_id }: { user_id: string }) =>
+      ({
+        state: 'enabled',
+        auth_level: 'verified',
+        data: { user_id, email: `${user_id}@example.com` },
+        verified_data: { email: `${user_id}@example.com` },
+        groups: [],
+        meta: {},
+      }) as any,
   });
 
   app.use(
@@ -232,7 +387,17 @@ export async function startIntegrationHarness(): Promise<IntegrationHarness> {
     }),
   );
   app.use(express.json());
-  app.use((req, _res, next) => {
+  app.use((req, res, next) => {
+    if (req.method === 'POST' && req.path === '/auth/signinup/code') {
+      counters.passwordlessCreate += 1;
+    }
+    if (req.method === 'POST' && req.path === '/auth/signinup/code/consume') {
+      counters.passwordlessConsume += 1;
+      res.on('finish', () => passwordlessConsumeStatuses.push(res.statusCode));
+    }
+    if (req.method === 'POST' && req.path === '/auth/signout') {
+      counters.stSignOut += 1;
+    }
     if (req.method === 'POST' && req.path === '/auth/session/refresh') {
       counters.stRefresh += 1;
     }
@@ -242,13 +407,32 @@ export async function startIntegrationHarness(): Promise<IntegrationHarness> {
     if (req.method === 'POST' && req.path === '/auth/plugin/rownd/signout') {
       counters.signOut += 1;
     }
+    if (req.method === 'GET' && req.path === '/auth/plugin/rownd/user') {
+      counters.userGet += 1;
+      capturePluginRequest('userGet', req, res);
+    }
+    if (req.method === 'PUT' && req.path === '/auth/plugin/rownd/user') {
+      counters.userUpdate += 1;
+      capturePluginRequest('userUpdate', req, res);
+    }
+    if (req.method === 'PUT' && req.path === '/auth/plugin/rownd/user/field') {
+      counters.userFieldUpdate += 1;
+      capturePluginRequest('userFieldUpdate', req, res);
+    }
+    if (req.method === 'PUT' && req.path === '/auth/plugin/rownd/user/meta') {
+      counters.userMetaUpdate += 1;
+      capturePluginRequest('userMetaUpdate', req, res);
+    }
+    if (req.method === 'POST' && req.path === '/auth/user/email/verify') {
+      capturePluginRequest('emailVerify', req, res);
+    }
 
     next();
   });
 
   app.post('/test/migration-mode', (req, res) => {
     const mode = req.body?.mode;
-    if (!['normal', 'migrate401', 'migrate409', 'legacyRefreshFailure'].includes(mode)) {
+    if (!['normal', 'migrate401', 'migrate409', 'legacyRefreshFailure', 'migrateWithoutRefreshHeader'].includes(mode)) {
       res.status(400).json({ status: 'ERROR', message: 'Invalid migration mode' });
       return;
     }
@@ -270,6 +454,17 @@ export async function startIntegrationHarness(): Promise<IntegrationHarness> {
       return;
     }
 
+    if (migrationMode === 'migrateWithoutRefreshHeader') {
+      const originalSetHeader = res.setHeader.bind(res);
+      res.setHeader = (name: string, value: number | string | readonly string[]) => {
+        if (name.toLowerCase() === 'st-refresh-token') {
+          return res;
+        }
+
+        return originalSetHeader(name, value);
+      };
+    }
+
     next();
   });
 
@@ -279,14 +474,26 @@ export async function startIntegrationHarness(): Promise<IntegrationHarness> {
       req.body?.redirectURIInfo?.redirectURIQueryParams?.code === 'fake-apple-auth-code'
     ) {
       counters.appleSignIn += 1;
-      captureRequest('appleSignIn', req);
       capturedRequests.appleSignIn = {
-        ...capturedRequests.appleSignIn,
+        ...captureRequest('appleSignIn', req),
         body: req.body,
       };
 
-      await Session.createNewSession(req, res, 'public', new RecipeUserId('ios-apple-user'), {}, {}, {});
-      res.json({ status: 'OK', createdNewRecipeUser: true });
+      const thirdPartyUserId = `ios-apple-user-${randomUUID()}`;
+      const user = await ThirdParty.manuallyCreateOrUpdateUser(
+        'public',
+        'apple',
+        thirdPartyUserId,
+        `${thirdPartyUserId}@example.com`,
+        true,
+      );
+      if (user.status !== 'OK') {
+        res.status(500).json(user);
+        return;
+      }
+
+      await Session.createNewSession(req, res, 'public', user.recipeUserId, {}, {}, {});
+      res.json({ status: 'OK', createdNewRecipeUser: user.createdNewRecipeUser });
       return;
     }
 
@@ -296,60 +503,34 @@ export async function startIntegrationHarness(): Promise<IntegrationHarness> {
     }
 
     counters.googleSignIn += 1;
-    captureRequest('googleSignIn', req);
     capturedRequests.googleSignIn = {
-      ...capturedRequests.googleSignIn,
+      ...captureRequest('googleSignIn', req),
       body: req.body,
     };
 
-    await Session.createNewSession(req, res, 'public', new RecipeUserId('ios-google-user'), {}, {}, {});
-    res.json({ status: 'OK', createdNewRecipeUser: true });
-  });
+    const thirdPartyUserId = `ios-google-user-${randomUUID()}`;
+    const user = await ThirdParty.manuallyCreateOrUpdateUser(
+      'public',
+      'google',
+      thirdPartyUserId,
+      `${thirdPartyUserId}@example.com`,
+      true,
+    );
+    if (user.status !== 'OK') {
+      res.status(500).json(user);
+      return;
+    }
 
-  app.get('/auth/plugin/rownd/user', (req, res) => {
-    counters.userGet += 1;
-    captureRequest('userGet', req);
-    res.json({
-      status: 'OK',
-      state: 'enabled',
-      auth_level: 'verified',
-      data: { user_id: 'ios-profile-user', first_name: 'Test' },
-      meta: {},
-    });
+    await Session.createNewSession(req, res, 'public', user.recipeUserId, {}, {}, {});
+    res.json({ status: 'OK', createdNewRecipeUser: user.createdNewRecipeUser });
   });
-
-  app.put('/auth/plugin/rownd/user', (req, res) => {
-    counters.userUpdate += 1;
-    captureRequest('userUpdate', req);
-    capturedRequests.userUpdate = {
-      ...capturedRequests.userUpdate,
-      body: req.body,
-    };
-    res.json({
-      status: 'OK',
-      state: 'enabled',
-      auth_level: 'verified',
-      data: req.body?.data ?? {},
-      meta: {},
-    });
-  });
-
-  app.put('/auth/plugin/rownd/user/meta', (req, res) => {
-    counters.userMetaUpdate += 1;
-    captureRequest('userMetaUpdate', req);
-    capturedRequests.userMetaUpdate = {
-      ...capturedRequests.userMetaUpdate,
-      body: req.body,
-    };
-    res.json({ status: 'OK', id: 'ios-profile-user', meta: req.body?.meta ?? {} });
-  });
-
-  app.use(middleware());
 
   app.post('/auth/plugin/rownd/signout', verifySession(), (req, res) => {
     captureRequest('signOut', req);
     res.json({ status: 'OK' });
   });
+
+  app.use(middleware());
 
   app.post('/hub/auth/token', (_req, res) => {
     counters.legacyRefresh += 1;
@@ -398,12 +579,68 @@ export async function startIntegrationHarness(): Promise<IntegrationHarness> {
     res.json(capturedRequests);
   });
 
+  app.get('/test/email-verification/latest', (_req, res) => {
+    if (!latestVerificationEmail) {
+      res.json({ status: 'PENDING' });
+      return;
+    }
+
+    res.json({ status: 'OK', ...latestVerificationEmail });
+  });
+
+  app.get('/test/passwordless/latest', (_req, res) => {
+    if (!latestPasswordlessEmail) {
+      res.json({ status: 'PENDING' });
+      return;
+    }
+
+    res.json({ status: 'OK', ...latestPasswordlessEmail });
+  });
+
+  app.get('/test/passwordless/consumes', (_req, res) => {
+    res.json({ count: counters.passwordlessConsume, statuses: passwordlessConsumeStatuses });
+  });
+
+  app.get('/test/passwordless/consumes/settled', async (_req, res) => {
+    const initialCount = counters.passwordlessConsume;
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    res.json({
+      count: counters.passwordlessConsume,
+      changedDuringObservation: counters.passwordlessConsume !== initialCount,
+      statuses: passwordlessConsumeStatuses,
+    });
+  });
+
+  app.post('/test/profile-session', async (req: any, res: any) => {
+    counters.createSession += 1;
+    const email = req.body?.email;
+    const firstName = req.body?.firstName;
+    if (typeof email !== 'string' || typeof firstName !== 'string') {
+      res.status(400).json({ status: 'ERROR', message: 'email and firstName are required' });
+      return;
+    }
+
+    const signInResult = await Passwordless.signInUp({
+      email,
+      tenantId: 'public',
+    });
+    await UserMetadata.updateUserMetadata(signInResult.user.id, {
+      first_name: firstName,
+    });
+    await Session.createNewSession(req, res, 'public', signInResult.recipeUserId, {}, {}, {});
+    res.json({ status: 'OK', userId: signInResult.user.id });
+  });
+
   app.post('/test/session', async (req: any, res: any) => {
     counters.createSession += 1;
-    const userId = typeof req.body?.userId === 'string' ? req.body.userId : 'ios-test-user';
+    const requestedUserId = typeof req.body?.userId === 'string' ? req.body.userId : 'ios-test-user';
+    const user = await Passwordless.signInUp({
+      email: `${requestedUserId}@example.com`,
+      tenantId: 'public',
+    });
 
-    await Session.createNewSession(req, res, 'public', new RecipeUserId(userId), {}, {}, {});
-    res.json({ status: 'OK', userId });
+    await Session.createNewSession(req, res, 'public', user.recipeUserId, {}, {}, {});
+    res.json({ status: 'OK', userId: user.user.id });
   });
 
   app.get('/test/protected', verifySession(), async (req: any, res) => {
@@ -413,6 +650,30 @@ export async function startIntegrationHarness(): Promise<IntegrationHarness> {
       status: 'OK',
       userId: req.session.getUserId(),
       accessTokenPayload: req.session.getAccessTokenPayload(),
+    });
+  });
+
+  app.get('/test/account', verifySession(), async (req: any, res) => {
+    const user = await SuperTokens.getUser(req.session.getUserId());
+    if (!user) {
+      res.status(404).json({ status: 'ERROR', message: 'User not found' });
+      return;
+    }
+
+    res.json({
+      status: 'OK',
+      userId: user.id,
+      isPrimaryUser: user.isPrimaryUser,
+      sessionHandle: req.session.getHandle(),
+      sessionHandles: await Session.getAllSessionHandlesForUser(user.id, true),
+      loginMethods: user.loginMethods.map((method) => ({
+        recipeId: method.recipeId,
+        recipeUserId: method.recipeUserId.getAsString(),
+        email: method.email,
+        verified: method.verified,
+        thirdPartyId: method.thirdParty?.id,
+        thirdPartyUserId: method.thirdParty?.userId,
+      })),
     });
   });
 
@@ -441,32 +702,62 @@ export async function startIntegrationHarness(): Promise<IntegrationHarness> {
 
   return {
     apiUrl,
-    stop: async () => {
-      if (server) {
-        await new Promise<void>((resolve, reject) => {
-          server?.close((error) => {
-            if (error) {
-              reject(error);
-              return;
-            }
-
-            resolve();
-          });
-        });
-        server = undefined;
-      }
-      if (coreContainer) {
-        await coreContainer.stop();
-        coreContainer = undefined;
-      }
-      if (postgresContainer) {
-        await postgresContainer.stop();
-        postgresContainer = undefined;
-      }
-      if (network) {
-        await network.stop();
-        network = undefined;
-      }
-    },
+    stop: stopIntegrationHarness,
   };
+}
+
+function stopIntegrationHarness() {
+  if (stopPromise) {
+    return stopPromise;
+  }
+
+  stopPromise = stopIntegrationHarnessResources();
+  return stopPromise;
+}
+
+async function stopIntegrationHarnessResources() {
+  const errors: unknown[] = [];
+  const serverToStop = server;
+  const coreToStop = coreContainer;
+  const postgresToStop = postgresContainer;
+  const networkToStop = network;
+  server = undefined;
+  coreContainer = undefined;
+  postgresContainer = undefined;
+  network = undefined;
+
+  await stopResource('HTTP server', errors, async () => {
+    if (!serverToStop) {
+      return;
+    }
+    await new Promise<void>((resolve, reject) => {
+      serverToStop.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    });
+  });
+  await stopResource('SuperTokens Core', errors, () => coreToStop?.stop());
+  await stopResource('Postgres', errors, () => postgresToStop?.stop());
+  await stopResource('Docker network', errors, () => networkToStop?.stop());
+
+  if (errors.length > 0) {
+    throw new AggregateError(errors, 'Failed to stop one or more integration harness resources');
+  }
+}
+
+async function stopResource(
+  name: string,
+  errors: unknown[],
+  stop: () => Promise<unknown> | undefined,
+) {
+  try {
+    await stop();
+  } catch (error) {
+    console.error(`Failed to stop ${name}`, error);
+    errors.push(error);
+  }
 }

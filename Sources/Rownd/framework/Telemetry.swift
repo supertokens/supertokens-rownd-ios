@@ -27,13 +27,13 @@ func fetchRecentLogs(secondsBack: TimeInterval) {
         // 4. Create an entry iterator starting from the specified position
         let entries = try logStore.getEntries(at: position, matching: predicate)
 
-        // 5. Iterate over the entries and print the messages
+        // 5. Iterate over the entries and log the messages
         for case let entry as OSLogEntryLog in entries {
-            print("Timestamp: \(entry.date), Subsystem: \(entry.subsystem), Category: \(entry.category), Message: \(entry.composedMessage)")
+            logger.debug("Timestamp: \(entry.date), Subsystem: \(entry.subsystem), Category: \(entry.category), Message: \(entry.composedMessage)")
         }
 
     } catch {
-        print("Failed to fetch logs: \(error)")
+        logger.warning("Failed to fetch logs: \(String(describing: error))")
     }
 }
 

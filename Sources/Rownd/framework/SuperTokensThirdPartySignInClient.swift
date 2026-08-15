@@ -2,6 +2,7 @@ import Foundation
 
 struct SuperTokensThirdPartySignInRequest: Encodable {
     let thirdPartyId: String
+    let clientType: String?
     let oAuthTokens: OAuthTokens?
     let redirectURIInfo: RedirectURIInfo?
 
@@ -47,16 +48,18 @@ struct SuperTokensThirdPartySignInClient {
         try await signIn(
             SuperTokensThirdPartySignInRequest(
                 thirdPartyId: "google",
+                clientType: nil,
                 oAuthTokens: .init(idToken: idToken),
                 redirectURIInfo: nil
             )
         )
     }
 
-    func signInWithApple(authorizationCode: String) async throws -> SuperTokensThirdPartySignInResponse {
+    func signInWithApple(authorizationCode: String, clientType: String? = nil) async throws -> SuperTokensThirdPartySignInResponse {
         try await signIn(
             SuperTokensThirdPartySignInRequest(
                 thirdPartyId: "apple",
+                clientType: clientType,
                 oAuthTokens: nil,
                 redirectURIInfo: .init(
                     redirectURIOnProviderDashboard: "",
@@ -77,6 +80,9 @@ struct SuperTokensThirdPartySignInClient {
 
         let normalizedBasePath = apiBasePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         components.path = normalizedBasePath.isEmpty ? "/signinup" : "/\(normalizedBasePath)/signinup"
+        if let appVariantId = Rownd.config.appVariantId, !appVariantId.isEmpty {
+            components.queryItems = [URLQueryItem(name: "app_variant_id", value: appVariantId)]
+        }
         guard let url = components.url else {
             throw RowndError("Invalid SuperTokens signinup URL")
         }

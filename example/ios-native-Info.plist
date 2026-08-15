@@ -27,6 +27,16 @@
 				<string>com.googleusercontent.apps.518170712115-s1fbgoo423ggmartt165cehisoo3vipc</string>
 			</array>
 		</dict>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>io.rownd.ios-native.email-verification</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>rowndsupertokens</string>
+			</array>
+		</dict>
 	</array>
 	<key>NSAppTransportSecurity</key>
 	<dict>

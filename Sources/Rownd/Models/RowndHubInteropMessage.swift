@@ -5,26 +5,6 @@
 //  Created by Matt Hamann on 6/14/22.
 //
 
-/*
- This structure relies on userData within the decodable in order to reference a parent value.
- Here's an example of how to use it:
- let jsonData = """
- {
-     "type": "authentication",
-     "payload": {
-         "access_token": "foo",
-         "refresh_token": "bar"
-     }
- }
- """.data(using: .utf8)
-
- let decoder = JSONDecoder()
- decoder.userInfo[.messageType] = MessageTypeHolder()
- let result = try decoder.decode(RowndHubInteropMessage.self, from: jsonData!)
- print(result)
-
- */
-
 import Foundation
 import AnyCodable
 import UIKit
@@ -55,6 +35,7 @@ enum MessageType: String, Codable {
     case event = "event"
     case authChallengeInitiated = "auth_challenge_initiated"
     case authChallengeCleared = "auth_challenge_cleared"
+    case verifyEmail = "verify_email"
     case unknown
 
     enum CodingKeys: String, CodingKey {
@@ -87,6 +68,7 @@ enum MessagePayload: Decodable {
     case event(RowndEvent)
     case authChallengeInitiated(PayloadAuthChallengeInitiated)
     case authChallengeCleared
+    case verifyEmail(VerifyEmailMessage)
 
     enum CodingKeys: String, CodingKey {
         case type
@@ -153,6 +135,10 @@ enum MessagePayload: Decodable {
             
         case .authChallengeCleared:
             self = .authChallengeCleared
+
+        case .verifyEmail:
+            let payload = try objectContainer.decode(VerifyEmailMessage.self)
+            self = .verifyEmail(payload)
         }
     }
     
@@ -166,17 +152,43 @@ enum MessagePayload: Decodable {
         }
     }
 
+    public struct VerifyEmailMessage: Codable {
+        var requestId: String
+
+        enum CodingKeys: String, CodingKey {
+            case requestId = "request_id"
+        }
+    }
+
     public struct AuthenticationMessage: Codable {
         var accessToken: String
         var refreshToken: String
         var frontToken: String
         var antiCSRF: String?
+        var userType: String?
+        var appVariantUserType: String?
 
         enum CodingKeys: String, CodingKey {
             case accessToken = "access_token"
             case refreshToken = "refresh_token"
             case frontToken = "front_token"
             case antiCSRF = "anti_csrf"
+            case userType = "user_type"
+            case appVariantUserType = "app_variant_user_type"
+        }
+
+        var signInCompletedEventData: [String: String] {
+            var data: [String: String] = [:]
+
+            if let userType {
+                data["user_type"] = userType
+            }
+
+            if let appVariantUserType {
+                data["app_variant_user_type"] = appVariantUserType
+            }
+
+            return data
         }
     }
 

@@ -11,11 +11,21 @@ public struct RowndSuperTokensConfig: Encodable, Hashable {
     public var appName: String
     public var apiDomain: String
     public var apiBasePath: String
+    public var keychainAccessGroup: String?
+    public var clearSessionOnNewInstallation: Bool
 
-    public init(appName: String, apiDomain: String, apiBasePath: String = "/auth") {
+    public init(
+        appName: String,
+        apiDomain: String,
+        apiBasePath: String = "/auth",
+        keychainAccessGroup: String? = nil,
+        clearSessionOnNewInstallation: Bool = false
+    ) {
         self.appName = appName
         self.apiDomain = apiDomain
         self.apiBasePath = apiBasePath
+        self.keychainAccessGroup = keychainAccessGroup
+        self.clearSessionOnNewInstallation = clearSessionOnNewInstallation
     }
 }
 
@@ -32,6 +42,7 @@ public struct RowndConfig: Encodable {
     public var baseUrl = "https://rownd-hub.supertokens.com"
     public var subdomainExtension = ".rownd-hub.supertokens.com"
     public var appKey = ""
+    public var appVariantId: String?
     public var deepLinkScheme = "rowndsupertokens"
     public var forceDarkMode = false
     public var postSignInRedirect: String? = "NATIVE_APP"
@@ -76,6 +87,7 @@ public struct RowndConfig: Encodable {
              baseUrl,
               subdomainExtension,
               appKey,
+              appVariantId,
               deepLinkScheme,
               forceDarkMode,
              postSignInRedirect,
@@ -100,6 +112,7 @@ public struct RowndConfig: Encodable {
         try container.encode(baseUrl, forKey: .baseUrl)
         try container.encode(subdomainExtension, forKey: .subdomainExtension)
         try container.encode(appKey, forKey: .appKey)
+        try container.encodeIfPresent(appVariantId, forKey: .appVariantId)
         try container.encode(deepLinkScheme, forKey: .deepLinkScheme)
         try container.encode(forceDarkMode, forKey: .forceDarkMode)
         try container.encodeIfPresent(postSignInRedirect, forKey: .postSignInRedirect)
