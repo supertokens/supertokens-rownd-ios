@@ -114,6 +114,7 @@ enum E2ESupport {
             Rownd.config.customizations.loadingAnimation = LottieAnimation.named("loading")
             Rownd.addEventHandler(RowndEventHandler())
             Rownd.addEventHandler(E2EEventRecorder.shared)
+            try seedLegacyAuthStateIfRequested()
 
             await Rownd.configure(
                 launchOptions: launchOptions,
@@ -126,7 +127,7 @@ enum E2ESupport {
             )
 
             if shouldResetSession {
-                await Rownd.signOut()
+                await resetSessionAfterStartup()
             }
 
             if let deepLink = ProcessInfo.processInfo.environment["ROWND_E2E_DEEP_LINK"] {
@@ -152,6 +153,13 @@ enum E2ESupport {
                 continuation.resume()
             }
         }
+    }
+
+    private static func resetSessionAfterStartup() async {
+        await Rownd.signOut()
+        // An authenticated startup can still have a profile request in flight.
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        await Rownd.signOut()
     }
 
     static func resetHarness() async throws {
@@ -207,17 +215,80 @@ enum E2ESupport {
             throw E2EError.unexpectedResponse
         }
     }
+
+    private static func seedLegacyAuthStateIfRequested() throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let accessToken = environment["ROWND_E2E_LEGACY_ACCESS_TOKEN"],
+              let refreshToken = environment["ROWND_E2E_LEGACY_REFRESH_TOKEN"] else {
+            return
+        }
+
+        var didSeed = false
+        for url in stateStorageURLs() where FileManager.default.fileExists(atPath: url.path) {
+            let data = try Data(contentsOf: url)
+            try seededStateData(data, accessToken: accessToken, refreshToken: refreshToken)
+                .write(to: url, options: .atomic)
+            didSeed = true
+        }
+
+        if let defaults = UserDefaults(suiteName: "io.rownd.sdk"),
+           let state = defaults.string(forKey: "RowndState"),
+           let data = state.data(using: .utf8) {
+            let seeded = try seededStateData(data, accessToken: accessToken, refreshToken: refreshToken)
+            defaults.set(String(decoding: seeded, as: UTF8.self), forKey: "RowndState")
+            didSeed = true
+        }
+
+        guard didSeed else { throw E2EError.missingPersistedState }
+    }
+
+    private static func seededStateData(
+        _ data: Data,
+        accessToken: String,
+        refreshToken: String
+    ) throws -> Data {
+        guard var state = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              var auth = state["auth"] as? [String: Any] else {
+            throw E2EError.invalidPersistedState
+        }
+
+        auth["access_token"] = accessToken
+        auth["refresh_token"] = refreshToken
+        auth["is_verified_user"] = true
+        auth["has_previously_signed_in"] = true
+        state["auth"] = auth
+        return try JSONSerialization.data(withJSONObject: state)
+    }
+
+    private static func stateStorageURLs() -> [URL] {
+        var urls: [URL] = []
+        if let sharedURL = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: "\(ExampleAppConfig.appGroupPrefix).io.rownd.sdk"
+        ) {
+            urls.append(sharedURL.appendingPathComponent("RowndState"))
+        }
+        if let applicationSupportURL = try? FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: false
+        ) {
+            urls.append(applicationSupportURL.appendingPathComponent("io.rownd.sdk/RowndState"))
+        }
+        return urls
+    }
 }
 
 enum E2EError: Error {
     case invalidDeepLink
+    case invalidPersistedState
     case missingApiURL
+    case missingPersistedState
     case unexpectedResponse
 }
 
 struct E2EStatusView: View {
-    @StateObject var authState = Rownd.getInstance().state().subscribe { $0.auth }
-    @StateObject var user = Rownd.getInstance().state().subscribe { $0.user.data }
+    @StateObject var state = Rownd.getInstance().state().subscribe { $0 }
     @StateObject private var readiness = E2EReadiness.shared
 
     var body: some View {
@@ -225,13 +296,15 @@ struct E2EStatusView: View {
             VStack {
                 Text(readiness.isReady ? "ready" : "loading")
                     .accessibilityIdentifier("e2e-sdk-state")
-                Text(authState.current.isAuthenticated ? "authenticated" : "signed-out")
+                Text(state.current.auth.isAuthenticated ? "authenticated" : "signed-out")
                     .accessibilityIdentifier("e2e-auth-state")
-                Text(E2ESupport.sessionHandle(from: authState.current.accessToken) ?? "no-session")
+                Text(state.current.auth.isAccessTokenValid ? "valid" : "invalid")
+                    .accessibilityIdentifier("e2e-access-token-validity")
+                Text(E2ESupport.sessionHandle(from: state.current.auth.accessToken) ?? "no-session")
                     .accessibilityIdentifier("e2e-session-handle")
-                Text((user.current["user_id"]?.value as? String) ?? "no-user")
+                Text((state.current.user.data["user_id"]?.value as? String) ?? "no-user")
                     .accessibilityIdentifier("e2e-user-id")
-                Text(authState.current.challengeId == nil ? "clear" : "active")
+                Text(state.current.auth.challengeId == nil ? "clear" : "active")
                     .accessibilityIdentifier("e2e-challenge-state")
                 Text(String(readiness.signInCompletedCount))
                     .accessibilityIdentifier("e2e-sign-in-completed-count")

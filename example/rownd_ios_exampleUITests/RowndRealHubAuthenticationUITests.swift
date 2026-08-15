@@ -111,6 +111,69 @@ final class RowndRealHubAuthenticationUITests: XCTestCase {
         try waitForLabel(app.staticTexts["e2e-session-handle"], equalTo: "no-session")
     }
 
+    func testExistingSuperTokensSessionReplacesPersistedLegacyTokenOnRelaunch() async throws {
+        let app = try await launchIsolatedApp(resetSession: true)
+        app.terminate()
+        _ = try await request("POST", path: "reset")
+
+        let fixture = try await request("POST", path: "test/legacy-session")
+        let userId = try XCTUnwrap(fixture["userId"] as? String)
+        let legacyAccessToken = try XCTUnwrap(fixture["accessToken"] as? String)
+        let legacyRefreshToken = try XCTUnwrap(fixture["refreshToken"] as? String)
+        let email = try XCTUnwrap(fixture["email"] as? String)
+        XCTAssertEqual(fixture["sessionHandleCount"] as? Int, 0)
+
+        app.launchEnvironment["ROWND_E2E_EMAIL"] = email
+        app.launch()
+        app.launchEnvironment.removeValue(forKey: "ROWND_E2E_EMAIL")
+
+        try waitForLabel(app.staticTexts["e2e-sdk-state"], equalTo: "ready")
+        try waitForLabel(app.staticTexts["e2e-auth-state"], equalTo: "signed-out")
+        let createSessionButton = app.buttons["e2e-create-session-button"]
+        try scrollToElement(createSessionButton, in: app)
+        createSessionButton.tap()
+        try waitForLabel(app.staticTexts["e2e-access-token-validity"], equalTo: "valid")
+        let sessionHandle = app.staticTexts["e2e-session-handle"].label
+        XCTAssertNotEqual(sessionHandle, "no-session")
+
+        let protectedButton = app.buttons["e2e-protected-button"]
+        try scrollToElement(protectedButton, in: app)
+        protectedButton.tap()
+        try waitForLabel(app.staticTexts["e2e-scenario-state"], equalTo: "protected_loaded")
+        XCTAssertTrue(app.staticTexts["e2e-protected-result"].label.contains(userId))
+
+        let createdSessionCounters = try await request("GET", path: "counters")
+        XCTAssertEqual(createdSessionCounters["createSession"] as? Int, 1)
+        XCTAssertEqual(createdSessionCounters["migrate"] as? Int, 0)
+
+        app.terminate()
+        app.launchEnvironment["ROWND_E2E_LEGACY_ACCESS_TOKEN"] = legacyAccessToken
+        app.launchEnvironment["ROWND_E2E_LEGACY_REFRESH_TOKEN"] = legacyRefreshToken
+        app.launch()
+        removeLegacySeedEnvironment(from: app)
+
+        try waitForLabel(app.staticTexts["e2e-sdk-state"], equalTo: "ready")
+        try waitForLabel(app.staticTexts["e2e-auth-state"], equalTo: "authenticated")
+        let secondLaunch = try await waitForAccessTokenResolution(in: app)
+        let secondLaunchCounters = try await request("GET", path: "counters")
+        XCTAssertEqual(secondLaunchCounters["migrate"] as? Int, 0)
+        XCTAssertEqual(
+            secondLaunch.validity,
+            "valid",
+            "Startup exposed the persisted legacy Rownd token instead of reconciling the existing SuperTokens session"
+        )
+        XCTAssertEqual(secondLaunch.sessionHandle, sessionHandle)
+
+        app.terminate()
+        app.launch()
+        try waitForLabel(app.staticTexts["e2e-sdk-state"], equalTo: "ready")
+        try waitForLabel(app.staticTexts["e2e-access-token-validity"], equalTo: "valid")
+        try waitForLabel(app.staticTexts["e2e-session-handle"], equalTo: sessionHandle)
+        let finalCounters = try await request("GET", path: "counters")
+        XCTAssertEqual(finalCounters["createSession"] as? Int, 1)
+        XCTAssertEqual(finalCounters["migrate"] as? Int, 0)
+    }
+
     private func launchIsolatedApp(resetSession: Bool) async throws -> XCUIApplication {
         let app = XCUIApplication()
         app.terminate()
@@ -148,6 +211,31 @@ final class RowndRealHubAuthenticationUITests: XCTestCase {
         XCTAssertTrue(continueButton.waitForExistence(timeout: 10))
         continueButton.tap()
         try waitForLabel(app.staticTexts["e2e-challenge-state"], equalTo: "active")
+    }
+
+    private func removeLegacySeedEnvironment(from app: XCUIApplication) {
+        app.launchEnvironment.removeValue(forKey: "ROWND_E2E_LEGACY_ACCESS_TOKEN")
+        app.launchEnvironment.removeValue(forKey: "ROWND_E2E_LEGACY_REFRESH_TOKEN")
+    }
+
+    private func waitForAccessTokenResolution(
+        in app: XCUIApplication,
+        timeout: TimeInterval = 2
+    ) async throws -> (validity: String, sessionHandle: String) {
+        let validity = app.staticTexts["e2e-access-token-validity"]
+        let sessionHandle = app.staticTexts["e2e-session-handle"]
+        XCTAssertTrue(validity.waitForExistence(timeout: timeout))
+        XCTAssertTrue(sessionHandle.waitForExistence(timeout: timeout))
+
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if validity.label == "valid" {
+                break
+            }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+
+        return (validity.label, sessionHandle.label)
     }
 
     private func customSchemeURL(from link: String) throws -> URL {

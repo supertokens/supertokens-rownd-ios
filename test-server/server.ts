@@ -73,6 +73,7 @@ const hubBaseUrl = process.env.IOS_HUB_BASE_URL || 'http://127.0.0.1:8787';
 const websiteDomain = process.env.IOS_WEBSITE_DOMAIN || new URL(hubBaseUrl).origin;
 const appId = 'app_test_rownd_ios';
 const appKey = 'test_app_key';
+const rowndAppUserIdClaim = 'https://auth.rownd.io/app_user_id';
 const accountLinkingTestLicense =
   'N2uEOdEzd1XZZ5VBSTGYaM7Ia4s8wAqRWFAxLqTYrB6GQ=' +
   'vssOLo3c=PkFgcExkaXs=IA-d9UWccoNKsyUgNhOhcKtM1bjC5OLrYRpTAgN-2EbKYsQGGQRQHuUN4EO1V';
@@ -166,6 +167,19 @@ function resetCounters() {
   latestPasswordlessEmail = undefined;
   passwordlessConsumeStatuses.length = 0;
   migrationMode = 'normal';
+}
+
+function createLegacyAccessToken(userId: string) {
+  const encode = (value: object) => Buffer.from(JSON.stringify(value)).toString('base64url');
+  return [
+    encode({ alg: 'none', typ: 'JWT' }),
+    encode({
+      sub: userId,
+      exp: Math.floor(Date.now() / 1000) + 3_600,
+      [rowndAppUserIdClaim]: userId,
+    }),
+    'signature',
+  ].join('.');
 }
 
 export async function startIntegrationHarness(): Promise<IntegrationHarness> {
@@ -608,6 +622,29 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
       count: counters.passwordlessConsume,
       changedDuringObservation: counters.passwordlessConsume !== initialCount,
       statuses: passwordlessConsumeStatuses,
+    });
+  });
+
+  app.post('/test/legacy-session', async (_req, res) => {
+    const email = `ios-legacy-${randomUUID()}@example.com`;
+    const signInResult = await Passwordless.signInUp({
+      email,
+      tenantId: 'public',
+    });
+    const userId = signInResult.user.id;
+    const sessionHandles = await Session.getAllSessionHandlesForUser(signInResult.user.id, true);
+    if (sessionHandles.length > 0) {
+      res.status(500).json({ status: 'ERROR', message: 'Legacy fixture user unexpectedly has a session' });
+      return;
+    }
+
+    res.json({
+      status: 'OK',
+      userId,
+      email,
+      accessToken: createLegacyAccessToken(userId),
+      refreshToken: `legacy-refresh-${randomUUID()}`,
+      sessionHandleCount: sessionHandles.length,
     });
   });
 
