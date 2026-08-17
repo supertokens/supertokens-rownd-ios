@@ -16,6 +16,47 @@ private let log = Logger(subsystem: "io.rownd.sdk", category: "authenticator")
 protocol AuthenticatorProtocol {
     func getValidToken() async throws -> AuthState
     func refreshToken() async throws -> AuthState
+    func invalidateSession() async
+}
+
+extension AuthenticatorProtocol {
+    func invalidateSession() async {}
+}
+
+struct AuthSessionLease {
+    let generation: UInt64
+    let rowndAccessToken: String?
+}
+
+enum AuthSessionLifecycle {
+    private static let lock = NSLock()
+    private static var generation: UInt64 = 0
+    private static var signOutCount = 0
+
+    static func capture(rowndAccessToken: String? = nil) -> AuthSessionLease {
+        lock.lock()
+        defer { lock.unlock() }
+        return AuthSessionLease(generation: generation, rowndAccessToken: rowndAccessToken)
+    }
+
+    static func beginSignOut() {
+        lock.lock()
+        generation &+= 1
+        signOutCount += 1
+        lock.unlock()
+    }
+
+    static func endSignOut() {
+        lock.lock()
+        signOutCount = max(0, signOutCount - 1)
+        lock.unlock()
+    }
+
+    static func isCurrent(_ lease: AuthSessionLease) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return generation == lease.generation && signOutCount == 0
+    }
 }
 
 public enum AuthenticationError: Error, LocalizedError, Equatable {
@@ -128,37 +169,76 @@ class AuthenticatorSubscription: NSObject {
 
 actor Authenticator: AuthenticatorProtocol {
     private let sessionBridge: SuperTokensSessionBridgeClient
-    private var refreshTask: Task<AuthState, Error>?
+    private let migrateLegacySessionIfNeeded: (AuthState) async -> Void
+    private var refreshTask: (id: UUID, value: Task<AuthState, Error>)?
 
-    init(sessionBridge: SuperTokensSessionBridgeClient = .live) {
+    init(
+        sessionBridge: SuperTokensSessionBridgeClient = .live,
+        migrateLegacySessionIfNeeded: @escaping (AuthState) async -> Void = {
+            await LegacySessionMigrator.migrateIfNeeded(authState: $0)
+        }
+    ) {
         self.sessionBridge = sessionBridge
+        self.migrateLegacySessionIfNeeded = migrateLegacySessionIfNeeded
     }
 
     func getValidToken() async throws -> AuthState {
+        let lease = AuthSessionLifecycle.capture()
+        guard AuthSessionLifecycle.isCurrent(lease) else {
+            throw AuthenticationError.noAccessTokenPresent
+        }
         if let handle = refreshTask {
-            return try await handle.value
+            let authState = try await handle.value.value
+            guard AuthSessionLifecycle.isCurrent(lease) else {
+                throw AuthenticationError.noAccessTokenPresent
+            }
+            return authState
         }
 
-        guard let accessToken = await sessionBridge.getAccessToken() else {
+        var accessToken = await sessionBridge.getAccessToken()
+        if accessToken == nil {
+            let authState = await MainActor.run {
+                Context.currentContext.store.state.auth
+            }
+            await migrateLegacySessionIfNeeded(authState)
+            accessToken = await sessionBridge.getAccessToken()
+        }
+
+        guard let accessToken else {
             throw AuthenticationError.noAccessTokenPresent
         }
 
         guard isAccessTokenValid(accessToken) else {
-            return try await refreshToken()
+            return try await refreshToken(lease: lease)
         }
 
-        return await syncCompatibilityAuthState(accessToken: accessToken)
+        return try await syncCompatibilityAuthState(accessToken: accessToken, lease: lease)
     }
 
     func refreshToken() async throws -> AuthState {
+        let lease = AuthSessionLifecycle.capture()
+        guard AuthSessionLifecycle.isCurrent(lease) else {
+            throw AuthenticationError.noAccessTokenPresent
+        }
+        return try await refreshToken(lease: lease)
+    }
+
+    func invalidateSession() async {
+        refreshTask?.value.cancel()
+        refreshTask = nil
+    }
+
+    private func refreshToken(lease: AuthSessionLease) async throws -> AuthState {
         if let refreshTask = refreshTask {
-            log.debug("Waiting for token refresh already in progress")
-            return try await refreshTask.value
+            let authState = try await refreshTask.value.value
+            guard AuthSessionLifecycle.isCurrent(lease) else {
+                throw AuthenticationError.noAccessTokenPresent
+            }
+            return authState
         }
 
+        let id = UUID()
         let task = Task { () throws -> AuthState in
-            defer { refreshTask = nil }
-
             log.debug("Refreshing SuperTokens session...")
 
             let refreshed = await sessionBridge.attemptRefresh()
@@ -170,17 +250,34 @@ actor Authenticator: AuthenticatorProtocol {
             guard let accessToken = await sessionBridge.getAccessToken(), isAccessTokenValid(accessToken) else {
                 throw AuthenticationError.noAccessTokenPresent
             }
+            guard AuthSessionLifecycle.isCurrent(lease) else {
+                throw AuthenticationError.noAccessTokenPresent
+            }
 
             log.debug("Successfully refreshed SuperTokens session.")
-            return await syncCompatibilityAuthState(accessToken: accessToken)
+            return try await syncCompatibilityAuthState(accessToken: accessToken, lease: lease)
         }
 
-        self.refreshTask = task
+        self.refreshTask = (id, task)
 
-        return try await task.value
+        do {
+            let authState = try await task.value
+            if refreshTask?.id == id {
+                refreshTask = nil
+            }
+            return authState
+        } catch {
+            if refreshTask?.id == id {
+                refreshTask = nil
+            }
+            throw error
+        }
     }
 
-    private func syncCompatibilityAuthState(accessToken: String) async -> AuthState {
+    private func syncCompatibilityAuthState(accessToken: String, lease: AuthSessionLease) async throws -> AuthState {
+        guard AuthSessionLifecycle.isCurrent(lease) else {
+            throw AuthenticationError.noAccessTokenPresent
+        }
         let currentAuthState = AuthenticatorSubscription.currentAuthState
             ?? Context.currentContext.store.state.auth
         let isSameAccessToken = currentAuthState.accessToken == accessToken
@@ -191,13 +288,16 @@ actor Authenticator: AuthenticatorProtocol {
             hasPreviouslySignedIn: currentAuthState.hasPreviouslySignedIn
         )
 
-        AuthenticatorSubscription.currentAuthState = newAuthState
-
         await MainActor.run {
+            guard AuthSessionLifecycle.isCurrent(lease) else { return }
             // Keep Rownd's compatibility auth state in sync with the SuperTokens session.
+            AuthenticatorSubscription.currentAuthState = newAuthState
             Context.currentContext.store.dispatch(SetAuthState(payload: newAuthState))
         }
 
+        guard AuthSessionLifecycle.isCurrent(lease) else {
+            throw AuthenticationError.noAccessTokenPresent
+        }
         return newAuthState
     }
 

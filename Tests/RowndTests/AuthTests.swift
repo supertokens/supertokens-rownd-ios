@@ -108,6 +108,20 @@ import Testing
         }
     }
 
+    @Test func testGetValidTokenRejectsReadsWhileSignOutIsInProgress() async throws {
+        let accessToken = generateJwt(expires: Date(timeIntervalSinceNow: 1000).timeIntervalSince1970)
+        let bridge = TestSessionBridge(accessToken: accessToken)
+        let authenticator = Authenticator(sessionBridge: bridge.client)
+
+        AuthSessionLifecycle.beginSignOut()
+        defer { AuthSessionLifecycle.endSignOut() }
+
+        await #expect(throws: AuthenticationError.noAccessTokenPresent) {
+            try await authenticator.getValidToken()
+        }
+        #expect(await bridge.getAccessTokenCalls == 0)
+    }
+
     @Test func testRefreshTokenUsesSuperTokensRefresh() async throws {
         let superTokensAccessToken = generateJwt(expires: Date(timeIntervalSinceNow: 1000).timeIntervalSince1970)
         let bridge = TestSessionBridge(accessToken: superTokensAccessToken, sessionExists: true, refreshSucceeds: true)
