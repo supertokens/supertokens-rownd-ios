@@ -68,6 +68,20 @@ internal enum SuperTokensSessionBridge {
         SuperTokens.clearSessionLocally()
     }
 
+    static func clearLocalSessionArtifacts(matchingAccessToken accessToken: String?) async {
+        await onSessionQueue {
+            if let accessToken {
+                let currentAccessToken = SuperTokens.getAccessToken()
+                guard currentAccessToken == accessToken || (accessToken.isEmpty && currentAccessToken == nil) else {
+                    return
+                }
+            } else {
+                guard !SuperTokens.doesSessionExist() else { return }
+            }
+            _ = SuperTokens.clearSessionLocally()
+        }
+    }
+
     // WKWebView requests do not traverse SuperTokensURLProtocol, so Hub-complete
     // auth flows need a direct local session bootstrap.
     static func bootstrapSession(
@@ -118,14 +132,16 @@ internal enum SuperTokensSessionBridge {
         }
 
         let sessionAlreadyExists = SuperTokens.doesSessionExist()
+        if sessionAlreadyExists,
+           SuperTokens.getAccessToken() == accessToken,
+           storage.get(refreshTokenStorageKey) == refreshToken,
+           frontToken.map({ SuperTokens.getFrontToken() == $0 }) ?? true,
+           antiCSRF.map({ SuperTokens.getAntiCSRF() == $0 }) ?? true {
+            return true
+        }
         if sessionAlreadyExists && !allowReplacingExistingSession {
             logger.warning("Skipping SuperTokens session bootstrap because a session already exists")
             return false
-        }
-        if sessionAlreadyExists,
-           SuperTokens.getAccessToken() == accessToken,
-           storage.get(refreshTokenStorageKey)?.isEmpty == false {
-            return true
         }
 
         if sessionAlreadyExists {
@@ -185,14 +201,28 @@ internal enum SuperTokensSessionBridge {
 
     @discardableResult
     static func syncRowndAuthStateFromSuperTokens() async -> Bool {
+        await syncRowndAuthStateFromSuperTokens(lease: nil)
+    }
+
+    static func syncRowndAuthStateFromSuperTokens(lease: AuthSessionLease) async -> Bool {
+        await syncRowndAuthStateFromSuperTokens(lease: Optional(lease))
+    }
+
+    private static func syncRowndAuthStateFromSuperTokens(lease: AuthSessionLease?) async -> Bool {
         guard let accessToken = await getAccessToken() else { return false }
 
-        await MainActor.run {
+        return await MainActor.run {
+            if let lease {
+                guard AuthSessionLifecycle.isCurrent(lease),
+                      Context.currentContext.store.state.auth.accessToken == lease.rowndAccessToken else {
+                    return false
+                }
+            }
             Context.currentContext.store.dispatch(
                 SetAuthState(payload: AuthState(accessToken: accessToken, refreshToken: nil))
             )
+            return true
         }
-        return true
     }
 
     static func buildFrontToken(from accessToken: String) -> String {

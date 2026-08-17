@@ -208,7 +208,7 @@ import Network
         }
     }
 
-    @Test func bootstrapSessionWithSameAccessTokenIsIdempotentSuccess() async throws {
+    @Test func bootstrapSessionWithSameAccessTokenSucceedsWhenReplacementIsDisabled() async throws {
         try await withMockedSuperTokensSession {
             let accessToken = makeSuperTokensTestJWT(expiresIn: 3600)
             let refreshToken = makeSuperTokensTestJWT(expiresIn: 7200)
@@ -223,8 +223,9 @@ import Network
             let secondSucceeded = await Task.detached {
                 SuperTokensSessionBridge.bootstrapSession(
                     accessToken: accessToken,
-                    refreshToken: "different-refresh-token",
-                    antiCSRF: "different-anti-csrf"
+                    refreshToken: refreshToken,
+                    antiCSRF: "original-anti-csrf",
+                    allowReplacingExistingSession: false
                 )
             }.value
 
@@ -232,6 +233,31 @@ import Network
             #expect(secondSucceeded)
             #expect(Self.activeStore.get("st-storage-item-st-refresh-token") == refreshToken)
             #expect(Self.activeStore.get("supertokens-ios-anticsrf-key") == "original-anti-csrf")
+        }
+    }
+
+    @Test func bootstrapSessionRejectsDifferentCredentialsWhenReplacementIsDisabled() async throws {
+        try await withMockedSuperTokensSession {
+            let accessToken = makeSuperTokensTestJWT(expiresIn: 3600)
+            let refreshToken = makeSuperTokensTestJWT(expiresIn: 7200)
+
+            let firstSucceeded = await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: accessToken,
+                    refreshToken: refreshToken
+                )
+            }.value
+            let secondSucceeded = await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: accessToken,
+                    refreshToken: "different-refresh-token",
+                    allowReplacingExistingSession: false
+                )
+            }.value
+
+            #expect(firstSucceeded)
+            #expect(!secondSucceeded)
+            #expect(Self.activeStore.get("st-storage-item-st-refresh-token") == refreshToken)
         }
     }
 
