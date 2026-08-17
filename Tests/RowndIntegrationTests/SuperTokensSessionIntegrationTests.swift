@@ -130,15 +130,21 @@ import AnyCodable
         #expect(protectedRequest["rowndAppKey"] as? String == nil)
     }
 
-    @Test func validLegacySessionMigratesThroughHarness() async throws {
+    @Test func interceptedLegacyMigrationSynchronizesCompatibilityAuthState() async throws {
         try await TestInfrastructure.prepare()
 
+        let legacyAccessToken = generateJwt(expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970)
         try await migrateLegacySession(
-            accessToken: generateJwt(expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970),
+            accessToken: legacyAccessToken,
             refreshToken: "legacy-refresh-token"
         )
 
         #expect(await SuperTokensSessionBridge.doesSessionExist())
+        let migratedAccessToken = try #require(await SuperTokensSessionBridge.getAccessToken())
+        #expect(migratedAccessToken != legacyAccessToken)
+        // Assert the launch-time state directly; Rownd.getAccessToken can repair it and mask this regression.
+        #expect(await currentAuthAccessToken() == migratedAccessToken)
+        #expect(await currentAuthRefreshToken() == nil)
 
         let counters = try await getJSON(path: "counters")
         #expect(counters["migrate"] as? Int == 1)
@@ -147,6 +153,163 @@ import AnyCodable
         let protected = try await getJSON(path: "test/protected")
         #expect(protected["status"] as? String == "OK")
         #expect(protected["userId"] as? String == "ios-test-user")
+    }
+
+    @Test func getAccessTokenWaitsForInFlightLegacyMigration() async throws {
+        try await TestInfrastructure.prepare()
+
+        let legacyAccessToken = generateJwt(expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970)
+        let persistedLegacyAuthState = AuthState(
+            accessToken: legacyAccessToken,
+            refreshToken: "legacy-refresh-token"
+        )
+        await MainActor.run {
+            Context.currentContext.store.dispatch(SetAuthState(payload: persistedLegacyAuthState))
+        }
+        #expect(await !SuperTokensSessionBridge.doesSessionExist())
+
+        let migrationStarted = AsyncTestSignal()
+        let releaseMigration = AsyncTestSignal()
+        let accessTokenReadStarted = AsyncTestSignal()
+        let accessTokenReadCount = AsyncTestCounter()
+        let originalAuthenticator = Context.currentContext.authenticator
+        Context.currentContext.authenticator = Authenticator(
+            sessionBridge: SuperTokensSessionBridgeClient(
+                doesSessionExist: SuperTokensSessionBridge.doesSessionExist,
+                getAccessToken: {
+                    let accessToken = await SuperTokensSessionBridge.getAccessToken()
+                    await accessTokenReadCount.increment()
+                    if accessToken == nil {
+                        await accessTokenReadStarted.signal()
+                    }
+                    return accessToken
+                },
+                attemptRefresh: SuperTokensSessionBridge.attemptRefresh
+            )
+        )
+        defer { Context.currentContext.authenticator = originalAuthenticator }
+
+        let liveClient = LegacySessionMigrationClient(
+            apiDomain: TestInfrastructure.supertokensConfig.apiDomain,
+            apiBasePath: TestInfrastructure.supertokensConfig.apiBasePath,
+            legacyApiDomain: TestInfrastructure.supertokensConfig.apiDomain
+        )
+        let delayedClient = LegacySessionMigrationClient(migrateHandler: { accessToken in
+            await migrationStarted.signal()
+            await releaseMigration.wait()
+            return try await liveClient.migrate(legacyAccessToken: accessToken)
+        })
+
+        let migrationTask = Task {
+            await LegacySessionMigrator.migrateIfNeeded(
+                authState: persistedLegacyAuthState,
+                dependencies: LegacySessionMigrationDependencies(client: delayedClient)
+            )
+        }
+        await migrationStarted.wait()
+
+        let accessTokenTask = Task {
+            return try await Rownd.getAccessToken()
+        }
+        await accessTokenReadStarted.wait()
+        await releaseMigration.signal()
+
+        let accessToken: String?
+        do {
+            accessToken = try await accessTokenTask.value
+        } catch {
+            await migrationTask.value
+            throw error
+        }
+        await migrationTask.value
+
+        let migratedAccessToken = try #require(await SuperTokensSessionBridge.getAccessToken())
+        #expect(migratedAccessToken != legacyAccessToken)
+        #expect(accessToken == migratedAccessToken)
+        #expect(await accessTokenReadCount.value == 2)
+    }
+
+    @Test func signOutCancelsInFlightLegacyMigration() async throws {
+        try await TestInfrastructure.prepare()
+
+        let legacyAuthState = AuthState(
+            accessToken: generateJwt(expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970),
+            refreshToken: "legacy-refresh-token"
+        )
+        await MainActor.run {
+            Context.currentContext.store.dispatch(SetAuthState(payload: legacyAuthState))
+        }
+
+        let migrationStarted = AsyncTestSignal()
+        let releaseMigration = AsyncTestSignal()
+        let cancellationObserved = AsyncTestSignal()
+        let liveClient = LegacySessionMigrationClient(
+            apiDomain: TestInfrastructure.supertokensConfig.apiDomain,
+            apiBasePath: TestInfrastructure.supertokensConfig.apiBasePath,
+            legacyApiDomain: TestInfrastructure.supertokensConfig.apiDomain
+        )
+        let delayedClient = LegacySessionMigrationClient(migrateHandler: { accessToken in
+            await migrationStarted.signal()
+            return try await withTaskCancellationHandler {
+                await releaseMigration.wait()
+                return try await liveClient.migrate(legacyAccessToken: accessToken)
+            } onCancel: {
+                Task { await cancellationObserved.signal() }
+            }
+        })
+
+        let migrationTask = Task {
+            await LegacySessionMigrator.migrateIfNeeded(
+                authState: legacyAuthState,
+                dependencies: LegacySessionMigrationDependencies(client: delayedClient)
+            )
+        }
+        await migrationStarted.wait()
+
+        let signOutTask = Task { await Rownd.signOut() }
+        await cancellationObserved.wait()
+        await releaseMigration.signal()
+        await migrationTask.value
+        await signOutTask.value
+
+        #expect(await !SuperTokensSessionBridge.doesSessionExist())
+        #expect(await currentAuthAccessToken() == nil)
+        #expect(await currentAuthRefreshToken() == nil)
+    }
+
+    @Test func signOutRejectsMigrationCapturedBeforeCoordinatorRegistration() async throws {
+        try await TestInfrastructure.prepare()
+
+        let legacyAuthState = AuthState(
+            accessToken: generateJwt(expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970),
+            refreshToken: "legacy-refresh-token"
+        )
+        await MainActor.run {
+            Context.currentContext.store.dispatch(SetAuthState(payload: legacyAuthState))
+        }
+
+        let migrationCaptured = AsyncTestSignal()
+        let releaseMigration = AsyncTestSignal()
+        let originalAuthenticator = Context.currentContext.authenticator
+        Context.currentContext.authenticator = Authenticator(
+            migrateLegacySessionIfNeeded: { authState in
+                await migrationCaptured.signal()
+                await releaseMigration.wait()
+                await LegacySessionMigrator.migrateIfNeeded(authState: authState)
+            }
+        )
+        defer { Context.currentContext.authenticator = originalAuthenticator }
+
+        let accessTokenTask = Task { try await Rownd.getAccessToken() }
+        await migrationCaptured.wait()
+
+        await Rownd.signOut()
+        await releaseMigration.signal()
+        let accessToken = try await accessTokenTask.value
+
+        #expect(accessToken == nil)
+        #expect(await !SuperTokensSessionBridge.doesSessionExist())
+        #expect(await currentAuthAccessToken() == nil)
     }
 
     @Test func migrationWithoutRefreshHeaderDoesNotCreatePartialSession() async throws {
@@ -862,6 +1025,32 @@ import AnyCodable
 
     private func clearLocalSuperTokensSessionArtifacts() {
         SuperTokensSessionBridge.clearLocalSessionArtifacts()
+    }
+}
+
+private actor AsyncTestSignal {
+    private var isSignaled = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        guard !isSignaled else { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func signal() {
+        guard !isSignaled else { return }
+        isSignaled = true
+        let continuations = waiters
+        waiters.removeAll()
+        continuations.forEach { $0.resume() }
+    }
+}
+
+private actor AsyncTestCounter {
+    private(set) var value = 0
+
+    func increment() {
+        value += 1
     }
 }
 
