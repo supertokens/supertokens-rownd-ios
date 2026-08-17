@@ -255,8 +255,22 @@ public class Rownd: NSObject {
     public static func signOut(scope: RowndSignoutScope) async throws {
         switch scope {
         case .all:
-            try await Auth.signOutUser()
-            await performLocalSignOut()
+            AuthSessionLifecycle.beginSignOut()
+            await Context.currentContext.authenticator.invalidateSession()
+            var signOutError: Error?
+            await LegacySessionMigrator.cancelInFlightMigration {
+                let accessToken = await SuperTokensSessionBridge.getAccessToken()
+                do {
+                    try await Auth.signOutUser(accessToken: accessToken)
+                } catch {
+                    signOutError = error
+                }
+                await performLocalSessionCleanup()
+            }
+            AuthSessionLifecycle.endSignOut()
+            if let signOutError {
+                throw signOutError
+            }
         }
     }
 
@@ -278,10 +292,22 @@ public class Rownd: NSObject {
     }
 
     internal static func signOutForMigrationFailure() async {
-        await performLocalSignOut()
+        AuthSessionLifecycle.beginSignOut()
+        await Context.currentContext.authenticator.invalidateSession()
+        await performLocalSessionCleanup()
+        AuthSessionLifecycle.endSignOut()
     }
 
     private static func performLocalSignOut() async {
+        AuthSessionLifecycle.beginSignOut()
+        await Context.currentContext.authenticator.invalidateSession()
+        await LegacySessionMigrator.cancelInFlightMigration {
+            await performLocalSessionCleanup()
+        }
+        AuthSessionLifecycle.endSignOut()
+    }
+
+    private static func performLocalSessionCleanup() async {
         if isSuperTokensInitialized {
             // Keep the compatibility session from resurrecting Rownd auth on later syncs.
             await SuperTokensSessionBridge.signOut()

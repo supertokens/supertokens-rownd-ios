@@ -258,7 +258,7 @@ struct TokenResponse: Codable {
 }
 
 class Auth {
-    static func signOutUser() async throws {
+    static func signOutUser(accessToken: String?) async throws {
         let supertokens = try Rownd.requireSuperTokensConfig()
 
         guard var components = URLComponents(string: supertokens.apiDomain) else {
@@ -272,7 +272,7 @@ class Auth {
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        guard let accessToken = await SuperTokensSessionBridge.getAccessToken(), !accessToken.isEmpty else {
+        guard let accessToken, !accessToken.isEmpty else {
             throw RowndError("Cannot sign out all sessions without a SuperTokens access token")
         }
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
