@@ -1,5 +1,13 @@
 # Changelog
 
+## <small>0.1.10 (2026-08-17)</small>
+
+* test: cover migration and sign-out regressions ([41ff29a](https://github.com/supertokens/supertokens-rownd-ios/commit/41ff29a))
+* fix: prevent auth work from outliving sign-out ([29a9c6a](https://github.com/supertokens/supertokens-rownd-ios/commit/29a9c6a))
+* fix: safely adopt intercepted migration sessions ([991e9fc](https://github.com/supertokens/supertokens-rownd-ios/commit/991e9fc))
+* fix: serialize legacy session migration ([4735e2e](https://github.com/supertokens/supertokens-rownd-ios/commit/4735e2e))
+* fix: wait for migration during token reads ([1ff6551](https://github.com/supertokens/supertokens-rownd-ios/commit/1ff6551))
+
 ## <small>0.1.9 (2026-08-15)</small>
 
 * fix: Fix rownd lazy migration regression ([bbf7595](https://github.com/supertokens/supertokens-rownd-ios/commit/bbf7595))
