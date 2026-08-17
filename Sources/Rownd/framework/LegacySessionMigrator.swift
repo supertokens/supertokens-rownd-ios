@@ -113,16 +113,19 @@ struct LegacySessionMigrationClient {
 
         switch httpResponse.statusCode {
         case 200..<300:
-            guard let accessToken = httpResponse.headerValue(named: "st-access-token"), !accessToken.isEmpty else {
-                SuperTokensSessionBridge.clearLocalSessionArtifacts()
+            let interceptedAccessToken = httpResponse.headerValue(named: "st-access-token")
+            guard let accessToken = interceptedAccessToken, !accessToken.isEmpty else {
+                await SuperTokensSessionBridge.clearLocalSessionArtifacts(
+                    matchingAccessToken: interceptedAccessToken
+                )
                 throw RowndError("Rownd migration response did not include st-access-token")
             }
             guard let refreshToken = httpResponse.headerValue(named: "st-refresh-token"), !refreshToken.isEmpty else {
-                SuperTokensSessionBridge.clearLocalSessionArtifacts()
+                await SuperTokensSessionBridge.clearLocalSessionArtifacts(matchingAccessToken: accessToken)
                 throw RowndError("Rownd migration response did not include st-refresh-token")
             }
             guard let frontToken = httpResponse.headerValue(named: "front-token"), !frontToken.isEmpty else {
-                SuperTokensSessionBridge.clearLocalSessionArtifacts()
+                await SuperTokensSessionBridge.clearLocalSessionArtifacts(matchingAccessToken: accessToken)
                 throw RowndError("Rownd migration response did not include front-token")
             }
 
@@ -157,8 +160,11 @@ struct LegacySessionMigrationDependencies {
             )
         }.value
     }
-    var syncRowndAuthStateFromSuperTokens: () async -> Void = {
-        _ = await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens()
+    var syncRowndAuthStateFromSuperTokens: (AuthSessionLease) async -> Bool = {
+        await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens(lease: $0)
+    }
+    var currentRowndAccessToken: () async -> String? = {
+        await MainActor.run { Context.currentContext.store.state.auth.accessToken }
     }
     var signOut: () async -> Void = Rownd.signOutForMigrationFailure
     var client: LegacySessionMigrationClient = LegacySessionMigrationClient()
@@ -171,17 +177,30 @@ enum LegacySessionMigrator {
         authState: AuthState,
         dependencies: LegacySessionMigrationDependencies = LegacySessionMigrationDependencies()
     ) async {
+        let lease = AuthSessionLifecycle.capture(rowndAccessToken: authState.accessToken)
         await coordinator.run {
-            await performMigrationIfNeeded(authState: authState, dependencies: dependencies)
+            await performMigrationIfNeeded(authState: authState, lease: lease, dependencies: dependencies)
         }
+    }
+
+    static func cancelInFlightMigration(cleanup: @escaping () async -> Void) async {
+        await coordinator.cancelAndPerform(cleanup)
     }
 
     private static func performMigrationIfNeeded(
         authState: AuthState,
+        lease initialLease: AuthSessionLease,
         dependencies: LegacySessionMigrationDependencies
     ) async {
+        var lease = initialLease
+        guard await isCurrent(lease, dependencies: dependencies) else { return }
         if await dependencies.doesSuperTokensSessionExist() {
-            await dependencies.syncRowndAuthStateFromSuperTokens()
+            guard await isCurrent(lease, dependencies: dependencies) else { return }
+            let didSynchronize = await dependencies.syncRowndAuthStateFromSuperTokens(lease)
+            guard !Task.isCancelled, AuthSessionLifecycle.isCurrent(lease) else { return }
+            if !didSynchronize {
+                logger.warning("Existing SuperTokens session could not be synchronized to Rownd auth state")
+            }
             return
         }
         guard var legacyAccessToken = authState.accessToken, !legacyAccessToken.isEmpty else { return }
@@ -190,12 +209,15 @@ enum LegacySessionMigrator {
         var legacyRefreshToken = authState.refreshToken
         if !isAccessTokenValid(legacyAccessToken) {
             guard let refreshToken = legacyRefreshToken, !refreshToken.isEmpty else {
-                await dependencies.signOut()
+                if await isCurrent(lease, dependencies: dependencies) {
+                    await dependencies.signOut()
+                }
                 return
             }
 
             do {
                 let refreshed = try await dependencies.client.refreshLegacyToken(refreshToken: refreshToken)
+                guard await isCurrent(lease, dependencies: dependencies) else { return }
                 guard let refreshedAccessToken = refreshed.accessToken, !refreshedAccessToken.isEmpty else {
                     await dependencies.signOut()
                     return
@@ -205,6 +227,9 @@ enum LegacySessionMigrator {
                 legacyRefreshToken = refreshed.refreshToken ?? legacyRefreshToken
 
                 await MainActor.run {
+                    guard !Task.isCancelled,
+                          AuthSessionLifecycle.isCurrent(lease),
+                          Context.currentContext.store.state.auth.accessToken == lease.rowndAccessToken else { return }
                     Context.currentContext.store.dispatch(
                         SetAuthState(
                             payload: AuthState(
@@ -216,18 +241,26 @@ enum LegacySessionMigrator {
                         )
                     )
                 }
+                lease = AuthSessionLease(generation: lease.generation, rowndAccessToken: legacyAccessToken)
+                guard await isCurrent(lease, dependencies: dependencies) else { return }
+            } catch is CancellationError {
+                return
             } catch {
                 logger.warning("Failed to refresh legacy Rownd session before migration: \(String(describing: error))")
-                await dependencies.signOut()
+                if await isCurrent(lease, dependencies: dependencies) {
+                    await dependencies.signOut()
+                }
                 return
             }
         }
 
         do {
+            guard await isCurrent(lease, dependencies: dependencies) else { return }
             let result = try await migrateWithRetry(
                 legacyAccessToken: legacyAccessToken,
                 client: dependencies.client
             )
+            guard await isCurrent(lease, dependencies: dependencies) else { return }
 
             switch result {
             case .migrated(let tokens):
@@ -235,18 +268,34 @@ enum LegacySessionMigrator {
                     logger.warning("Skipping SuperTokens session bootstrap because migration returned incomplete session headers")
                     return
                 }
-                guard await dependencies.bootstrapSession(tokens) else {
+                let didBootstrap = await dependencies.bootstrapSession(tokens)
+                guard await isCurrent(lease, dependencies: dependencies) else { return }
+                guard didBootstrap else {
                     logger.warning("Skipping legacy session migration completion because the SuperTokens session could not be adopted")
                     return
                 }
-                await dependencies.syncRowndAuthStateFromSuperTokens()
-                await clearLegacyRefreshToken()
+                let didSynchronize = await dependencies.syncRowndAuthStateFromSuperTokens(lease)
+                guard !Task.isCancelled, AuthSessionLifecycle.isCurrent(lease) else { return }
+                guard didSynchronize else {
+                    logger.warning("Skipping legacy session migration completion because Rownd auth could not be synchronized")
+                    return
+                }
+                await clearLegacyRefreshToken(lease: lease)
             case .sessionAlreadyExists:
-                await dependencies.syncRowndAuthStateFromSuperTokens()
-                await clearLegacyRefreshToken()
+                let didSynchronize = await dependencies.syncRowndAuthStateFromSuperTokens(lease)
+                guard !Task.isCancelled, AuthSessionLifecycle.isCurrent(lease) else { return }
+                guard didSynchronize else {
+                    logger.warning("Keeping legacy session because no local SuperTokens session could be synchronized")
+                    return
+                }
+                await clearLegacyRefreshToken(lease: lease)
             case .unauthorized:
-                await dependencies.signOut()
+                if await isCurrent(lease, dependencies: dependencies) {
+                    await dependencies.signOut()
+                }
             }
+        } catch is CancellationError {
+            return
         } catch {
             logger.warning("Failed to migrate legacy Rownd session: \(String(describing: error))")
         }
@@ -259,6 +308,9 @@ enum LegacySessionMigrator {
         do {
             return try await client.migrate(legacyAccessToken: legacyAccessToken)
         } catch {
+            if Task.isCancelled {
+                throw CancellationError()
+            }
             guard error is URLError else {
                 throw error
             }
@@ -266,12 +318,25 @@ enum LegacySessionMigrator {
         }
     }
 
-    private static func clearLegacyRefreshToken() async {
+    private static func clearLegacyRefreshToken(lease: AuthSessionLease) async {
         await MainActor.run {
+            guard !Task.isCancelled,
+                  AuthSessionLifecycle.isCurrent(lease),
+                  Context.currentContext.store.state.auth.accessToken == lease.rowndAccessToken else { return }
             var authState = Context.currentContext.store.state.auth
             authState.refreshToken = nil
             Context.currentContext.store.dispatch(SetAuthState(payload: authState))
         }
+    }
+
+    private static func isCurrent(
+        _ lease: AuthSessionLease,
+        dependencies: LegacySessionMigrationDependencies
+    ) async -> Bool {
+        guard !Task.isCancelled, AuthSessionLifecycle.isCurrent(lease) else { return false }
+        let currentAccessToken = await dependencies.currentRowndAccessToken()
+        guard !Task.isCancelled, AuthSessionLifecycle.isCurrent(lease) else { return false }
+        return currentAccessToken == lease.rowndAccessToken
     }
 
     private static func hasCompleteNativeSessionTokens(_ tokens: SuperTokensSessionTokens) -> Bool {
@@ -301,20 +366,44 @@ enum LegacySessionMigrator {
 }
 
 private actor LegacySessionMigrationCoordinator {
-    private var task: Task<Void, Never>?
+    private var task: (id: UUID, value: Task<Void, Never>)?
+    private var invalidationTask: Task<Void, Never>?
 
-    func run(_ operation: @escaping () async -> Void) async {
-        if let task {
-            await task.value
+    func cancelAndPerform(_ cleanup: @escaping () async -> Void) async {
+        if let invalidationTask {
+            await invalidationTask.value
             return
         }
 
+        let activeTask = task?.value
+        activeTask?.cancel()
+        let invalidationTask = Task {
+            await activeTask?.value
+            await cleanup()
+        }
+        self.invalidationTask = invalidationTask
+        await invalidationTask.value
+        task = nil
+        self.invalidationTask = nil
+    }
+
+    func run(_ operation: @escaping () async -> Void) async {
+        guard invalidationTask == nil else { return }
+
+        if let activeTask = task {
+            await activeTask.value.value
+            return
+        }
+
+        let id = UUID()
         let task = Task {
             await operation()
         }
-        self.task = task
+        self.task = (id, task)
         await task.value
-        self.task = nil
+        if self.task?.id == id {
+            self.task = nil
+        }
     }
 }
 

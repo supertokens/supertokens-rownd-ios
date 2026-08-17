@@ -12,10 +12,11 @@ import Testing
             var dependencies = makeDependencies(calls: calls)
             dependencies.doesSuperTokensSessionExist = { true }
             dependencies.bootstrapSession = { _ in didBootstrap = true; return true }
-            dependencies.syncRowndAuthStateFromSuperTokens = { syncCount += 1 }
+            dependencies.syncRowndAuthStateFromSuperTokens = { _ in syncCount += 1; return true }
 
+            await setAuthState(AuthState(accessToken: validLegacyToken(), refreshToken: "legacy-refresh-token"))
             await LegacySessionMigrator.migrateIfNeeded(
-                authState: AuthState(accessToken: validLegacyToken(), refreshToken: "legacy-refresh-token"),
+                authState: Context.currentContext.store.state.auth,
                 dependencies: dependencies
             )
 
@@ -41,7 +42,7 @@ import Testing
             var syncCount = 0
             var dependencies = makeDependencies(calls: calls)
             dependencies.bootstrapSession = { tokens in bootstrappedTokens = tokens; return true }
-            dependencies.syncRowndAuthStateFromSuperTokens = { syncCount += 1 }
+            dependencies.syncRowndAuthStateFromSuperTokens = { _ in syncCount += 1; return true }
 
             await setAuthState(AuthState(accessToken: validLegacyToken(), refreshToken: "legacy-refresh-token"))
 
@@ -112,7 +113,7 @@ import Testing
             var syncCount = 0
             var dependencies = makeDependencies(calls: calls)
             dependencies.bootstrapSession = { _ in false }
-            dependencies.syncRowndAuthStateFromSuperTokens = { syncCount += 1 }
+            dependencies.syncRowndAuthStateFromSuperTokens = { _ in syncCount += 1; return true }
 
             await setAuthState(AuthState(accessToken: validLegacyToken(), refreshToken: "legacy-refresh-token"))
             await LegacySessionMigrator.migrateIfNeeded(
@@ -134,8 +135,9 @@ import Testing
             var dependencies = makeDependencies(calls: calls)
             dependencies.signOut = { signOutCount += 1 }
 
+            await setAuthState(AuthState(accessToken: expiredLegacyToken(), refreshToken: "legacy-refresh-token"))
             await LegacySessionMigrator.migrateIfNeeded(
-                authState: AuthState(accessToken: expiredLegacyToken(), refreshToken: "legacy-refresh-token"),
+                authState: Context.currentContext.store.state.auth,
                 dependencies: dependencies
             )
 
@@ -154,8 +156,9 @@ import Testing
             var dependencies = makeDependencies(calls: calls)
             dependencies.signOut = { signOutCount += 1 }
 
+            await setAuthState(AuthState(accessToken: validLegacyToken(), refreshToken: "legacy-refresh-token"))
             await LegacySessionMigrator.migrateIfNeeded(
-                authState: AuthState(accessToken: validLegacyToken(), refreshToken: "legacy-refresh-token"),
+                authState: Context.currentContext.store.state.auth,
                 dependencies: dependencies
             )
 
@@ -171,7 +174,7 @@ import Testing
             var syncCount = 0
             var didBootstrap = false
             var dependencies = makeDependencies(calls: calls)
-            dependencies.syncRowndAuthStateFromSuperTokens = { syncCount += 1 }
+            dependencies.syncRowndAuthStateFromSuperTokens = { _ in syncCount += 1; return true }
             dependencies.bootstrapSession = { _ in didBootstrap = true; return true }
 
             await setAuthState(AuthState(accessToken: validLegacyToken(), refreshToken: "legacy-refresh-token"))
@@ -184,6 +187,25 @@ import Testing
             #expect(syncCount == 1)
             #expect(!didBootstrap)
             #expect(await currentRefreshToken() == nil)
+        }
+    }
+
+    @Test func conflictMigrationKeepsLegacyRefreshTokenWhenSynchronizationFails() async throws {
+        try await withIsolatedStore {
+            var calls = MigrationCalls()
+            calls.migrateResults = [.sessionAlreadyExists]
+
+            var dependencies = makeDependencies(calls: calls)
+            dependencies.syncRowndAuthStateFromSuperTokens = { _ in false }
+
+            await setAuthState(AuthState(accessToken: validLegacyToken(), refreshToken: "legacy-refresh-token"))
+
+            await LegacySessionMigrator.migrateIfNeeded(
+                authState: Context.currentContext.store.state.auth,
+                dependencies: dependencies
+            )
+
+            #expect(await currentRefreshToken() == "legacy-refresh-token")
         }
     }
 
@@ -203,8 +225,9 @@ import Testing
             var dependencies = makeDependencies(calls: calls)
             dependencies.bootstrapSession = { tokens in bootstrappedTokens = tokens; return true }
 
+            await setAuthState(AuthState(accessToken: validLegacyToken(), refreshToken: "legacy-refresh-token"))
             await LegacySessionMigrator.migrateIfNeeded(
-                authState: AuthState(accessToken: validLegacyToken(), refreshToken: "legacy-refresh-token"),
+                authState: Context.currentContext.store.state.auth,
                 dependencies: dependencies
             )
 
@@ -240,8 +263,9 @@ import Testing
 
             #expect(!legacyAuthState.isAccessTokenValid)
 
+            await setAuthState(legacyAuthState)
             await LegacySessionMigrator.migrateIfNeeded(
-                authState: legacyAuthState,
+                authState: Context.currentContext.store.state.auth,
                 dependencies: dependencies
             )
 
@@ -251,11 +275,43 @@ import Testing
         }
     }
 
+    @Test func concurrentMigrationCallersShareOneOperation() async throws {
+        try await withIsolatedStore {
+            let authState = AuthState(accessToken: validLegacyToken(), refreshToken: "legacy-refresh-token")
+            let gate = MigrationGate()
+            var dependencies = makeDependencies(calls: MigrationCalls())
+            dependencies.client = LegacySessionMigrationClient(migrateHandler: { _ in
+                await gate.arrive()
+                return .sessionAlreadyExists
+            })
+
+            await setAuthState(authState)
+            let first = Task {
+                await LegacySessionMigrator.migrateIfNeeded(authState: authState, dependencies: dependencies)
+            }
+            await gate.waitForFirstArrival()
+
+            let second = Task {
+                await LegacySessionMigrator.migrateIfNeeded(authState: authState, dependencies: dependencies)
+            }
+            let third = Task {
+                await LegacySessionMigrator.migrateIfNeeded(authState: authState, dependencies: dependencies)
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+            await gate.release()
+
+            await first.value
+            await second.value
+            await third.value
+            #expect(await gate.arrivalCount == 1)
+        }
+    }
+
     private func makeDependencies(calls: MigrationCalls) -> LegacySessionMigrationDependencies {
         LegacySessionMigrationDependencies(
             doesSuperTokensSessionExist: { false },
             bootstrapSession: { _ in true },
-            syncRowndAuthStateFromSuperTokens: {},
+            syncRowndAuthStateFromSuperTokens: { _ in true },
             signOut: {},
             client: LegacySessionMigrationClient(
                 refreshLegacyTokenHandler: { refreshToken in
@@ -315,6 +371,34 @@ import Testing
             expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
             sessionHandle: "session-handle"
         )
+    }
+}
+
+private actor MigrationGate {
+    private(set) var arrivalCount = 0
+    private var isReleased = false
+    private var releaseContinuations: [CheckedContinuation<Void, Never>] = []
+    private var arrivalContinuations: [CheckedContinuation<Void, Never>] = []
+
+    func arrive() async {
+        arrivalCount += 1
+        let continuations = arrivalContinuations
+        arrivalContinuations.removeAll()
+        continuations.forEach { $0.resume() }
+        guard !isReleased else { return }
+        await withCheckedContinuation { releaseContinuations.append($0) }
+    }
+
+    func waitForFirstArrival() async {
+        guard arrivalCount == 0 else { return }
+        await withCheckedContinuation { arrivalContinuations.append($0) }
+    }
+
+    func release() {
+        isReleased = true
+        let continuations = releaseContinuations
+        releaseContinuations.removeAll()
+        continuations.forEach { $0.resume() }
     }
 }
 
