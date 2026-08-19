@@ -1,0 +1,43 @@
+name: PR Check
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-check-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout iOS SDK
+        uses: actions/checkout@v4
+
+      - name: Set up Xcode
+        uses: maxim-lobanov/setup-xcode@v1.7.0
+        with:
+          xcode-version: 26.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install iOS SDK dependencies
+        run: npm ci
+
+      - name: Resolve Swift dependencies
+        run: swift package resolve
+
+      - name: Run PR tests
+        run: npm run test:pr

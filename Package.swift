@@ -71,11 +71,6 @@ let package = Package(
             .upToNextMajor(from: "3.0.1")
         ),
         .package(
-            name: "Mockingbird",
-            url: "https://github.com/birdrides/mockingbird.git",
-            .upToNextMinor(from: "0.20.0")
-        ),
-        .package(
             name: "SuperTokensIOS",
             url: "https://github.com/supertokens/supertokens-ios",
             .upToNextMajor(from: "0.5.4")
@@ -139,7 +134,6 @@ let package = Package(
             name: "RowndTests",
             dependencies: [
                 "Mocker",
-                "Mockingbird",
                 "AnyCodable",
                 "ReSwift",
                 "ReSwiftThunk",

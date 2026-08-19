@@ -83,15 +83,6 @@
         }
       },
       {
-        "package": "Mockingbird",
-        "repositoryURL": "https://github.com/birdrides/mockingbird.git",
-        "state": {
-          "branch": null,
-          "revision": "6e0d473df6b975719e145f6aebf90990c634700e",
-          "version": "0.20.0"
-        }
-      },
-      {
         "package": "ReSwift",
         "repositoryURL": "https://github.com/ReSwift/ReSwift",
         "state": {

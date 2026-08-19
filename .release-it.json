@@ -16,13 +16,13 @@
       "in": "VERSION",
       "out": [
         "README.md",
-        "Sources/Rownd/framework/Version.swift",
         "VERSION"
       ]
     }
   },
   "hooks": {
     "after:bump": [
+      "node set-sdk-version.mjs ${version}",
       "npx podspec-bump -w -i ${version} -p RowndSupertokens.podspec",
       "pod lib lint RowndSupertokens.podspec --allow-warnings --use-libraries --skip-import-validation --skip-tests"
     ],
