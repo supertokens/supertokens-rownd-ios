@@ -54,14 +54,23 @@ final class RowndRealHubAuthenticationUITests: XCTestCase {
         let capture = try await waitForPasswordlessCapture(email: email)
         let capturedLink = try XCTUnwrap(capture["urlWithLinkCode"] as? String)
         let deepLink = try customSchemeURL(from: capturedLink)
+        let webView = app.webViews.firstMatch
 
         app.open(deepLink)
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
         try waitForLabel(app.staticTexts["e2e-auth-state"], equalTo: "authenticated")
         try waitForLabel(app.staticTexts["e2e-sign-in-completed-count"], equalTo: "1")
+        try waitForDisappearance(webView)
         let sessionHandle = app.staticTexts["e2e-session-handle"].label
         XCTAssertNotEqual(sessionHandle, "no-session")
         _ = try await waitForConsumes(count: 1)
+
+        let protectedButton = app.buttons["e2e-protected-button"]
+        try scrollToElement(protectedButton, in: app)
+        protectedButton.tap()
+        try waitForLabel(app.staticTexts["e2e-scenario-state"], equalTo: "protected_loaded")
+        let counters = try await waitForCounters { ($0["protected"] as? Int) == 1 }
+        XCTAssertEqual(counters["protected"] as? Int, 1)
 
         app.open(deepLink)
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
@@ -273,6 +282,16 @@ final class RowndRealHubAuthenticationUITests: XCTestCase {
     ) throws {
         let expectation = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "exists == true AND label == %@", label),
+            object: element
+        )
+        guard XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed else {
+            throw RealHubUITestError.timedOut
+        }
+    }
+
+    private func waitForDisappearance(_ element: XCUIElement, timeout: TimeInterval = 10) throws {
+        let expectation = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == false"),
             object: element
         )
         guard XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed else {

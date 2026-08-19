@@ -124,7 +124,7 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
 
     static func completeAuthenticationAfterAdoption(
         succeeded: Bool,
-        syncAuthState: () async -> Void,
+        syncAuthState: () async -> Bool,
         completion: () async -> Void
     ) async {
         guard succeeded else {
@@ -132,7 +132,10 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
             return
         }
 
-        await syncAuthState()
+        guard await syncAuthState() else {
+            logger.warning("Skipping Hub authentication completion because the Rownd auth state could not be synchronized")
+            return
+        }
         await completion()
     }
 
@@ -822,7 +825,7 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
                     )
                     await Self.completeAuthenticationAfterAdoption(
                         succeeded: sessionAdopted,
-                        syncAuthState: { _ = await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens() },
+                        syncAuthState: SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens,
                         completion: {
                             await Self.completeAuthentication(
                                 store: store,
