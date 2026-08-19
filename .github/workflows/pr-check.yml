@@ -37,7 +37,7 @@ jobs:
         run: npm ci
 
       - name: Resolve Swift dependencies
-        run: xcodebuild -resolvePackageDependencies -workspace rownd.xcworkspace -scheme Rownd
+        run: xcodebuild -resolvePackageDependencies -workspace RowndPackage.xcworkspace -scheme Rownd
 
       - name: Run PR tests
         run: npm run test:pr

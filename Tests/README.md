@@ -7,34 +7,27 @@ Run the tests by changing the target to `RowndTests` or running individual test 
 
 ### Integration and E2E tests
 
-The full E2E suite requires Node.js 22 or newer, Xcode 26.0.1, Docker, `cloudflared`, and an `iPhone 17` simulator. It uses `https://rownd-hub.supertokens.com` by default and creates a temporary HTTPS tunnel to the local test backend. Run `npm ci`, then run:
+The normal E2E suite requires Node.js 22 or newer, Xcode 26.0.1, Docker, an `iPhone 17` simulator, and a sibling `../supertokens-rownd-hub` checkout. CI uses Hub commit `2146e7ad6f67473d7d5aadab2f94cc5373c5ff0b`; use that revision when reproducing release failures. Install dependencies in both repositories, then run:
 
 ```sh
+npm ci
+npm ci --prefix ../supertokens-rownd-hub
 npm run test:e2e
 ```
 
 Run the same package and unit tests as the PR check with `npm run test:pr`. Run the complete release suite with `npm run test:all`.
 
-Set `IOS_HUB_BASE_URL` to test against a different deployed Hub.
+The E2E runner builds and starts the Hub automatically. Set `IOS_LOCAL_HUB_REPO` to use a different checkout path or `E2E_HUB_PORT` to change its port.
 
-For faster local development, install the sibling Hub dependencies once and run the E2E suite in local-Hub mode:
-
-```sh
-npm ci --prefix ../supertokens-rownd-hub
-npm run test:e2e:local-hub
-```
-
-Local-Hub mode builds and starts `../supertokens-rownd-hub` automatically and does not require `cloudflared`. Set `IOS_LOCAL_HUB_REPO` to use a different checkout path or `E2E_HUB_PORT` to change its port.
-
-This starts the local SuperTokens Core and backend harness before running the native integration suite, hosted example test, and rendered XCUITests against the selected Hub. The UI suite covers Hub OTP and magic-link authentication through the WKWebView bridge, restored-session sign-out, relaunch reconciliation of persisted legacy Rownd state against an existing SuperTokens session without remigration, and pending-email verification. Run UI and Safari tests through `npm run test:e2e`; running their lower-level scripts directly requires an HTTPS tunnel to the integration harness and a matching `IOS_PUBLIC_API_URL`.
+This starts the local Hub, SuperTokens Core, and backend harness before running the native integration suite, hosted example test, and rendered XCUITests. The UI suite covers Hub OTP and magic-link authentication through the WKWebView bridge, restored-session sign-out, relaunch reconciliation of persisted legacy Rownd state against an existing SuperTokens session without remigration, and pending-email verification. Run UI and Safari tests through the E2E runner so it can manage their dependencies and cleanup.
 
 The Safari custom-scheme handoff test runs separately on the simulator because the normal UI suite excludes it:
 
 ```sh
-npm run test:e2e:safari-handoff:local-plugin
+IOS_E2E_UI_SCRIPT=test:e2e:safari-handoff npm run test:e2e
 ```
 
-The local-plugin commands require a plugin checkout at `../../../supertokens-plugins/packages/rownd-nodejs` with its dependencies installed.
+The `test:e2e:local-plugin` and `test:e2e:safari-handoff:local-plugin` commands additionally require a plugin checkout at `../../../supertokens-plugins/packages/rownd-nodejs` with its dependencies installed.
 
 The test opens the generated verification link in Safari, confirms the browser-to-app handoff, and verifies replacement-session adoption and the persisted email. The normal suite also verifies custom-scheme delivery with XCTest system dispatch. The Android browser test similarly verifies Chrome-to-app dispatch separately from native verification and replacement-session adoption.
 
