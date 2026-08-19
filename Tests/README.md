@@ -7,7 +7,7 @@ Run the tests by changing the target to `RowndTests` or running individual test 
 
 ### Integration and E2E tests
 
-The full E2E suite requires Node.js 22 or newer, Xcode 26.0.1, Docker, an `iPhone 17` simulator, and a sibling `../supertokens-rownd-hub` checkout. Run `npm ci` in both repositories, then run:
+The full E2E suite requires Node.js 22 or newer, Xcode 26.0.1, Docker, `cloudflared`, and an `iPhone 17` simulator. It uses `https://rownd-hub.supertokens.com` by default and creates a temporary HTTPS tunnel to the local test backend. Run `npm ci`, then run:
 
 ```sh
 npm run test:e2e
@@ -15,7 +15,18 @@ npm run test:e2e
 
 Run the same package and unit tests as the PR check with `npm run test:pr`. Run the complete release suite with `npm run test:all`.
 
-This starts the local SuperTokens Core, backend harness, and dynamic Hub server before running the native integration suite, hosted example test, and rendered XCUITests. The UI suite covers real-Hub OTP and magic-link authentication through the WKWebView bridge, restored-session sign-out, relaunch reconciliation of persisted legacy Rownd state against an existing SuperTokens session without remigration, and pending-email verification. The lower-level `test:integration`, `test:e2e:example`, `test:e2e:ui`, and `test:e2e:safari-handoff` scripts require `npm run test:integration:harness` to already be running.
+Set `IOS_HUB_BASE_URL` to test against a different deployed Hub.
+
+For faster local development, install the sibling Hub dependencies once and run the E2E suite in local-Hub mode:
+
+```sh
+npm ci --prefix ../supertokens-rownd-hub
+npm run test:e2e:local-hub
+```
+
+Local-Hub mode builds and starts `../supertokens-rownd-hub` automatically and does not require `cloudflared`. Set `IOS_LOCAL_HUB_REPO` to use a different checkout path or `E2E_HUB_PORT` to change its port.
+
+This starts the local SuperTokens Core and backend harness before running the native integration suite, hosted example test, and rendered XCUITests against the selected Hub. The UI suite covers Hub OTP and magic-link authentication through the WKWebView bridge, restored-session sign-out, relaunch reconciliation of persisted legacy Rownd state against an existing SuperTokens session without remigration, and pending-email verification. Run UI and Safari tests through `npm run test:e2e`; running their lower-level scripts directly requires an HTTPS tunnel to the integration harness and a matching `IOS_PUBLIC_API_URL`.
 
 The Safari custom-scheme handoff test runs separately on the simulator because the normal UI suite excludes it:
 

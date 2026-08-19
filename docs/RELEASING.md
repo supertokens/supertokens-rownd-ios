@@ -2,12 +2,7 @@
 
 ## Setup
 
-Add these GitHub Actions repository secrets:
-
-- `COCOAPODS_TRUNK_TOKEN`: CocoaPods Trunk publishing token.
-- `ROWND_HUB_TOKEN`: Fine-grained GitHub token with read-only Contents access to the private `supertokens-rownd-hub` repository.
-
-The release workflow uses the built-in `GITHUB_TOKEN` to create the release commit, tag, and GitHub release.
+Add `COCOAPODS_TRUNK_USERNAME` and `COCOAPODS_TRUNK_PASSWORD` as GitHub Actions repository secrets. The release workflow writes them to a permission-restricted `~/.netrc` entry for `trunk.cocoapods.org`. It uses the built-in `GITHUB_TOKEN` to create the release commit, tag, and GitHub release.
 
 ## Release
 

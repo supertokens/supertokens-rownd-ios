@@ -38,26 +38,17 @@ struct TestInfrastructure {
     }
 
     static func waitForHub(timeout: TimeInterval = 30) async throws {
-        let hubURL: URL
-        if let configuredURL = ProcessInfo.processInfo.environment["TEST_HUB_URL"],
-            let url = URL(string: configuredURL)
-        {
-            hubURL = url
-        } else {
-            let configURL = backendURL.appendingPathComponent("config")
-            let (data, response) = try await URLSession.shared.data(from: configURL)
-            guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-                throw RowndError("Failed to load the integration harness config")
-            }
-
-            let config = try JSONDecoder().decode(HarnessConfig.self, from: data)
-            guard let url = URL(string: config.hubBaseUrl) else {
-                throw RowndError("The integration harness returned an invalid Hub URL")
-            }
-            hubURL = url
+        let configURL = backendURL.appendingPathComponent("config")
+        let (data, response) = try await URLSession.shared.data(from: configURL)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+            throw RowndError("Failed to load the integration harness config")
         }
 
-        try await waitForHealth(url: hubURL.appendingPathComponent("health"), timeout: timeout)
+        let config = try JSONDecoder().decode(HarnessConfig.self, from: data)
+        guard let hubURL = URL(string: config.hubHealthUrl) else {
+            throw RowndError("The integration harness returned an invalid Hub health URL")
+        }
+        try await waitForHealth(url: hubURL, timeout: timeout)
     }
 
     static func waitForHealth(url: URL, timeout: TimeInterval) async throws {
@@ -90,7 +81,7 @@ struct TestInfrastructure {
 }
 
 private struct HarnessConfig: Decodable {
-    let hubBaseUrl: String
+    let hubHealthUrl: String
 }
 
 private final class InMemorySuperTokensSessionStorage: TokenStorage, SuperTokensSessionStorage {

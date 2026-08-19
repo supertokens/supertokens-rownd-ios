@@ -206,7 +206,6 @@ final class RowndRealHubAuthenticationUITests: XCTestCase {
         XCTAssertTrue(emailField.waitForExistence(timeout: 15))
         emailField.tap()
         emailField.typeText(email)
-        try waitForLabel(app.staticTexts["e2e-challenge-state"], equalTo: "clear")
         let continueButton = webView.buttons["Continue"]
         XCTAssertTrue(continueButton.waitForExistence(timeout: 10))
         continueButton.tap()
@@ -282,9 +281,11 @@ final class RowndRealHubAuthenticationUITests: XCTestCase {
     }
 
     private func waitForPasswordlessCapture(email: String) async throws -> [String: Any] {
-        try await poll(path: "test/passwordless/latest") {
-            $0["status"] as? String == "OK" && $0["email"] as? String == email
+        let capture = try await poll(path: "test/passwordless/latest") {
+            $0["status"] as? String == "OK"
         }
+        XCTAssertEqual(try XCTUnwrap(capture["email"] as? String), email)
+        return capture
     }
 
     private func waitForConsumes(count: Int) async throws -> [String: Any] {

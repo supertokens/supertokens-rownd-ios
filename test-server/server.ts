@@ -69,7 +69,8 @@ type IntegrationHarness = {
 
 const port = Number(process.env.IOS_HARNESS_PORT || 3100);
 const appName = 'Rownd iOS Integration Tests';
-const hubBaseUrl = process.env.IOS_HUB_BASE_URL || 'http://127.0.0.1:8787';
+const hubBaseUrl = process.env.IOS_HUB_BASE_URL || 'https://rownd-hub.supertokens.com';
+const hubHealthUrl = process.env.IOS_HUB_HEALTH_URL || hubBaseUrl;
 const websiteDomain = process.env.IOS_WEBSITE_DOMAIN || new URL(hubBaseUrl).origin;
 const appId = 'app_test_rownd_ios';
 const appKey = 'test_app_key';
@@ -249,6 +250,8 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
 
   server = started.server;
   const apiUrl = `http://127.0.0.1:${started.port}`;
+  const publicApiUrl = process.env.IOS_PUBLIC_API_URL || apiUrl;
+  const publicTunnelHostHeader = process.env.IOS_PUBLIC_TUNNEL_HOST_HEADER;
 
   SuperTokens.init({
     supertokens: {
@@ -256,7 +259,7 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
     },
     appInfo: {
       appName,
-      apiDomain: apiUrl,
+      apiDomain: publicApiUrl,
       websiteDomain,
     },
     recipeList: [
@@ -392,6 +395,19 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
       }) as any,
   });
 
+  app.use((req, res, next) => {
+    if (
+      publicTunnelHostHeader &&
+      req.hostname === publicTunnelHostHeader &&
+      req.path !== '/health' &&
+      !req.path.startsWith('/auth/') &&
+      !req.path.startsWith('/hub/')
+    ) {
+      res.sendStatus(404);
+      return;
+    }
+    next();
+  });
   app.use(
     cors({
       origin: websiteDomain,
@@ -571,9 +587,10 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
       appId,
       appKey,
       hubBaseUrl,
+      hubHealthUrl,
       supertokens: {
         appInfo: {
-          apiDomain: apiUrl,
+          apiDomain: publicApiUrl,
           apiBasePath: '/auth',
         },
       },
