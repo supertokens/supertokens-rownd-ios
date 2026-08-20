@@ -68,7 +68,9 @@ class BottomSheetViewController: UIViewController {
 
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
+        (controller as? HubViewController)?.hostDidDisappear()
         self.controller = nil
+        self.sheetController = nil
     }
 
     func updateBottomSheetHeight(_ number: CGFloat) {
@@ -77,7 +79,11 @@ class BottomSheetViewController: UIViewController {
     }
 
     public func hideBottomSheet(_ completion: (() -> Void)? = nil) {
-        sheetController?.dismiss(completion)
+        guard let sheetController = sheetController else {
+            completion?()
+            return
+        }
+        sheetController.dismiss(completion)
     }
 
     private func triggerSheetHeightUpdate() {

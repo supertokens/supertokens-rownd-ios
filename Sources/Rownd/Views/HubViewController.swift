@@ -28,6 +28,7 @@ public class HubViewController: UIViewController, HubViewProtocol, BottomSheetHo
     var targetPage = HubPageSelector.unknown
     var hostController: BottomSheetViewController?
     var isBottomSheetDismissing: Bool = false
+    private var hideCompletions: [() -> Void] = []
 
     static func buildHubLoaderUrl(
         baseUrl: String,
@@ -179,6 +180,10 @@ public class HubViewController: UIViewController, HubViewProtocol, BottomSheetHo
     }
 
     public override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        guard !isBottomSheetDismissing else {
+            return
+        }
         guard let hostController = hostController else {
             return
         }
@@ -219,8 +224,22 @@ public class HubViewController: UIViewController, HubViewProtocol, BottomSheetHo
     }
 
     func hide() {
+        hide(completion: nil)
+    }
+
+    func hide(completion: (() -> Void)?) {
+        if let completion = completion {
+            hideCompletions.append(completion)
+        }
+
         guard let bottomSheetController = hostController else {
-            self.dismiss(animated: true)
+            guard presentingViewController != nil else {
+                completeHide()
+                return
+            }
+            self.dismiss(animated: true) {
+                self.completeHide()
+            }
             return
         }
         
@@ -230,9 +249,21 @@ public class HubViewController: UIViewController, HubViewProtocol, BottomSheetHo
         
         isBottomSheetDismissing = true
         bottomSheetController.hideBottomSheet({
-            self.dismiss(animated: true)
-            self.isBottomSheetDismissing = false
+            bottomSheetController.dismiss(animated: true) {
+                self.completeHide()
+            }
         })
+    }
+
+    func hostDidDisappear() {
+        completeHide()
+    }
+
+    private func completeHide() {
+        isBottomSheetDismissing = false
+        let completions = hideCompletions
+        hideCompletions.removeAll()
+        completions.forEach { $0() }
     }
 
     func show() {

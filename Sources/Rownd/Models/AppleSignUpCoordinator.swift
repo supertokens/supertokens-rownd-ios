@@ -48,10 +48,30 @@ class AppleSignUpCoordinator: NSObject, ASAuthorizationControllerDelegate, ASAut
     var parent: Rownd?
     var intent: RowndSignInIntent?
     var cancellables = Set<AnyCancellable>()
-    var signInClient = SuperTokensThirdPartySignInClient()
+    var signInWithApple: (String, String?) async throws -> SuperTokensThirdPartySignInResponse
+    var syncAuthState: () async -> Void = {
+        await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens()
+    }
+    var waitBeforeCompletion: () async -> Void = {
+        try? await Task.sleep(nanoseconds: UInt64(2 * Double(NSEC_PER_SEC)))
+    }
+    var dismissHub: (UUID) async -> Void = { requestID in
+        await Rownd.dismissHub(requestID: requestID)
+    }
+    var emitEvent: (RowndEvent) async -> Void = { event in
+        await MainActor.run {
+            RowndEventEmitter.emit(event)
+        }
+    }
 
-    init(_ parent: Rownd) {
+    init(_ parent: Rownd, signInClient: SuperTokensThirdPartySignInClient = SuperTokensThirdPartySignInClient()) {
         self.parent = parent
+        self.signInWithApple = { authorizationCode, clientType in
+            try await signInClient.signInWithApple(
+                authorizationCode: authorizationCode,
+                clientType: clientType
+            )
+        }
         super.init()
     }
 
@@ -83,13 +103,6 @@ class AppleSignUpCoordinator: NSObject, ASAuthorizationControllerDelegate, ASAut
 
     // If authorization is successful then this method will get triggered
     func authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization) {
-
-        DispatchQueue.main.async {
-            Rownd.requestSignIn(jsFnOptions: RowndSignInJsOptions(
-                loginStep: .completing
-            ))
-        }
-
         switch authorization.credential {
         case let appleIDCredential as ASAuthorizationAppleIDCredential:
 
@@ -118,45 +131,22 @@ class AppleSignUpCoordinator: NSObject, ASAuthorizationControllerDelegate, ASAut
             if let authorizationCode = authorizationCode,
                let authCode = String(data: authorizationCode, encoding: .utf8) {
 
-                Task { [userAppleSignInData] in
-                    do {
-                        let clientType = Context.currentContext.store.state.appConfig.config?.hub?.auth?.signInMethods?.apple?.iosClientType
-                        let signInResponse = try await signInClient.signInWithApple(authorizationCode: authCode, clientType: clientType)
-                        await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens()
-
-                        Task { @MainActor in
-                            Rownd.requestSignIn(jsFnOptions: RowndSignInJsOptions(
-                                loginStep: RowndSignInLoginStep.success,
-                                intent: self.intent,
-                                userType: signInResponse.userType,
-                                appVariantUserType: signInResponse.userType
-                            ))
-                        }
-
-                        // Prevent fast auth handshakes from feeling jarring to the user
-                        try await Task.sleep(nanoseconds: UInt64(2 * Double(NSEC_PER_SEC)))
-
-                        DispatchQueue.main.async {
-                            Context.currentContext.store.dispatch(SetLastSignInMethod(payload: SignInMethodTypes.apple))
-
-                            self.updateUserDataWithAppleData(fullName: fullName, email: email)
-                            RowndEventEmitter.emit(RowndEvent(
-                                event: .signInCompleted,
-                                data: [
-                                    "method": AnyCodable(SignInType.apple.rawValue),
-                                    "user_type": AnyCodable(signInResponse.userType.rawValue),
-                                    "app_variant_user_type": AnyCodable(signInResponse.userType.rawValue)
-                                ]
-                            ))
-                        }
-                    } catch {
-                        DispatchQueue.main.async {
-                            Rownd.requestSignIn(jsFnOptions: RowndSignInJsOptions(
-                                loginStep: .error,
-                                signInType: .apple
-                            ))
-                        }
+                let intent = self.intent
+                Task {
+                    let hubRequestID = UUID()
+                    await MainActor.run {
+                        Rownd.requestSignInForNativeCompletion(
+                            jsFnOptions: RowndSignInJsOptions(loginStep: .completing),
+                            requestID: hubRequestID
+                        )
                     }
+                    await self.completeSignIn(
+                        authorizationCode: authCode,
+                        fullName: fullName,
+                        email: email,
+                        intent: intent,
+                        hubRequestID: hubRequestID
+                    )
                 }
             } else {
                 logger.error("Missing data from Apple sign-in response: \(String(describing: appleIDCredential))")
@@ -174,6 +164,58 @@ class AppleSignUpCoordinator: NSObject, ASAuthorizationControllerDelegate, ASAut
             ))
             break
         }
+    }
+
+    func completeSignIn(
+        authorizationCode: String,
+        fullName: PersonNameComponents?,
+        email: String?,
+        intent: RowndSignInIntent?,
+        hubRequestID: UUID
+    ) async {
+        let signInResponse: SuperTokensThirdPartySignInResponse
+        do {
+            let clientType = Context.currentContext.store.state.appConfig.config?.hub?.auth?.signInMethods?.apple?.iosClientType
+            signInResponse = try await signInWithApple(authorizationCode, clientType)
+            await syncAuthState()
+        } catch {
+            await MainActor.run {
+                Rownd.requestSignIn(jsFnOptions: RowndSignInJsOptions(
+                    loginStep: .error,
+                    signInType: .apple
+                ))
+            }
+            return
+        }
+
+        await MainActor.run {
+            Rownd.updateSignInForNativeCompletion(
+                jsFnOptions: RowndSignInJsOptions(
+                    loginStep: RowndSignInLoginStep.success,
+                    intent: intent,
+                    userType: signInResponse.userType,
+                    appVariantUserType: signInResponse.userType
+                ),
+                requestID: hubRequestID
+            )
+        }
+
+        // Prevent fast auth handshakes from feeling jarring to the user
+        await waitBeforeCompletion()
+        await dismissHub(hubRequestID)
+
+        await MainActor.run {
+            Context.currentContext.store.dispatch(SetLastSignInMethod(payload: SignInMethodTypes.apple))
+            self.updateUserDataWithAppleData(fullName: fullName, email: email)
+        }
+        await emitEvent(RowndEvent(
+            event: .signInCompleted,
+            data: [
+                "method": AnyCodable(SignInType.apple.rawValue),
+                "user_type": AnyCodable(signInResponse.userType.rawValue),
+                "app_variant_user_type": AnyCodable(signInResponse.userType.rawValue)
+            ]
+        ))
     }
 
     func updateUserDataWithAppleData(fullName: PersonNameComponents?, email: String?) {
