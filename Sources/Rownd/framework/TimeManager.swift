@@ -1,6 +1,7 @@
 import Foundation
 import Get
 import OSLog
+import ReSwift
 
 // Data structure for the World Time API response
 struct WorldTimeResponse: Codable {
@@ -15,12 +16,18 @@ class NetworkTimeManager {
     internal static let shared = NetworkTimeManager()
 
     private let log = Logger(subsystem: "io.rownd.sdk", category: "TimeManager")
-    private var fetchTimeTask: Task<(), Never>?
+    private let startLock = NSLock()
+    private let stateLock = NSLock()
+    private var didStart = false
+    private var fetchTimeTask: Task<Bool, Never>?
     private var fetchedWorldTime: Date?
     private var fetchTime: Date?
 
     internal var currentTime: Date? {
         get {
+            let (fetchedWorldTime, fetchTime) = stateLock.withLock {
+                (self.fetchedWorldTime, self.fetchTime)
+            }
             guard let fetchedWorldTime = fetchedWorldTime, let fetchTime = fetchTime else {
                 log.warning("Network time not available.")
                 return nil
@@ -36,32 +43,48 @@ class NetworkTimeManager {
 
     let client = APIClient(baseURL: URL(string: "https://time.rownd.io"))
 
-    init() {
+    // Starts process-wide synchronization once. The first store receives clock state updates.
+    func start(store: Store<RowndState>) {
+        let shouldStart = startLock.withLock {
+            guard !didStart else {
+                return false
+            }
+            didStart = true
+            return true
+        }
+        guard shouldStart else {
+            return
+        }
+
         let ntpStart = Date()
         Task {
-            await fetchWorldTime()
+            guard await fetchWorldTime() else {
+                return
+            }
 
-            Task { @MainActor in
-                if Context.currentContext.store.state.clockSyncState != .synced {
-                    Context.currentContext.store.dispatch(SetClockSync(clockSyncState: .synced))
+            await MainActor.run {
+                if store.state.clockSyncState != .synced {
+                    store.dispatch(SetClockSync(clockSyncState: .synced))
                 }
             }
         }
 
-        Task {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                if Context.currentContext.store.state.clockSyncState == .waiting {
-                    self.log.warning("TimeManager clock not synced after \(ntpStart.distance(to: Date())) seconds.")
-                    Context.currentContext.store.dispatch(SetClockSync(clockSyncState: .unknown))
-                }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            if store.state.clockSyncState == .waiting {
+                self.log.warning("TimeManager clock not synced after \(ntpStart.distance(to: Date())) seconds.")
+                store.dispatch(SetClockSync(clockSyncState: .unknown))
             }
         }
     }
 
     // Fetch the current world time and store the initial reference
-    func fetchWorldTime() async {
-        let task = Task {
-            defer { fetchTimeTask = nil }
+    func fetchWorldTime() async -> Bool {
+        let task = Task { () -> Bool in
+            defer {
+                stateLock.withLock {
+                    fetchTimeTask = nil
+                }
+            }
 
             do {
                 let response: WorldTimeResponse = try await client.send(Request(path: "/now")).value
@@ -72,42 +95,46 @@ class NetworkTimeManager {
                 formatter.locale = Locale(identifier: "en_US_POSIX")
                 formatter.timeZone = TimeZone(secondsFromGMT: 0)
 
-                if let fetchedDate = formatter.date(from: response.utcDateTime) {
-                    // Store the fetched world time and the system time when fetched
+                guard let fetchedDate = formatter.date(from: response.utcDateTime) else {
+                    log.warning("Error parsing network time")
+                    return false
+                }
+
+                stateLock.withLock {
                     self.fetchedWorldTime = fetchedDate
                     self.fetchTime = Date()
-                } else {
-                    log.warning("Error parsing network time")
                 }
+                return true
             } catch {
                 log.warning("Error fetching network time: \(error)")
+                return false
             }
         }
 
-        self.fetchTimeTask = task
+        stateLock.withLock {
+            fetchTimeTask = task
+        }
 
         return await task.value
     }
 
     // Get the current world time without re-fetching
     func getCurrentWorldTime() async -> Date {
-        if let fetchTimeTask = fetchTimeTask {
-            await fetchTimeTask.value
+        let pendingTask: Task<Bool, Never>? = stateLock.withLock {
+            self.fetchTimeTask
+        }
+        if let pendingTask = pendingTask {
+            _ = await pendingTask.value
         }
 
-        if fetchedWorldTime == nil {
-            await fetchWorldTime()
+        if currentTime == nil {
+            _ = await fetchWorldTime()
         }
 
-        guard let fetchedWorldTime = fetchedWorldTime, let fetchTime = fetchTime else {
+        guard let currentTime = currentTime else {
             log.warning("Network time not found. Using local time instead")
             return Date()
         }
-
-        // Calculate the time passed since the world time was fetched
-        let timePassed = Date().timeIntervalSince(fetchTime)
-
-        // Add the time passed to the fetched world time to get the current world time
-        return fetchedWorldTime.addingTimeInterval(timePassed)
+        return currentTime
     }
 }

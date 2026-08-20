@@ -65,6 +65,8 @@ public class Rownd: NSObject {
         }
         config.appVariantId = appVariantId
 
+        NetworkTimeManager.shared.start(store: Context.currentContext.store)
+
         let installationPreparation: InstallationSessionManager.Preparation
         do {
             installationPreparation = try InstallationSessionManager.prepareForInitialization(

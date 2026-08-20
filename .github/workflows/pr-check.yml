@@ -27,17 +27,19 @@ jobs:
         with:
           xcode-version: 26.0.1
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - name: Cache Swift dependencies
+        uses: actions/cache@v4
         with:
-          node-version: 22
-          cache: npm
-
-      - name: Install iOS SDK dependencies
-        run: npm ci
+          path: ${{ runner.temp }}/swiftpm
+          key: ${{ runner.os }}-${{ runner.arch }}-xcode-26.0.1-swiftpm-${{ hashFiles('Package.resolved', 'rownd.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-xcode-26.0.1-swiftpm-
 
       - name: Resolve Swift dependencies
-        run: xcodebuild -resolvePackageDependencies -workspace RowndPackage.xcworkspace -scheme Rownd
+        run: xcodebuild -resolvePackageDependencies -workspace RowndPackage.xcworkspace -scheme Rownd -clonedSourcePackagesDirPath "$RUNNER_TEMP/swiftpm"
 
-      - name: Run PR tests
-        run: npm run test:pr
+      - name: Run package tests
+        run: xcodebuild -workspace RowndPackage.xcworkspace -scheme Rownd -destination 'platform=iOS Simulator,name=iPhone 17' -clonedSourcePackagesDirPath "$RUNNER_TEMP/swiftpm" -skip-testing:RowndIntegrationTests -parallel-testing-enabled NO test
+
+      - name: Run example configuration test
+        run: xcodebuild -workspace rownd.xcworkspace -scheme rownd_ios_example -destination 'platform=iOS Simulator,name=iPhone 17' -clonedSourcePackagesDirPath "$RUNNER_TEMP/swiftpm" -only-testing:rownd_ios_exampleTests/RowndExampleTests/testSuperTokensConfigDefaultsToAuthBasePath test

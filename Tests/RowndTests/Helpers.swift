@@ -19,58 +19,83 @@ extension APIClient {
     }
 }
 
-private enum GlobalTestLock {
-    static let queue = DispatchQueue(label: "io.rownd.tests.global-lock")
-}
+private final class GlobalTestLock: @unchecked Sendable {
+    static let shared = GlobalTestLock()
 
-private final class AsyncResultBox<T>: @unchecked Sendable {
-    private let semaphore = DispatchSemaphore(value: 0)
     private let lock = NSLock()
-    private var result: Result<T, Error>?
+    private var isLocked = false
+    private var waiters: [Waiter] = []
 
-    func succeed(_ value: T) {
-        finish(.success(value))
+    private enum Waiter {
+        case asynchronous(CheckedContinuation<Void, Never>)
+        case synchronous(DispatchSemaphore)
     }
 
-    func fail(_ error: Error) {
-        finish(.failure(error))
+    func acquire() async {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if isLocked {
+                waiters.append(.asynchronous(continuation))
+                lock.unlock()
+                return
+            }
+
+            isLocked = true
+            lock.unlock()
+            continuation.resume()
+        }
     }
 
-    private func finish(_ result: Result<T, Error>) {
+    func acquireSynchronously() {
+        let semaphore = DispatchSemaphore(value: 0)
         lock.lock()
-        self.result = result
+        if isLocked {
+            waiters.append(.synchronous(semaphore))
+            lock.unlock()
+            semaphore.wait()
+            return
+        }
+
+        isLocked = true
         lock.unlock()
-        semaphore.signal()
     }
 
-    func wait() throws -> T {
-        semaphore.wait()
+    func release() {
         lock.lock()
-        defer { lock.unlock() }
-        return try result!.get()
+        guard !waiters.isEmpty else {
+            isLocked = false
+            lock.unlock()
+            return
+        }
+
+        let waiter = waiters.removeFirst()
+        lock.unlock()
+
+        switch waiter {
+        case .asynchronous(let continuation):
+            continuation.resume()
+        case .synchronous(let semaphore):
+            semaphore.signal()
+        }
     }
 }
 
 func withGlobalTestLock<T>(_ operation: @escaping @Sendable () async throws -> T) async throws -> T {
-    try await Task.detached(priority: .userInitiated) {
-        try GlobalTestLock.queue.sync {
-            let box = AsyncResultBox<T>()
-
-            Task {
-                do {
-                    box.succeed(try await operation())
-                } catch {
-                    box.fail(error)
-                }
-            }
-
-            return try box.wait()
-        }
-    }.value
+    await GlobalTestLock.shared.acquire()
+    do {
+        let result = try await operation()
+        GlobalTestLock.shared.release()
+        return result
+    } catch {
+        GlobalTestLock.shared.release()
+        throw error
+    }
 }
 
 func withSynchronousGlobalTestLock<T>(_ operation: () throws -> T) throws -> T {
-    try GlobalTestLock.queue.sync {
-        try operation()
+    GlobalTestLock.shared.acquireSynchronously()
+    defer {
+        GlobalTestLock.shared.release()
     }
+    return try operation()
 }

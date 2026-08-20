@@ -15,7 +15,7 @@
     "test:e2e": "tsx test-server/run-e2e.ts",
     "test:e2e:local-plugin": "npm --prefix ../../../supertokens-plugins/packages/rownd-nodejs run build && rm -rf node_modules/@supertokens-plugins/rownd-nodejs && npm install --no-save --package-lock=false --legacy-peer-deps ../../../supertokens-plugins/packages/rownd-nodejs && npm run test:e2e",
     "test:e2e:safari-handoff:local-plugin": "npm --prefix ../../../supertokens-plugins/packages/rownd-nodejs run build && rm -rf node_modules/@supertokens-plugins/rownd-nodejs && npm install --no-save --package-lock=false --legacy-peer-deps ../../../supertokens-plugins/packages/rownd-nodejs && IOS_E2E_UI_SCRIPT=test:e2e:safari-handoff npm run test:e2e",
-    "test:package": "npm run test:package:auth && npm run test:package:rownd && npm run test:package:shared",
+    "test:package": "xcodebuild -workspace RowndPackage.xcworkspace -scheme Rownd -destination 'platform=iOS Simulator,name=iPhone 17' -skip-testing:RowndIntegrationTests -parallel-testing-enabled NO test",
     "test:pr": "npm run test:package && npm run test:example:unit",
     "test:all": "npm run test:pr && npm run test:e2e && IOS_E2E_UI_SCRIPT=test:e2e:safari-handoff npm run test:e2e",
     "release": "release-it"

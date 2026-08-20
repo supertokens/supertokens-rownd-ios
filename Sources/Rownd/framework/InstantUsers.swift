@@ -10,12 +10,15 @@ import Combine
 @MainActor
 class InstantUsers {
     private let context: Context
+    private let requestSignIn: @MainActor (RowndSignInOptions) -> Void
     private var cancellables = Set<AnyCancellable>()
 
     init(
-        context: Context
+        context: Context,
+        requestSignIn: @escaping @MainActor (RowndSignInOptions) -> Void = Rownd.requestSignIn
     ) {
         self.context = context
+        self.requestSignIn = requestSignIn
     }
 
     func tmpForceInstantUserConversionIfRequested() {
@@ -23,9 +26,10 @@ class InstantUsers {
             return
         }
 
-        let subscriber = Context.currentContext.store.subscribe {
+        let subscriber = context.store.subscribe {
             $0
         }
+        let requestSignIn = requestSignIn
         subscriber.$current
             .map {
                 (
@@ -49,8 +53,7 @@ class InstantUsers {
                 signInOptions.title = "Add a sign-in method"
                 signInOptions.subtitle = "To make sure you can always access your account, please add a sign-in method."
                 signInOptions.intent = .signUp
-                Rownd
-                    .requestSignIn(signInOptions)
+                requestSignIn(signInOptions)
 
                 subscriber
                     .unsubscribe()
