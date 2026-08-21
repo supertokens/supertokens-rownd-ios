@@ -14,7 +14,7 @@ final class RowndRealHubAuthenticationUITests: XCTestCase {
 
     func testEmailOTPFromRealHubEstablishesUsableNativeSessionAndCompletesOnce() async throws {
         let app = try await launchIsolatedApp(resetSession: true)
-        let email = "ios-real-hub-otp-\(UUID().uuidString.lowercased())@example.com"
+        let email = uniqueEmail(prefix: "ios-real-hub-otp")
 
         try startEmailSignIn(email, in: app)
         let capture = try await waitForPasswordlessCapture(email: email)
@@ -49,7 +49,7 @@ final class RowndRealHubAuthenticationUITests: XCTestCase {
         }
 
         let app = try await launchIsolatedApp(resetSession: true)
-        let email = "ios-real-hub-link-\(UUID().uuidString.lowercased())@example.com"
+        let email = uniqueEmail(prefix: "ios-real-hub-link")
         try startEmailSignIn(email, in: app)
         let capture = try await waitForPasswordlessCapture(email: email)
         let capturedLink = try XCTUnwrap(capture["urlWithLinkCode"] as? String)
@@ -300,11 +300,18 @@ final class RowndRealHubAuthenticationUITests: XCTestCase {
     }
 
     private func waitForPasswordlessCapture(email: String) async throws -> [String: Any] {
-        let capture = try await poll(path: "test/passwordless/latest") {
-            $0["status"] as? String == "OK"
+        try await poll(path: "test/passwordless/latest") {
+            $0["status"] as? String == "OK" && $0["email"] as? String == email
         }
-        XCTAssertEqual(try XCTUnwrap(capture["email"] as? String), email)
-        return capture
+    }
+
+    private func uniqueEmail(prefix: String) -> String {
+        let suffix = UUID().uuidString.lowercased().replacingOccurrences(
+            of: "[0-9]",
+            with: "x",
+            options: .regularExpression
+        )
+        return "\(prefix)-\(suffix)@example.com"
     }
 
     private func waitForConsumes(count: Int) async throws -> [String: Any] {

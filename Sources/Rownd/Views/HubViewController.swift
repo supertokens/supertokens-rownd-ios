@@ -28,6 +28,9 @@ public class HubViewController: UIViewController, HubViewProtocol, BottomSheetHo
     var targetPage = HubPageSelector.unknown
     var hostController: BottomSheetViewController?
     var isBottomSheetDismissing: Bool = false
+    var presentationRequestID: UUID?
+    var onDismissalStarted: ((UUID) -> Void)?
+    var onDisappeared: ((UUID) -> Void)?
     private var hideCompletions: [() -> Void] = []
 
     static func buildHubLoaderUrl(
@@ -181,6 +184,9 @@ public class HubViewController: UIViewController, HubViewProtocol, BottomSheetHo
 
     public override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        if let presentationRequestID {
+            onDismissalStarted?(presentationRequestID)
+        }
         guard !isBottomSheetDismissing else {
             return
         }
@@ -242,6 +248,10 @@ public class HubViewController: UIViewController, HubViewProtocol, BottomSheetHo
             }
             return
         }
+
+        if let presentationRequestID {
+            onDismissalStarted?(presentationRequestID)
+        }
         
         if (isBottomSheetDismissing) {
             return
@@ -257,6 +267,15 @@ public class HubViewController: UIViewController, HubViewProtocol, BottomSheetHo
 
     func hostDidDisappear() {
         completeHide()
+        if let presentationRequestID {
+            onDisappeared?(presentationRequestID)
+        }
+    }
+
+    func hostDismissalStarted() {
+        if let presentationRequestID {
+            onDismissalStarted?(presentationRequestID)
+        }
     }
 
     private func completeHide() {

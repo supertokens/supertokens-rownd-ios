@@ -28,6 +28,9 @@ public class Rownd: NSObject {
         inst)
     @MainActor private var _bottomSheetController: BottomSheetViewController?
     @MainActor private var activeHubRequestID: UUID?
+    @MainActor private var presentedHubRequestID: UUID?
+    @MainActor private var dismissingHubRequestID: UUID?
+    @MainActor private var pendingHubRequest: HubPresentationRequest?
     internal static var apiClient = RowndApi().client
     internal static let automationsCoordinator = AutomationsCoordinator()
     internal static var customerWebViews = CustomerWebViewManager()
@@ -37,6 +40,12 @@ public class Rownd: NSObject {
     private static var isConfigurationComplete = false
     private static var pendingSmartLinkUrls: [URL] = []
     internal static var displayHubHandler: ((HubPageSelector, Encodable?) -> Void)?
+
+    private struct HubPresentationRequest {
+        let page: HubPageSelector
+        let jsFnOptions: Encodable?
+        let requestID: UUID
+    }
 
     // Run processAutomations() every second to support time-based automations
     internal var automationTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
@@ -253,6 +262,10 @@ public class Rownd: NSObject {
             return
         }
         inst.displayHubOnMainActor(.signIn, jsFnOptions: jsFnOptions, requestID: requestID)
+    }
+
+    @MainActor internal static func isNativeHubRequestActive(_ requestID: UUID) -> Bool {
+        inst.activeHubRequestID == requestID
     }
 
     internal static func openHubDeepLink(_ url: URL) {
@@ -517,9 +530,65 @@ public class Rownd: NSObject {
             return
         }
 
+        let request = HubPresentationRequest(
+            page: page,
+            jsFnOptions: jsFnOptions,
+            requestID: requestID
+        )
+        guard dismissingHubRequestID == nil else {
+            pendingHubRequest = request
+            return
+        }
+
+        presentHub(request)
+    }
+
+    @MainActor private func presentHub(_ request: HubPresentationRequest) {
+        presentedHubRequestID = request.requestID
+
         let hubController = getHubViewController()
-        hubController.loadNewPage(targetPage: page, jsFnOptions: jsFnOptions)
+        hubController.presentationRequestID = request.requestID
+        hubController.onDismissalStarted = { [weak self] requestID in
+            self?.hubDismissalStarted(requestID: requestID)
+        }
+        hubController.onDisappeared = { [weak self] requestID in
+            self?.hubDidDisappear(requestID: requestID)
+        }
+        hubController.loadNewPage(targetPage: request.page, jsFnOptions: request.jsFnOptions)
         displayViewControllerOnTop(hubController)
+    }
+
+    @MainActor private func hubDismissalStarted(requestID: UUID) {
+        guard presentedHubRequestID == requestID else {
+            return
+        }
+        dismissingHubRequestID = requestID
+    }
+
+    @MainActor private func hubDidDisappear(requestID: UUID) {
+        if activeHubRequestID == requestID {
+            activeHubRequestID = nil
+        }
+        if presentedHubRequestID == requestID {
+            presentedHubRequestID = nil
+        }
+        if dismissingHubRequestID == requestID {
+            dismissingHubRequestID = nil
+        }
+
+        Task { @MainActor [weak self] in
+            self?.presentPendingHubIfPossible()
+        }
+    }
+
+    @MainActor private func presentPendingHubIfPossible() {
+        guard dismissingHubRequestID == nil,
+              let pendingHubRequest,
+              activeHubRequestID == pendingHubRequest.requestID else {
+            return
+        }
+        self.pendingHubRequest = nil
+        presentHub(pendingHubRequest)
     }
 
     @MainActor private func getHubViewController() -> HubViewController {
@@ -565,6 +634,8 @@ public class Rownd: NSObject {
               inst.bottomSheetController.presentingViewController != nil else {
             return
         }
+
+        inst.hubDismissalStarted(requestID: requestID)
 
         await withCheckedContinuation { continuation in
             hubViewController.hide {

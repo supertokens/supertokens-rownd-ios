@@ -16,7 +16,7 @@ protocol BottomSheetHostProtocol {
     var hostController: BottomSheetViewController? { get set }
 }
 
-class BottomSheetViewController: UIViewController {
+class BottomSheetViewController: UIViewController, BottomSheetInteractionDelegate {
 
     let debouncer = Debouncer(delay: 0.1) // 500ms
     var controller: UIViewController?
@@ -52,7 +52,12 @@ class BottomSheetViewController: UIViewController {
         theme.grabber?.topMargin = CGFloat(10.0)
         theme.grabber?.size = CGSize(width: 100.0, height: 5.0)
 
-        sheetController = presentAsBottomSheet(controller, theme: theme, behavior: behavior)
+        sheetController = presentAsBottomSheet(
+            controller,
+            bottomSheetInteractionDelegate: self,
+            theme: theme,
+            behavior: behavior
+        )
 
     }
 
@@ -68,9 +73,10 @@ class BottomSheetViewController: UIViewController {
 
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
-        (controller as? HubViewController)?.hostDidDisappear()
+        let hubViewController = controller as? HubViewController
         self.controller = nil
         self.sheetController = nil
+        hubViewController?.hostDidDisappear()
     }
 
     func updateBottomSheetHeight(_ number: CGFloat) {
@@ -84,6 +90,12 @@ class BottomSheetViewController: UIViewController {
             return
         }
         sheetController.dismiss(completion)
+    }
+
+    func bottomSheetInteractionDidTapOutside() {}
+
+    func bottomSheetInteractionWillDismiss() {
+        (controller as? HubViewController)?.hostDismissalStarted()
     }
 
     private func triggerSheetHeightUpdate() {

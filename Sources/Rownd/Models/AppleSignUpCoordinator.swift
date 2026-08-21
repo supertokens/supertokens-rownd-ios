@@ -52,7 +52,7 @@ class AppleSignUpCoordinator: NSObject, ASAuthorizationControllerDelegate, ASAut
     var fetchAppConfig: () async -> AppConfigResponse? = {
         await AppConfig.fetch()
     }
-    var syncAuthState: () async -> Void = {
+    var syncAuthState: () async -> Bool = {
         await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens()
     }
     var waitBeforeCompletion: () async -> Void = {
@@ -193,7 +193,6 @@ class AppleSignUpCoordinator: NSObject, ASAuthorizationControllerDelegate, ASAut
         let signInResponse: SuperTokensThirdPartySignInResponse
         do {
             signInResponse = try await signInWithApple(authorizationCode, clientType)
-            await syncAuthState()
         } catch {
             await MainActor.run {
                 Rownd.updateSignInForNativeCompletion(
@@ -207,21 +206,38 @@ class AppleSignUpCoordinator: NSObject, ASAuthorizationControllerDelegate, ASAut
             return
         }
 
-        await MainActor.run {
-            Rownd.updateSignInForNativeCompletion(
-                jsFnOptions: RowndSignInJsOptions(
-                    loginStep: RowndSignInLoginStep.success,
-                    intent: intent,
-                    userType: signInResponse.userType,
-                    appVariantUserType: signInResponse.userType
-                ),
-                requestID: hubRequestID
-            )
+        guard await syncAuthState() else {
+            await MainActor.run {
+                Rownd.updateSignInForNativeCompletion(
+                    jsFnOptions: RowndSignInJsOptions(
+                        loginStep: .error,
+                        signInType: .apple
+                    ),
+                    requestID: hubRequestID
+                )
+            }
+            return
         }
 
-        // Prevent fast auth handshakes from feeling jarring to the user
-        await waitBeforeCompletion()
-        await dismissHub(hubRequestID)
+        if Rownd.isNativeHubRequestActive(hubRequestID) {
+            await MainActor.run {
+                Rownd.updateSignInForNativeCompletion(
+                    jsFnOptions: RowndSignInJsOptions(
+                        loginStep: RowndSignInLoginStep.success,
+                        intent: intent,
+                        userType: signInResponse.userType,
+                        appVariantUserType: signInResponse.userType
+                    ),
+                    requestID: hubRequestID
+                )
+            }
+
+            // Prevent fast auth handshakes from feeling jarring to the user
+            await waitBeforeCompletion()
+            if Rownd.isNativeHubRequestActive(hubRequestID) {
+                await dismissHub(hubRequestID)
+            }
+        }
 
         await MainActor.run {
             Context.currentContext.store.dispatch(SetLastSignInMethod(payload: SignInMethodTypes.apple))

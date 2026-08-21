@@ -61,7 +61,7 @@ struct SuperTokensThirdPartySignInClient {
             throw RowndError("Apple sign-in requires a non-empty clientType")
         }
 
-        try await signIn(
+        return try await signIn(
             SuperTokensThirdPartySignInRequest(
                 thirdPartyId: "apple",
                 clientType: clientType,
