@@ -463,13 +463,16 @@ public class Rownd: NSObject {
 
     private func loadAppConfig() async {
         let store = Context.currentContext.store
-        if store.state.appConfig.id == nil {
+        let hasCachedAppConfig = await MainActor.run {
+            store.state.appConfig.id != nil
+        }
+        if !hasCachedAppConfig {
             // Await the config if it wasn't already cached
             guard let appConfig = await AppConfig.fetch() else {
                 return
             }
 
-            Task { @MainActor in
+            await MainActor.run {
                 store.dispatch(SetAppConfig(payload: appConfig.app))
             }
         } else {

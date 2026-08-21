@@ -363,6 +363,7 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
             userVerificationFields: ['email'],
             signInMethods: [
               { method: 'google', iosClientId: 'test-google-ios-client-id' },
+              { method: 'apple', iosClientType: 'native-apple-client' },
               { method: 'phone' },
               { method: 'email' },
               { method: 'anonymous' },

@@ -9,7 +9,10 @@ import Testing
             let recorder = AppleSignInStepRecorder()
             let allowDismissalToFinish = AppleSignInGate()
             let originalDisplayHubHandler = Rownd.displayHubHandler
-            defer { Rownd.displayHubHandler = originalDisplayHubHandler }
+            let (store, originalAppConfig) = await MainActor.run {
+                let store = Context.currentContext.store
+                return (store, store.state.appConfig)
+            }
 
             Rownd.displayHubHandler = { _, options in
                 guard let options = options as? RowndSignInJsOptions,
@@ -20,8 +23,9 @@ import Testing
             }
 
             let coordinator = TestAppleSignUpCoordinator(Rownd.getInstance())
-            coordinator.signInWithApple = { authorizationCode, _ in
+            coordinator.signInWithApple = { authorizationCode, clientType in
                 #expect(authorizationCode == "apple-auth-code")
+                #expect(clientType == "native-apple-client")
                 recorder.append("exchange")
                 return SuperTokensThirdPartySignInResponse(
                     status: "OK",
@@ -47,6 +51,12 @@ import Testing
                 recorder.append("sign-in-completed")
             }
 
+            await MainActor.run {
+                store.dispatch(SetAppConfig(payload: Self.appConfig(
+                    iosClientType: "native-apple-client"
+                )))
+            }
+
             let hubRequestID = UUID()
             await MainActor.run {
                 Rownd.requestSignInForNativeCompletion(
@@ -65,7 +75,7 @@ import Testing
             }
 
             for _ in 0..<200 where !recorder.steps.contains("hub-dismiss-started") {
-                try await Task.sleep(nanoseconds: 10_000_000)
+                try? await Task.sleep(nanoseconds: 10_000_000)
             }
             #expect(recorder.steps.contains("hub-dismiss-started"))
             #expect(!recorder.steps.contains("sign-in-completed"))
@@ -81,6 +91,358 @@ import Testing
                 "hub-dismissed",
                 "sign-in-completed"
             ])
+            Rownd.displayHubHandler = originalDisplayHubHandler
+            await MainActor.run {
+                store.dispatch(SetAppConfig(payload: originalAppConfig))
+            }
+        }
+    }
+
+    @Test func missingAppleClientTypeDoesNotExchangeAuthorizationCode() async throws {
+        try await withGlobalTestLock {
+            let originalConfig = Rownd.config
+            let originalDisplayHubHandler = Rownd.displayHubHandler
+            let (store, originalAppConfig) = await MainActor.run {
+                let store = Context.currentContext.store
+                return (store, store.state.appConfig)
+            }
+
+            Rownd.config = RowndConfig()
+            Rownd.displayHubHandler = { _, _ in }
+            await MainActor.run {
+                store.dispatch(SetAppConfig(payload: Self.appConfig(
+                    iosClientType: "  "
+                )))
+            }
+
+            let recorder = AppleSignInStepRecorder()
+            let coordinator = TestAppleSignUpCoordinator(Rownd.getInstance())
+            coordinator.signInWithApple = { _, _ in
+                recorder.append("exchange")
+                return SuperTokensThirdPartySignInResponse(
+                    status: "OK",
+                    createdNewRecipeUser: true
+                )
+            }
+            coordinator.syncAuthState = {}
+            coordinator.waitBeforeCompletion = {}
+            coordinator.dismissHub = { _ in }
+            coordinator.emitEvent = { _ in }
+
+            await coordinator.completeSignIn(
+                authorizationCode: "apple-auth-code",
+                fullName: nil,
+                email: nil,
+                intent: nil,
+                hubRequestID: UUID()
+            )
+
+            #expect(recorder.steps.isEmpty)
+            Rownd.config = originalConfig
+            Rownd.displayHubHandler = originalDisplayHubHandler
+            await MainActor.run {
+                store.dispatch(SetAppConfig(payload: originalAppConfig))
+            }
+        }
+    }
+
+    @Test func refreshedAppleClientTypeIsUsedForExchange() async throws {
+        try await withGlobalTestLock {
+            let originalConfig = Rownd.config
+            let originalProtocolClasses = AppConfig.testingProtocolClasses
+            let (store, originalAppConfig) = await MainActor.run {
+                let store = Context.currentContext.store
+                return (store, store.state.appConfig)
+            }
+
+            Rownd.config = RowndConfig()
+            Rownd.config.supertokens = RowndSuperTokensConfig(
+                appName: "Example App",
+                apiDomain: "https://auth.example.com",
+                apiBasePath: "/auth"
+            )
+            AppleAppConfigURLProtocol.responseData = Self.refreshedAppConfigData
+            AppConfig.testingProtocolClasses = [AppleAppConfigURLProtocol.self]
+            await MainActor.run {
+                store.dispatch(SetAppConfig(payload: Self.appConfig(iosClientType: nil)))
+            }
+
+            let recorder = AppleSignInStepRecorder()
+            let coordinator = TestAppleSignUpCoordinator(Rownd.getInstance())
+            coordinator.signInWithApple = { authorizationCode, clientType in
+                #expect(authorizationCode == "apple-auth-code")
+                #expect(clientType == "refreshed-native-client")
+                recorder.append("exchange")
+                return SuperTokensThirdPartySignInResponse(
+                    status: "OK",
+                    createdNewRecipeUser: false
+                )
+            }
+            coordinator.syncAuthState = {}
+            coordinator.waitBeforeCompletion = {}
+            coordinator.dismissHub = { _ in }
+            coordinator.emitEvent = { _ in }
+
+            await coordinator.completeSignIn(
+                authorizationCode: "apple-auth-code",
+                fullName: nil,
+                email: nil,
+                intent: nil,
+                hubRequestID: UUID()
+            )
+
+            #expect(recorder.steps == ["exchange"])
+            let installedClientType = await MainActor.run {
+                store.state.appConfig.config?.hub?.auth?.signInMethods?.apple?.iosClientType
+            }
+            #expect(installedClientType == "refreshed-native-client")
+            Rownd.config = originalConfig
+            AppConfig.testingProtocolClasses = originalProtocolClasses
+            AppleAppConfigURLProtocol.responseData = Data()
+            await MainActor.run {
+                store.dispatch(SetAppConfig(payload: originalAppConfig))
+            }
+        }
+    }
+
+    @Test func staleConfigResolutionFailureDoesNotReplaceNewerHubRequest() async throws {
+        try await withGlobalTestLock {
+            let recorder = AppleSignInStepRecorder()
+            let fetchStarted = AppleSignInGate()
+            let finishFetch = AppleSignInGate()
+            let originalDisplayHubHandler = Rownd.displayHubHandler
+            let (store, originalAppConfig) = await MainActor.run {
+                let store = Context.currentContext.store
+                return (store, store.state.appConfig)
+            }
+            Rownd.displayHubHandler = { _, options in
+                guard let options = options as? RowndSignInJsOptions,
+                      let loginStep = options.loginStep else {
+                    return
+                }
+                recorder.append(loginStep.rawValue)
+            }
+            await MainActor.run {
+                store.dispatch(SetAppConfig(payload: Self.appConfig(iosClientType: nil)))
+            }
+
+            let coordinator = TestAppleSignUpCoordinator(Rownd.getInstance())
+            coordinator.fetchAppConfig = {
+                await fetchStarted.open()
+                await finishFetch.wait()
+                return nil
+            }
+            let appleRequestID = UUID()
+            let newerRequestID = UUID()
+            await MainActor.run {
+                Rownd.requestSignInForNativeCompletion(
+                    jsFnOptions: RowndSignInJsOptions(loginStep: .completing),
+                    requestID: appleRequestID
+                )
+            }
+            let signInTask = Task {
+                await coordinator.completeSignIn(
+                    authorizationCode: "apple-auth-code",
+                    fullName: nil,
+                    email: nil,
+                    intent: nil,
+                    hubRequestID: appleRequestID
+                )
+            }
+
+            await fetchStarted.wait()
+            await MainActor.run {
+                Rownd.requestSignInForNativeCompletion(
+                    jsFnOptions: RowndSignInJsOptions(loginStep: .completing),
+                    requestID: newerRequestID
+                )
+            }
+            await finishFetch.open()
+            await signInTask.value
+
+            #expect(recorder.steps == [
+                RowndSignInLoginStep.completing.rawValue,
+                RowndSignInLoginStep.completing.rawValue
+            ])
+            Rownd.displayHubHandler = originalDisplayHubHandler
+            await MainActor.run {
+                store.dispatch(SetAppConfig(payload: originalAppConfig))
+            }
+        }
+    }
+
+    @Test func newerClientTypeWinsWhileFallbackFetchIsInFlight() async throws {
+        try await withGlobalTestLock {
+            let fetchStarted = AppleSignInGate()
+            let finishFetch = AppleSignInGate()
+            let (store, originalAppConfig) = await MainActor.run {
+                let store = Context.currentContext.store
+                return (store, store.state.appConfig)
+            }
+            await MainActor.run {
+                store.dispatch(SetAppConfig(payload: Self.appConfig(iosClientType: nil)))
+            }
+
+            let recorder = AppleSignInStepRecorder()
+            let coordinator = TestAppleSignUpCoordinator(Rownd.getInstance())
+            coordinator.fetchAppConfig = {
+                await fetchStarted.open()
+                await finishFetch.wait()
+                return AppConfigResponse(app: Self.appConfig(iosClientType: "stale-client"))
+            }
+            coordinator.signInWithApple = { _, clientType in
+                recorder.append(clientType)
+                return SuperTokensThirdPartySignInResponse(
+                    status: "OK",
+                    createdNewRecipeUser: false
+                )
+            }
+            coordinator.syncAuthState = {}
+            coordinator.waitBeforeCompletion = {}
+            coordinator.dismissHub = { _ in }
+            coordinator.emitEvent = { _ in }
+
+            let signInTask = Task {
+                await coordinator.completeSignIn(
+                    authorizationCode: "apple-auth-code",
+                    fullName: nil,
+                    email: nil,
+                    intent: nil,
+                    hubRequestID: UUID()
+                )
+            }
+            await fetchStarted.wait()
+            await MainActor.run {
+                store.dispatch(SetAppConfig(payload: Self.appConfig(iosClientType: "newer-client")))
+            }
+            await finishFetch.open()
+            await signInTask.value
+
+            let installedClientType = await MainActor.run {
+                store.state.appConfig.config?.hub?.auth?.signInMethods?.apple?.iosClientType
+            }
+            #expect(recorder.steps == ["newer-client"])
+            #expect(installedClientType == "newer-client")
+            await MainActor.run {
+                store.dispatch(SetAppConfig(payload: originalAppConfig))
+            }
+        }
+    }
+
+    @Test func concurrentClientTypeRemovalWinsOverStaleFallbackFetch() async throws {
+        try await withGlobalTestLock {
+            let fetchStarted = AppleSignInGate()
+            let finishFetch = AppleSignInGate()
+            let (store, originalAppConfig) = await MainActor.run {
+                let store = Context.currentContext.store
+                return (store, store.state.appConfig)
+            }
+            await MainActor.run {
+                store.dispatch(SetAppConfig(payload: Self.appConfig(iosClientType: nil)))
+            }
+
+            let recorder = AppleSignInStepRecorder()
+            let coordinator = TestAppleSignUpCoordinator(Rownd.getInstance())
+            coordinator.fetchAppConfig = {
+                await fetchStarted.open()
+                await finishFetch.wait()
+                return AppConfigResponse(app: Self.appConfig(iosClientType: "stale-client"))
+            }
+            coordinator.signInWithApple = { _, _ in
+                recorder.append("exchange")
+                return SuperTokensThirdPartySignInResponse(
+                    status: "OK",
+                    createdNewRecipeUser: false
+                )
+            }
+
+            let signInTask = Task {
+                await coordinator.completeSignIn(
+                    authorizationCode: "apple-auth-code",
+                    fullName: nil,
+                    email: nil,
+                    intent: nil,
+                    hubRequestID: UUID()
+                )
+            }
+            await fetchStarted.wait()
+            let removedAppConfig = AppConfigState(id: "newer-config-without-apple")
+            await MainActor.run {
+                store.dispatch(SetAppConfig(payload: removedAppConfig))
+            }
+            await finishFetch.open()
+            await signInTask.value
+
+            let installedAppConfig = await MainActor.run {
+                store.state.appConfig
+            }
+            #expect(recorder.steps.isEmpty)
+            #expect(installedAppConfig == removedAppConfig)
+            await MainActor.run {
+                store.dispatch(SetAppConfig(payload: originalAppConfig))
+            }
+        }
+    }
+
+    @Test func loadingChangeDoesNotDiscardFallbackClientType() async throws {
+        try await withGlobalTestLock {
+            let fetchStarted = AppleSignInGate()
+            let finishFetch = AppleSignInGate()
+            let (store, originalAppConfig) = await MainActor.run {
+                let store = Context.currentContext.store
+                return (store, store.state.appConfig)
+            }
+            await MainActor.run {
+                store.dispatch(SetAppConfig(payload: Self.appConfig(iosClientType: nil)))
+            }
+
+            let recorder = AppleSignInStepRecorder()
+            let coordinator = TestAppleSignUpCoordinator(Rownd.getInstance())
+            coordinator.fetchAppConfig = {
+                await fetchStarted.open()
+                await finishFetch.wait()
+                return AppConfigResponse(app: Self.appConfig(iosClientType: "fetched-client"))
+            }
+            coordinator.signInWithApple = { _, clientType in
+                recorder.append(clientType)
+                return SuperTokensThirdPartySignInResponse(
+                    status: "OK",
+                    createdNewRecipeUser: false
+                )
+            }
+            coordinator.syncAuthState = {}
+            coordinator.waitBeforeCompletion = {}
+            coordinator.dismissHub = { _ in }
+            coordinator.emitEvent = { _ in }
+
+            let signInTask = Task {
+                await coordinator.completeSignIn(
+                    authorizationCode: "apple-auth-code",
+                    fullName: nil,
+                    email: nil,
+                    intent: nil,
+                    hubRequestID: UUID()
+                )
+            }
+            await fetchStarted.wait()
+            await MainActor.run {
+                store.dispatch(SetAppLoading(isLoading: true))
+            }
+            await finishFetch.open()
+            await signInTask.value
+
+            let installedAppConfig = await MainActor.run {
+                store.state.appConfig
+            }
+            #expect(recorder.steps == ["fetched-client"])
+            #expect(
+                installedAppConfig.config?.hub?.auth?.signInMethods?.apple?.iosClientType
+                    == "fetched-client"
+            )
+            #expect(!installedAppConfig.isLoading)
+            await MainActor.run {
+                store.dispatch(SetAppConfig(payload: originalAppConfig))
+            }
         }
     }
 
@@ -170,6 +532,38 @@ import Testing
             ])
         }
     }
+
+    private static func appConfig(iosClientType: String?) -> AppConfigState {
+        AppConfigState(config: AppConfigConfig(
+            hub: AppHubConfigState(
+                auth: AppHubAuthConfigState(
+                    signInMethods: SignInMethods(
+                        apple: AppleSignInMethodConfig(iosClientType: iosClientType)
+                    )
+                )
+            )
+        ))
+    }
+
+    private static let refreshedAppConfigData = """
+    {
+      "app": {
+        "id": "app_test",
+        "config": {
+          "hub": {
+            "auth": {
+              "sign_in_methods": {
+                "apple": {
+                  "enabled": true,
+                  "ios_client_type": "refreshed-native-client"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    """.data(using: .utf8)!
 }
 
 private actor AppleSignInGate {
@@ -195,7 +589,7 @@ private actor AppleSignInGate {
 }
 
 private final class TestAppleSignUpCoordinator: AppleSignUpCoordinator {
-    override func updateUserDataWithAppleData(fullName: PersonNameComponents?, email: String?) {
+    @MainActor override func updateUserDataWithAppleData(fullName: PersonNameComponents?, email: String?) {
     }
 }
 
@@ -247,4 +641,30 @@ private final class AppleSignInStepRecorder: @unchecked Sendable {
         recordedSteps.append(step)
         lock.unlock()
     }
+}
+
+private final class AppleAppConfigURLProtocol: URLProtocol {
+    static var responseData = Data()
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.path == "/auth/plugin/rownd/app-config"
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        let response = HTTPURLResponse(
+            url: request.url!,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: ["Content-Type": "application/json"]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Self.responseData)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }

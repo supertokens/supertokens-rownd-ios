@@ -55,6 +55,10 @@ import Testing
             let originalApiClient = Rownd.apiClient
             let originalConfig = Rownd.config
             let originalSuperTokensInitialized = Rownd.isSuperTokensInitialized
+            let (store, originalAppConfig) = await MainActor.run {
+                let store = Context.currentContext.store
+                return (store, store.state.appConfig)
+            }
             defer {
                 Rownd.apiClient = originalApiClient
                 Rownd.config = originalConfig
@@ -63,7 +67,6 @@ import Testing
                 AppConfigRequestURLProtocol.reset()
             }
 
-            let store = Context.currentContext.store
             await MainActor.run {
                 store.dispatch(SetAppConfig(payload: AppConfigState()))
                 store.dispatch(SetAuthState(payload: AuthState()))
@@ -86,6 +89,16 @@ import Testing
                 "id": "app_test",
                 "name": "Example App",
                 "config": {
+                  "hub": {
+                    "auth": {
+                      "sign_in_methods": {
+                        "apple": {
+                          "enabled": true,
+                          "ios_client_type": "native-apple-client"
+                        }
+                      }
+                    }
+                  },
                   "supertokens": {
                     "appInfo": {
                       "apiDomain": "https://api.example.com",
@@ -113,6 +126,13 @@ import Testing
             #expect(Rownd.config.supertokens == expectedConfig)
             #expect(Rownd.config.apiUrl == expectedConfig.apiDomain)
             #expect(appConfigURL == "https://api.example.com/auth/plugin/rownd/app-config")
+            let installedClientType = await MainActor.run {
+                store.state.appConfig.config?.hub?.auth?.signInMethods?.apple?.iosClientType
+            }
+            #expect(installedClientType == "native-apple-client")
+            await MainActor.run {
+                store.dispatch(SetAppConfig(payload: originalAppConfig))
+            }
         }
     }
 

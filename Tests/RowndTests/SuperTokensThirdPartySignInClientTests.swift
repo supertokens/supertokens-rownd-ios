@@ -78,7 +78,10 @@ import Testing
                 session: session
             )
 
-            let response = try await client.signInWithApple(authorizationCode: "apple-auth-code")
+            let response = try await client.signInWithApple(
+                authorizationCode: "apple-auth-code",
+                clientType: "native-apple-client"
+            )
 
             #expect(response.userType == .NewUser)
             let request = try #require(ThirdPartySignInURLProtocol.lastRequest)
@@ -89,7 +92,7 @@ import Testing
             let body = try #require(ThirdPartySignInURLProtocol.lastRequestBody)
             let json = try JSONSerialization.jsonObject(with: body) as? [String: Any]
             #expect(json?["thirdPartyId"] as? String == "apple")
-            #expect(json?["clientType"] == nil)
+            #expect(json?["clientType"] as? String == "native-apple-client")
             #expect(json?["oAuthTokens"] == nil)
 
             let redirectURIInfo = json?["redirectURIInfo"] as? [String: Any]
@@ -119,6 +122,31 @@ import Testing
             let json = try JSONSerialization.jsonObject(with: body) as? [String: Any]
             #expect(json?["thirdPartyId"] as? String == "apple")
             #expect(json?["clientType"] as? String == "ios")
+        }
+    }
+
+    @Test func appleExchangeRejectsEmptyClientTypeWithoutSendingRequest() async throws {
+        try await withGlobalTestLock {
+            ThirdPartySignInURLProtocol.reset()
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.protocolClasses = [ThirdPartySignInURLProtocol.self]
+            let client = SuperTokensThirdPartySignInClient(
+                apiDomain: "https://auth.example.com",
+                apiBasePath: "/auth",
+                session: URLSession(configuration: configuration)
+            )
+
+            do {
+                _ = try await client.signInWithApple(
+                    authorizationCode: "apple-auth-code",
+                    clientType: "  "
+                )
+                Issue.record("Expected an empty Apple client type to fail")
+            } catch let error as RowndError {
+                #expect(error.description == "Apple sign-in requires a non-empty clientType")
+            }
+
+            #expect(ThirdPartySignInURLProtocol.lastRequest == nil)
         }
     }
 
