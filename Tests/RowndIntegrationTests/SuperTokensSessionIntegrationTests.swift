@@ -130,6 +130,45 @@ import AnyCodable
         #expect(protectedRequest["rowndAppKey"] as? String == nil)
     }
 
+    @Test func signOutBetweenHubSessionAdoptionAndSyncLeavesBothSessionsSignedOut() async throws {
+        try await TestInfrastructure.prepare()
+
+        let session = try await createHarnessSessionResponse(
+            userId: "ios-hub-signout-race-user",
+            captureLocally: false
+        )
+        let accessToken = try #require(header(session.response, named: "st-access-token"))
+        let adopted = await Task.detached(priority: .userInitiated) {
+            SuperTokensSessionBridge.bootstrapSession(
+                accessToken: accessToken,
+                refreshToken: header(session.response, named: "st-refresh-token"),
+                frontToken: header(session.response, named: "front-token"),
+                antiCSRF: header(session.response, named: "anti-csrf")
+            )
+        }.value
+        #expect(adopted)
+
+        await Rownd.signOut()
+
+        var steps: [String] = []
+        await HubWebViewController.completeAuthenticationAfterAdoption(
+            succeeded: adopted,
+            syncAuthState: {
+                steps.append("sync")
+                return await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens()
+            },
+            syncFailure: { steps.append("show-error") },
+            completion: { steps.append("complete") }
+        )
+
+        #expect(steps == ["sync", "show-error"])
+        #expect(await !SuperTokensSessionBridge.doesSessionExist())
+        #expect(await SuperTokensSessionBridge.getAccessToken() == nil)
+        await MainActor.run {
+            #expect(Context.currentContext.store.state.auth.isAuthenticated == false)
+        }
+    }
+
     @Test func validLegacySessionMigratesThroughHarness() async throws {
         try await TestInfrastructure.prepare()
 

@@ -70,6 +70,7 @@ import Foundation
                 didSyncAuthState = true
                 return true
             },
+            syncFailure: {},
             completion: { didComplete = true }
         )
 
@@ -78,20 +79,19 @@ import Foundation
     }
 
     @Test func failedAuthStateSyncSkipsAuthenticationCompletion() async {
-        var didSyncAuthState = false
-        var didComplete = false
+        var steps: [String] = []
 
         await HubWebViewController.completeAuthenticationAfterAdoption(
             succeeded: true,
             syncAuthState: {
-                didSyncAuthState = true
+                steps.append("sync")
                 return false
             },
-            completion: { didComplete = true }
+            syncFailure: { steps.append("show-error") },
+            completion: { steps.append("complete") }
         )
 
-        #expect(didSyncAuthState)
-        #expect(!didComplete)
+        #expect(steps == ["sync", "show-error"])
     }
 
     @Test func successfulSessionAdoptionSyncsBeforeAuthenticationCompletion() async {
@@ -103,10 +103,21 @@ import Foundation
                 steps.append("sync")
                 return true
             },
+            syncFailure: { steps.append("show-error") },
             completion: { steps.append("complete") }
         )
 
         #expect(steps == ["sync", "complete"])
+    }
+
+    @Test func authStateSyncFailureRequestsRetryableHubError() throws {
+        let request = try #require(HubWebViewController.authenticationSyncFailureRequest())
+        let arguments = try #require(
+            try JSONSerialization.jsonObject(with: Data(request.arguments.utf8)) as? [String: String]
+        )
+
+        #expect(arguments == ["login_step": "error"])
+        #expect(request.script == "rownd.requestSignIn(\(request.arguments))")
     }
 
     @Test func authenticationCompletionEmitsSignInCompletedEvent() async throws {

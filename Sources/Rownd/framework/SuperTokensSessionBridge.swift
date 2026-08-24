@@ -12,6 +12,7 @@ internal enum SuperTokensSessionBridge {
     // the install and a later read. Replaces the previous per-call `Task.detached`,
     // whose independent tasks could race one another.
     private static let sessionQueue = DispatchQueue(label: "io.rownd.supertokens.session", qos: .userInitiated)
+    private static var sessionGeneration: UInt64 = 0
     // Only the refresh-token slot is still touched directly, by the adopt-over-
     // existing-session path below (a granular refresh-token swap the core SDK has no
     // primitive for). All other reads/writes/clears go through the core SDK.
@@ -53,6 +54,7 @@ internal enum SuperTokensSessionBridge {
 
     static func signOut() async {
         await onSessionQueue {
+            sessionGeneration &+= 1
             // Block the session queue for the duration of sign-out so no read or
             // install interleaves with it. The core resolves the completion handler
             // on every path (0.5.3), so this can't hang.
@@ -65,7 +67,10 @@ internal enum SuperTokensSessionBridge {
 
     @discardableResult
     static func clearLocalSessionArtifacts() -> Bool {
-        SuperTokens.clearSessionLocally()
+        sessionQueue.sync {
+            sessionGeneration &+= 1
+            return SuperTokens.clearSessionLocally()
+        }
     }
 
     // WKWebView requests do not traverse SuperTokensURLProtocol, so Hub-complete
@@ -83,7 +88,7 @@ internal enum SuperTokensSessionBridge {
         // internal reads/refresh can't interleave with a concurrent read, clear, or
         // sign-out from another task.
         return sessionQueue.sync {
-            bootstrapSessionOnQueue(
+            let succeeded = bootstrapSessionOnQueue(
                 accessToken: accessToken,
                 refreshToken: refreshToken,
                 frontToken: frontToken,
@@ -91,6 +96,10 @@ internal enum SuperTokensSessionBridge {
                 allowReplacingExistingSession: allowReplacingExistingSession,
                 refreshSession: refreshSession
             )
+            if succeeded {
+                sessionGeneration &+= 1
+            }
+            return succeeded
         }
     }
 
@@ -185,12 +194,41 @@ internal enum SuperTokensSessionBridge {
 
     @discardableResult
     static func syncRowndAuthStateFromSuperTokens() async -> Bool {
-        guard let accessToken = await getAccessToken() else { return false }
+        await syncRowndAuthStateFromSuperTokens(afterTokenRead: {})
+    }
+
+    @discardableResult
+    static func syncRowndAuthStateFromSuperTokens(
+        afterTokenRead: () async -> Void
+    ) async -> Bool {
+        guard let snapshot = await onSessionQueue({
+            SuperTokens.getAccessToken().map { ($0, sessionGeneration) }
+        }) else { return false }
+
+        let (accessToken, generation) = snapshot
+        await afterTokenRead()
+        guard await onSessionQueue({ sessionGeneration == generation }) else {
+            return false
+        }
 
         await MainActor.run {
             Context.currentContext.store.dispatch(
                 SetAuthState(payload: AuthState(accessToken: accessToken, refreshToken: nil))
             )
+        }
+
+        let currentSession = await onSessionQueue {
+            (generation: sessionGeneration, accessToken: SuperTokens.getAccessToken())
+        }
+        guard currentSession.generation == generation else {
+            await MainActor.run {
+                let store = Context.currentContext.store
+                if currentSession.accessToken == nil,
+                   store.state.auth.accessToken == accessToken {
+                    store.dispatch(SetAuthState(payload: AuthState()))
+                }
+            }
+            return false
         }
         return true
     }

@@ -125,6 +125,7 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
     static func completeAuthenticationAfterAdoption(
         succeeded: Bool,
         syncAuthState: () async -> Bool,
+        syncFailure: () async -> Void,
         completion: () async -> Void
     ) async {
         guard succeeded else {
@@ -133,10 +134,34 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
         }
 
         guard await syncAuthState() else {
-            logger.warning("Skipping Hub authentication completion because the Rownd auth state could not be synchronized")
+            logger.warning("Skipping Hub authentication completion: reason=no_access_token_after_session_adoption")
+            await syncFailure()
             return
         }
         await completion()
+    }
+
+    static func authenticationSyncFailureRequest() -> (arguments: String, script: String)? {
+        guard let arguments = try? RowndSignInJsOptions(loginStep: .error).asJsonString() else {
+            return nil
+        }
+        return (arguments, "rownd.requestSignIn(\(arguments))")
+    }
+
+    @MainActor private func showAuthenticationSyncFailure(
+        navigationGeneration expectedNavigationGeneration: Int,
+        authenticationGeneration expectedAuthenticationGeneration: Int
+    ) {
+        guard navigationGeneration == expectedNavigationGeneration,
+              authenticationGeneration == expectedAuthenticationGeneration else {
+            return
+        }
+        guard let request = Self.authenticationSyncFailureRequest() else {
+            logger.error("Could not encode the Hub authentication synchronization error state")
+            return
+        }
+        jsFunctionArgsAsJson = request.arguments
+        evaluateJavaScript(code: request.script, webView: webView)
     }
 
     static func nativeEmailVerificationEventScript(
@@ -462,6 +487,7 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
     var hubViewController: HubViewProtocol?
     var jsFunctionArgsAsJson: String = "{}"
     private var navigationGeneration = 0
+    private var authenticationGeneration = 0
     private var nativeEmailVerificationRequestId: String?
     private var nativeEmailVerificationTask: Task<Void, Never>?
 
@@ -815,6 +841,9 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
                 }
                 logger.debug("Handling Hub authentication message: targetPage=\(String(describing: targetPage)) user_type=\(authMessage.userType ?? "nil") app_variant_user_type=\(authMessage.appVariantUserType ?? "nil")")
                 let initialJsFunctionArgsAsJson = self.jsFunctionArgsAsJson
+                self.authenticationGeneration &+= 1
+                let authenticationNavigationGeneration = self.navigationGeneration
+                let authenticationGeneration = self.authenticationGeneration
 
                 Task.detached(priority: .userInitiated) { [weak self] in
                     let sessionAdopted = SuperTokensSessionBridge.bootstrapSession(
@@ -826,6 +855,12 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
                     await Self.completeAuthenticationAfterAdoption(
                         succeeded: sessionAdopted,
                         syncAuthState: SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens,
+                        syncFailure: { [weak self] in
+                            await self?.showAuthenticationSyncFailure(
+                                navigationGeneration: authenticationNavigationGeneration,
+                                authenticationGeneration: authenticationGeneration
+                            )
+                        },
                         completion: {
                             await Self.completeAuthentication(
                                 store: store,

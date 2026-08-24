@@ -322,6 +322,59 @@ import Network
         }
     }
 
+    @Test func signOutBetweenHubSessionAdoptionAndSyncWins() async throws {
+        try await withMockedSuperTokensSession {
+            let originalContext = Context.currentContext
+            let isolatedStore = createStore()
+            _ = Context(isolatedStore)
+            defer {
+                Context.currentContext = originalContext
+            }
+
+            let accessToken = makeSuperTokensTestJWT(expiresIn: 3600)
+            let refreshToken = makeSuperTokensTestJWT(expiresIn: 7200)
+            let adopted = await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: accessToken,
+                    refreshToken: refreshToken
+                )
+            }.value
+            #expect(adopted)
+
+            var steps: [String] = []
+            let tokenWasRead = SessionSyncGate()
+            let resumeSync = SessionSyncGate()
+            let syncTask = Task {
+                await HubWebViewController.completeAuthenticationAfterAdoption(
+                    succeeded: adopted,
+                    syncAuthState: {
+                        steps.append("sync")
+                        return await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens(
+                            afterTokenRead: {
+                                await tokenWasRead.open()
+                                await resumeSync.wait()
+                            }
+                        )
+                    },
+                    syncFailure: { steps.append("show-error") },
+                    completion: { steps.append("complete") }
+                )
+            }
+
+            await tokenWasRead.wait()
+            await Rownd.signOut()
+            await resumeSync.open()
+            await syncTask.value
+
+            #expect(steps == ["sync", "show-error"])
+            #expect(await !SuperTokensSessionBridge.doesSessionExist())
+            #expect(await SuperTokensSessionBridge.getAccessToken() == nil)
+            await MainActor.run {
+                #expect(Context.currentContext.store.state.auth.isAuthenticated == false)
+            }
+        }
+    }
+
     @Test func localCleanupClearsSessionThroughCore() async throws {
         try await withMockedSuperTokensSession {
             let accessToken = makeSuperTokensTestJWT(expiresIn: 3600)
@@ -595,6 +648,28 @@ import Network
             let completed = await group.next() ?? false
             group.cancelAll()
             #expect(completed)
+        }
+    }
+}
+
+private actor SessionSyncGate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        guard !isOpen else { return }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func open() {
+        guard !isOpen else { return }
+        isOpen = true
+        let pendingWaiters = waiters
+        waiters.removeAll()
+        for waiter in pendingWaiters {
+            waiter.resume()
         }
     }
 }
