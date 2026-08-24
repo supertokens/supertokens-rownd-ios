@@ -286,37 +286,102 @@ import AnyCodable
     @Test func appleSignInCreatesSuperTokensSessionWithoutLegacyRefresh() async throws {
         try await TestInfrastructure.prepare()
 
-        let response = try await SuperTokensThirdPartySignInClient(
-            apiDomain: TestInfrastructure.supertokensConfig.apiDomain,
-            apiBasePath: TestInfrastructure.supertokensConfig.apiBasePath
-        ).signInWithApple(authorizationCode: "fake-apple-auth-code")
+        let (store, originalAppConfig, originalDisplayHubHandler) = await MainActor.run {
+            let store = Context.currentContext.store
+            return (store, store.state.appConfig, Rownd.displayHubHandler)
+        }
+        let restoreGlobalState: () async -> Void = {
+            await MainActor.run {
+                store.dispatch(SetAppConfig(payload: originalAppConfig))
+                Rownd.displayHubHandler = originalDisplayHubHandler
+            }
+        }
 
-        #expect(response.userType == .NewUser)
-        #expect(await SuperTokensSessionBridge.doesSessionExist())
-        let accessToken = try #require(await SuperTokensSessionBridge.getAccessToken())
-        #expect(!accessToken.isEmpty)
+        do {
+            let hubRequestID = UUID()
+            let completionRecorder = await MainActor.run {
+                NativeCompletionStepRecorder()
+            }
+            await MainActor.run {
+                store.dispatch(SetAppConfig(payload: AppConfigState()))
+                Rownd.displayHubHandler = { _, options in
+                    MainActor.assumeIsolated {
+                        completionRecorder.capture(options)
+                    }
+                }
+                Rownd.requestSignInForNativeCompletion(
+                    jsFnOptions: RowndSignInJsOptions(loginStep: .completing),
+                    requestID: hubRequestID
+                )
+            }
 
-        await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens()
-        #expect(try await Rownd.getAccessToken(throwIfMissing: true) == accessToken)
+            let coordinator = IntegrationAppleSignUpCoordinator(Rownd.getInstance())
+            coordinator.waitBeforeCompletion = {}
+            coordinator.dismissHub = { _ in }
+            coordinator.emitEvent = { _ in }
 
-        let counters = try await getJSON(path: "counters")
-        #expect(counters["appleSignIn"] as? Int == 1)
-        #expect(counters["legacyRefresh"] as? Int == 0)
+            await coordinator.completeSignIn(
+                authorizationCode: "fake-apple-auth-code",
+                fullName: nil,
+                email: nil,
+                intent: nil,
+                hubRequestID: hubRequestID
+            )
 
-        let capturedRequests = try await getJSON(path: "captured-requests")
-        let appleRequest = try #require(capturedRequests["appleSignIn"] as? [String: Any])
-        #expect(appleRequest["authorization"] as? String == nil)
-        #expect(appleRequest["authorizationCount"] as? Int == 0)
-        #expect(appleRequest["rowndAppKey"] as? String == nil)
+            let (storedClientType, nativeCompletionSteps) = await MainActor.run {
+                (
+                    store.state.appConfig.config?.hub?.auth?.signInMethods?.apple?.iosClientType,
+                    completionRecorder.steps
+                )
+            }
+            #expect(storedClientType == "native-apple-client")
+            #expect(nativeCompletionSteps == [
+                RowndSignInLoginStep.completing.rawValue,
+                RowndSignInLoginStep.success.rawValue,
+            ])
+            #expect(await SuperTokensSessionBridge.doesSessionExist())
+            let accessToken = try #require(await SuperTokensSessionBridge.getAccessToken())
+            #expect(!accessToken.isEmpty)
+            #expect(try await Rownd.getAccessToken(throwIfMissing: true) == accessToken)
 
-        let body = try #require(appleRequest["body"] as? [String: Any])
-        #expect(body["thirdPartyId"] as? String == "apple")
-        #expect(body["clientType"] == nil)
-        #expect(body["oAuthTokens"] == nil)
+            let protected = try await getJSON(path: "test/protected")
+            #expect(protected["status"] as? String == "OK")
+            let protectedUserId = try #require(protected["userId"] as? String)
 
-        let redirectURIInfo = try #require(body["redirectURIInfo"] as? [String: Any])
-        let queryParams = try #require(redirectURIInfo["redirectURIQueryParams"] as? [String: Any])
-        #expect(queryParams["code"] as? String == "fake-apple-auth-code")
+            let account = try await getJSON(path: "test/account")
+            let accountUserId = try #require(account["userId"] as? String)
+            #expect(accountUserId == protectedUserId)
+            let loginMethods = try #require(account["loginMethods"] as? [[String: Any]])
+            let appleLoginMethod = loginMethods.first {
+                $0["recipeId"] as? String == "thirdparty"
+                    && $0["thirdPartyId"] as? String == "apple"
+            }
+            #expect(appleLoginMethod != nil)
+
+            let counters = try await getJSON(path: "counters")
+            #expect(counters["appleSignIn"] as? Int == 1)
+            #expect(counters["legacyRefresh"] as? Int == 0)
+
+            let capturedRequests = try await getJSON(path: "captured-requests")
+            let appleRequest = try #require(capturedRequests["appleSignIn"] as? [String: Any])
+            #expect(appleRequest["authorization"] as? String == nil)
+            #expect(appleRequest["authorizationCount"] as? Int == 0)
+            #expect(appleRequest["rowndAppKey"] as? String == nil)
+
+            let body = try #require(appleRequest["body"] as? [String: Any])
+            #expect(body["thirdPartyId"] as? String == "apple")
+            #expect(body["clientType"] as? String == "native-apple-client")
+            #expect(body["oAuthTokens"] == nil)
+
+            let redirectURIInfo = try #require(body["redirectURIInfo"] as? [String: Any])
+            let queryParams = try #require(redirectURIInfo["redirectURIQueryParams"] as? [String: Any])
+            #expect(queryParams["code"] as? String == "fake-apple-auth-code")
+        } catch {
+            await restoreGlobalState()
+            throw error
+        }
+
+        await restoreGlobalState()
     }
 
     @Test func userProfileRoutesUseSuperTokensPluginHeaders() async throws {
@@ -862,6 +927,22 @@ import AnyCodable
 
     private func clearLocalSuperTokensSessionArtifacts() {
         SuperTokensSessionBridge.clearLocalSessionArtifacts()
+    }
+}
+
+private final class IntegrationAppleSignUpCoordinator: AppleSignUpCoordinator {
+    @MainActor override func updateUserDataWithAppleData(fullName: PersonNameComponents?, email: String?) {}
+}
+
+@MainActor private final class NativeCompletionStepRecorder {
+    private(set) var steps: [String] = []
+
+    func capture(_ options: Encodable?) {
+        guard let options = options as? RowndSignInJsOptions,
+              let loginStep = options.loginStep else {
+            return
+        }
+        steps.append(loginStep.rawValue)
     }
 }
 

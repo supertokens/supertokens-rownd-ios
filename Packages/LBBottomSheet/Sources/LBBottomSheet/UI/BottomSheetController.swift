@@ -157,6 +157,7 @@ public final class BottomSheetController: UIViewController {
     
     /// Use this function to dismiss the bottom sheet. This will animate the disappearing based on the behavior configuration.
     public func dismiss(_ completion: (() -> Void)? = nil) {
+        bottomSheetInteractionDelegate?.bottomSheetInteractionWillDismiss()
         guard isViewLoaded, view.window != nil else {
             super.dismiss(animated: false, completion: completion)
             return

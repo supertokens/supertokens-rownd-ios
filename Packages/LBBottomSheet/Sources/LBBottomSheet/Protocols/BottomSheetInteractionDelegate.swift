@@ -26,4 +26,11 @@ public protocol BottomSheetInteractionDelegate: UIViewController {
     /// This method is called when a tap is detected outside the bottom sheet (which makes it dimsissing).
     /// This way you can run some custom actions when this will happen.
     func bottomSheetInteractionDidTapOutside()
+
+    /// This method is called immediately before the bottom sheet starts dismissing.
+    func bottomSheetInteractionWillDismiss()
+}
+
+public extension BottomSheetInteractionDelegate {
+    func bottomSheetInteractionWillDismiss() {}
 }

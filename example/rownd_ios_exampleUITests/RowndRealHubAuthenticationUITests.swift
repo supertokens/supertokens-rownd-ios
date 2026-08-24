@@ -14,7 +14,7 @@ final class RowndRealHubAuthenticationUITests: XCTestCase {
 
     func testEmailOTPFromRealHubEstablishesUsableNativeSessionAndCompletesOnce() async throws {
         let app = try await launchIsolatedApp(resetSession: true)
-        let email = "ios-real-hub-otp-\(UUID().uuidString.lowercased())@example.com"
+        let email = uniqueEmail(prefix: "ios-real-hub-otp")
 
         try startEmailSignIn(email, in: app)
         let capture = try await waitForPasswordlessCapture(email: email)
@@ -49,19 +49,28 @@ final class RowndRealHubAuthenticationUITests: XCTestCase {
         }
 
         let app = try await launchIsolatedApp(resetSession: true)
-        let email = "ios-real-hub-link-\(UUID().uuidString.lowercased())@example.com"
+        let email = uniqueEmail(prefix: "ios-real-hub-link")
         try startEmailSignIn(email, in: app)
         let capture = try await waitForPasswordlessCapture(email: email)
         let capturedLink = try XCTUnwrap(capture["urlWithLinkCode"] as? String)
         let deepLink = try customSchemeURL(from: capturedLink)
+        let webView = app.webViews.firstMatch
 
         app.open(deepLink)
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
         try waitForLabel(app.staticTexts["e2e-auth-state"], equalTo: "authenticated")
         try waitForLabel(app.staticTexts["e2e-sign-in-completed-count"], equalTo: "1")
+        try waitForDisappearance(webView)
         let sessionHandle = app.staticTexts["e2e-session-handle"].label
         XCTAssertNotEqual(sessionHandle, "no-session")
         _ = try await waitForConsumes(count: 1)
+
+        let protectedButton = app.buttons["e2e-protected-button"]
+        try scrollToElement(protectedButton, in: app)
+        protectedButton.tap()
+        try waitForLabel(app.staticTexts["e2e-scenario-state"], equalTo: "protected_loaded")
+        let counters = try await waitForCounters { ($0["protected"] as? Int) == 1 }
+        XCTAssertEqual(counters["protected"] as? Int, 1)
 
         app.open(deepLink)
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
@@ -280,12 +289,29 @@ final class RowndRealHubAuthenticationUITests: XCTestCase {
         }
     }
 
-    private func waitForPasswordlessCapture(email: String) async throws -> [String: Any] {
-        let capture = try await poll(path: "test/passwordless/latest") {
-            $0["status"] as? String == "OK"
+    private func waitForDisappearance(_ element: XCUIElement, timeout: TimeInterval = 10) throws {
+        let expectation = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == false"),
+            object: element
+        )
+        guard XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed else {
+            throw RealHubUITestError.timedOut
         }
-        XCTAssertEqual(try XCTUnwrap(capture["email"] as? String), email)
-        return capture
+    }
+
+    private func waitForPasswordlessCapture(email: String) async throws -> [String: Any] {
+        try await poll(path: "test/passwordless/latest") {
+            $0["status"] as? String == "OK" && $0["email"] as? String == email
+        }
+    }
+
+    private func uniqueEmail(prefix: String) -> String {
+        let suffix = UUID().uuidString.lowercased().replacingOccurrences(
+            of: "[0-9]",
+            with: "x",
+            options: .regularExpression
+        )
+        return "\(prefix)-\(suffix)@example.com"
     }
 
     private func waitForConsumes(count: Int) async throws -> [String: Any] {

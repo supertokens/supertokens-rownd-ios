@@ -55,8 +55,13 @@ struct SuperTokensThirdPartySignInClient {
         )
     }
 
-    func signInWithApple(authorizationCode: String, clientType: String? = nil) async throws -> SuperTokensThirdPartySignInResponse {
-        try await signIn(
+    func signInWithApple(authorizationCode: String, clientType: String) async throws -> SuperTokensThirdPartySignInResponse {
+        let clientType = clientType.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clientType.isEmpty else {
+            throw RowndError("Apple sign-in requires a non-empty clientType")
+        }
+
+        return try await signIn(
             SuperTokensThirdPartySignInRequest(
                 thirdPartyId: "apple",
                 clientType: clientType,

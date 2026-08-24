@@ -66,11 +66,31 @@ import Foundation
 
         await HubWebViewController.completeAuthenticationAfterAdoption(
             succeeded: false,
-            syncAuthState: { didSyncAuthState = true },
+            syncAuthState: {
+                didSyncAuthState = true
+                return true
+            },
             completion: { didComplete = true }
         )
 
         #expect(!didSyncAuthState)
+        #expect(!didComplete)
+    }
+
+    @Test func failedAuthStateSyncSkipsAuthenticationCompletion() async {
+        var didSyncAuthState = false
+        var didComplete = false
+
+        await HubWebViewController.completeAuthenticationAfterAdoption(
+            succeeded: true,
+            syncAuthState: {
+                didSyncAuthState = true
+                return false
+            },
+            completion: { didComplete = true }
+        )
+
+        #expect(didSyncAuthState)
         #expect(!didComplete)
     }
 
@@ -79,7 +99,10 @@ import Foundation
 
         await HubWebViewController.completeAuthenticationAfterAdoption(
             succeeded: true,
-            syncAuthState: { steps.append("sync") },
+            syncAuthState: {
+                steps.append("sync")
+                return true
+            },
             completion: { steps.append("complete") }
         )
 
@@ -118,8 +141,9 @@ import Foundation
         }
     }
 
-    @Test func authenticationCompletionEmitsSignInCompletedUserTypeData() async throws {
+    @Test func newUserAuthenticationCompletionEmitsUserTypeDataAndHidesHub() async throws {
         try await withGlobalTestLock {
+            var didHideHub = false
             let originalContext = Context.currentContext
             let isolatedStore = createStore()
             _ = Context(isolatedStore)
@@ -143,7 +167,7 @@ import Foundation
                 store: Context.currentContext.store,
                 initialJsFunctionArgsAsJson: "{}",
                 currentJsFunctionArgsAsJson: { "{}" },
-                hideHub: {},
+                hideHub: { didHideHub = true },
                 eventData: [
                     "user_type": "new_user",
                     "app_variant_user_type": "existing_user"
@@ -153,6 +177,7 @@ import Foundation
             let event = try #require(eventHandler.events.first)
             #expect(event.data?["user_type"]??.value as? String == "new_user")
             #expect(event.data?["app_variant_user_type"]??.value as? String == "existing_user")
+            #expect(didHideHub)
         }
     }
 

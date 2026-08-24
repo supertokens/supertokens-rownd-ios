@@ -27,6 +27,10 @@ public class Rownd: NSObject {
     internal static var googleSignInCoordinator: GoogleSignInCoordinator = GoogleSignInCoordinator(
         inst)
     @MainActor private var _bottomSheetController: BottomSheetViewController?
+    @MainActor private var activeHubRequestID: UUID?
+    @MainActor private var presentedHubRequestID: UUID?
+    @MainActor private var dismissingHubRequestID: UUID?
+    @MainActor private var pendingHubRequest: HubPresentationRequest?
     internal static var apiClient = RowndApi().client
     internal static let automationsCoordinator = AutomationsCoordinator()
     internal static var customerWebViews = CustomerWebViewManager()
@@ -36,6 +40,12 @@ public class Rownd: NSObject {
     private static var isConfigurationComplete = false
     private static var pendingSmartLinkUrls: [URL] = []
     internal static var displayHubHandler: ((HubPageSelector, Encodable?) -> Void)?
+
+    private struct HubPresentationRequest {
+        let page: HubPageSelector
+        let jsFnOptions: Encodable?
+        let requestID: UUID
+    }
 
     // Run processAutomations() every second to support time-based automations
     internal var automationTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
@@ -235,6 +245,27 @@ public class Rownd: NSObject {
 
     internal static func requestSignIn(jsFnOptions: Encodable?) {
         inst.displayHub(.signIn, jsFnOptions: jsFnOptions)
+    }
+
+    @MainActor internal static func requestSignInForNativeCompletion(
+        jsFnOptions: Encodable?,
+        requestID: UUID
+    ) {
+        inst.displayHubOnMainActor(.signIn, jsFnOptions: jsFnOptions, requestID: requestID)
+    }
+
+    @MainActor internal static func updateSignInForNativeCompletion(
+        jsFnOptions: Encodable?,
+        requestID: UUID
+    ) {
+        guard inst.activeHubRequestID == requestID else {
+            return
+        }
+        inst.displayHubOnMainActor(.signIn, jsFnOptions: jsFnOptions, requestID: requestID)
+    }
+
+    @MainActor internal static func isNativeHubRequestActive(_ requestID: UUID) -> Bool {
+        inst.activeHubRequestID == requestID
     }
 
     internal static func openHubDeepLink(_ url: URL) {
@@ -445,13 +476,16 @@ public class Rownd: NSObject {
 
     private func loadAppConfig() async {
         let store = Context.currentContext.store
-        if store.state.appConfig.id == nil {
+        let hasCachedAppConfig = await MainActor.run {
+            store.state.appConfig.id != nil
+        }
+        if !hasCachedAppConfig {
             // Await the config if it wasn't already cached
             guard let appConfig = await AppConfig.fetch() else {
                 return
             }
 
-            Task { @MainActor in
+            await MainActor.run {
                 store.dispatch(SetAppConfig(payload: appConfig.app))
             }
         } else {
@@ -479,11 +513,82 @@ public class Rownd: NSObject {
             return
         }
 
+        let requestID = UUID()
         Task { @MainActor in
-            let hubController = getHubViewController()
-            hubController.loadNewPage(targetPage: page, jsFnOptions: jsFnOptions)
-            displayViewControllerOnTop(hubController)
+            displayHubOnMainActor(page, jsFnOptions: jsFnOptions, requestID: requestID)
         }
+    }
+
+    @MainActor private func displayHubOnMainActor(
+        _ page: HubPageSelector,
+        jsFnOptions: Encodable?,
+        requestID: UUID
+    ) {
+        activeHubRequestID = requestID
+        if let displayHubHandler = Rownd.displayHubHandler {
+            displayHubHandler(page, jsFnOptions)
+            return
+        }
+
+        let request = HubPresentationRequest(
+            page: page,
+            jsFnOptions: jsFnOptions,
+            requestID: requestID
+        )
+        guard dismissingHubRequestID == nil else {
+            pendingHubRequest = request
+            return
+        }
+
+        presentHub(request)
+    }
+
+    @MainActor private func presentHub(_ request: HubPresentationRequest) {
+        presentedHubRequestID = request.requestID
+
+        let hubController = getHubViewController()
+        hubController.presentationRequestID = request.requestID
+        hubController.onDismissalStarted = { [weak self] requestID in
+            self?.hubDismissalStarted(requestID: requestID)
+        }
+        hubController.onDisappeared = { [weak self] requestID in
+            self?.hubDidDisappear(requestID: requestID)
+        }
+        hubController.loadNewPage(targetPage: request.page, jsFnOptions: request.jsFnOptions)
+        displayViewControllerOnTop(hubController)
+    }
+
+    @MainActor private func hubDismissalStarted(requestID: UUID) {
+        guard presentedHubRequestID == requestID else {
+            return
+        }
+        dismissingHubRequestID = requestID
+    }
+
+    @MainActor private func hubDidDisappear(requestID: UUID) {
+        if activeHubRequestID == requestID {
+            activeHubRequestID = nil
+        }
+        if presentedHubRequestID == requestID {
+            presentedHubRequestID = nil
+        }
+        if dismissingHubRequestID == requestID {
+            dismissingHubRequestID = nil
+        }
+
+        Task { @MainActor [weak self] in
+            self?.presentPendingHubIfPossible()
+        }
+    }
+
+    @MainActor private func presentPendingHubIfPossible() {
+        guard dismissingHubRequestID == nil,
+              let pendingHubRequest,
+              activeHubRequestID == pendingHubRequest.requestID else {
+            return
+        }
+        self.pendingHubRequest = nil
+        presentHub(pendingHubRequest)
     }
 
     @MainActor private func getHubViewController() -> HubViewController {
@@ -521,6 +626,22 @@ public class Rownd: NSObject {
     @MainActor internal static func isDisplayingHub() -> Bool {
         return inst.bottomSheetController.controller != nil
             && inst.bottomSheetController.presentingViewController != nil
+    }
+
+    @MainActor internal static func dismissHub(requestID: UUID) async {
+        guard inst.activeHubRequestID == requestID,
+              let hubViewController = inst.bottomSheetController.controller as? HubViewController,
+              inst.bottomSheetController.presentingViewController != nil else {
+            return
+        }
+
+        inst.hubDismissalStarted(requestID: requestID)
+
+        await withCheckedContinuation { continuation in
+            hubViewController.hide {
+                continuation.resume()
+            }
+        }
     }
 
 }
