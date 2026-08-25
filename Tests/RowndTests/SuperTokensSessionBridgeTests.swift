@@ -375,6 +375,203 @@ import Network
         }
     }
 
+    @Test func refreshTokenChangeDuringSyncReconcilesRowndToRefreshedToken() async throws {
+        try await withMockedSuperTokensSession {
+            let originalContext = Context.currentContext
+            let isolatedStore = createStore()
+            _ = Context(isolatedStore)
+            defer { Context.currentContext = originalContext }
+
+            let originalAccessToken = makeSuperTokensTestJWT(expiresIn: 3600)
+            let refreshToken = makeSuperTokensTestJWT(expiresIn: 7200)
+            let refreshedAccessToken = makeSuperTokensTestJWT(expiresIn: 1800)
+            let adopted = await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: originalAccessToken,
+                    refreshToken: refreshToken
+                )
+            }.value
+            #expect(adopted)
+
+            let synced = await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens(
+                afterTokenRead: {
+                    let refreshed = await SuperTokensSessionBridge.attemptRefresh {
+                        SDKStorage.set("st-storage-item-st-access-token", value: refreshedAccessToken)
+                            && FrontToken.setItem(frontToken: SuperTokensSessionBridge.buildFrontToken(
+                                from: refreshedAccessToken
+                            ))
+                    }
+                    #expect(refreshed)
+                }
+            )
+
+            #expect(!synced)
+            #expect(await MainActor.run { isolatedStore.state.auth.accessToken } == refreshedAccessToken)
+        }
+    }
+
+    @Test func nonNilSessionReplacementAfterAuthDispatchReconcilesRownd() async throws {
+        try await withMockedSuperTokensSession {
+            let originalContext = Context.currentContext
+            let isolatedStore = createStore()
+            _ = Context(isolatedStore)
+            defer { Context.currentContext = originalContext }
+
+            let originalAccessToken = makeSuperTokensTestJWT(expiresIn: 3600)
+            let originalRefreshToken = makeSuperTokensTestJWT(expiresIn: 7200)
+            let replacementAccessToken = makeSuperTokensTestJWT(expiresIn: 1800)
+            let replacementRefreshToken = makeSuperTokensTestJWT(expiresIn: 5400)
+            let adopted = await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: originalAccessToken,
+                    refreshToken: originalRefreshToken
+                )
+            }.value
+            #expect(adopted)
+
+            let synced = await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens(
+                afterTokenRead: {},
+                afterAuthDispatch: {
+                    let replaced = await Task.detached {
+                        SuperTokensSessionBridge.bootstrapSession(
+                            accessToken: replacementAccessToken,
+                            refreshToken: replacementRefreshToken,
+                            refreshSession: {
+                                SDKStorage.set(
+                                    "st-storage-item-st-access-token",
+                                    value: replacementAccessToken
+                                ) && FrontToken.setItem(frontToken: SuperTokensSessionBridge.buildFrontToken(
+                                    from: replacementAccessToken
+                                ))
+                            }
+                        )
+                    }.value
+                    #expect(replaced)
+                }
+            )
+
+            #expect(!synced)
+            #expect(await MainActor.run { isolatedStore.state.auth.accessToken } == replacementAccessToken)
+        }
+    }
+
+    @Test func replacementDuringReconciliationStabilizesOnLatestToken() async throws {
+        try await withMockedSuperTokensSession {
+            let originalContext = Context.currentContext
+            let isolatedStore = createStore()
+            _ = Context(isolatedStore)
+            defer { Context.currentContext = originalContext }
+
+            let originalAccessToken = makeSuperTokensTestJWT(expiresIn: 3600)
+            let originalRefreshToken = makeSuperTokensTestJWT(expiresIn: 7200)
+            let firstReplacementAccessToken = makeSuperTokensTestJWT(expiresIn: 1800)
+            let firstReplacementRefreshToken = makeSuperTokensTestJWT(expiresIn: 5400)
+            let finalAccessToken = makeSuperTokensTestJWT(expiresIn: 900)
+            let finalRefreshToken = makeSuperTokensTestJWT(expiresIn: 4500)
+            let adopted = await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: originalAccessToken,
+                    refreshToken: originalRefreshToken
+                )
+            }.value
+            #expect(adopted)
+
+            func replaceSession(accessToken: String, refreshToken: String) async -> Bool {
+                await Task.detached {
+                    SuperTokensSessionBridge.bootstrapSession(
+                        accessToken: accessToken,
+                        refreshToken: refreshToken,
+                        refreshSession: {
+                            SDKStorage.set("st-storage-item-st-access-token", value: accessToken)
+                                && FrontToken.setItem(frontToken: SuperTokensSessionBridge.buildFrontToken(
+                                    from: accessToken
+                                ))
+                        }
+                    )
+                }.value
+            }
+
+            let synced = await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens(
+                afterTokenRead: {},
+                afterAuthDispatch: {
+                    #expect(await replaceSession(
+                        accessToken: firstReplacementAccessToken,
+                        refreshToken: firstReplacementRefreshToken
+                    ))
+                },
+                afterReconciliationDispatch: { attempt in
+                    guard attempt == 0 else { return }
+                    #expect(await replaceSession(
+                        accessToken: finalAccessToken,
+                        refreshToken: finalRefreshToken
+                    ))
+                }
+            )
+
+            #expect(!synced)
+            #expect(await MainActor.run { isolatedStore.state.auth.accessToken } == finalAccessToken)
+        }
+    }
+
+    @Test func reconciliationExhaustionClearsLastIntermediateToken() async throws {
+        try await withMockedSuperTokensSession {
+            let originalContext = Context.currentContext
+            let isolatedStore = createStore()
+            _ = Context(isolatedStore)
+            defer { Context.currentContext = originalContext }
+
+            let originalAccessToken = makeSuperTokensTestJWT(expiresIn: 3600)
+            let originalRefreshToken = makeSuperTokensTestJWT(expiresIn: 7200)
+            let replacementTokens = [1800, 1500, 1200, 900].map {
+                makeSuperTokensTestJWT(expiresIn: TimeInterval($0))
+            }
+            let replacementRefreshTokens = [5400, 5100, 4800, 4500].map {
+                makeSuperTokensTestJWT(expiresIn: TimeInterval($0))
+            }
+            let adopted = await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: originalAccessToken,
+                    refreshToken: originalRefreshToken
+                )
+            }.value
+            #expect(adopted)
+
+            func replaceSession(at index: Int) async -> Bool {
+                let accessToken = replacementTokens[index]
+                let refreshToken = replacementRefreshTokens[index]
+                return await Task.detached {
+                    SuperTokensSessionBridge.bootstrapSession(
+                        accessToken: accessToken,
+                        refreshToken: refreshToken,
+                        refreshSession: {
+                            SDKStorage.set("st-storage-item-st-access-token", value: accessToken)
+                                && FrontToken.setItem(frontToken: SuperTokensSessionBridge.buildFrontToken(
+                                    from: accessToken
+                                ))
+                        }
+                    )
+                }.value
+            }
+
+            let synced = await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens(
+                afterTokenRead: {},
+                afterAuthDispatch: {
+                    #expect(await replaceSession(at: 0))
+                },
+                afterReconciliationDispatch: { attempt in
+                    #expect(await replaceSession(at: attempt + 1))
+                }
+            )
+
+            #expect(!synced)
+            #expect(await SuperTokensSessionBridge.getAccessToken() == replacementTokens[3])
+            await MainActor.run {
+                #expect(isolatedStore.state.auth.accessToken == nil)
+                #expect(!isolatedStore.state.auth.isAuthenticated)
+            }
+        }
+    }
+
     @Test func localCleanupClearsSessionThroughCore() async throws {
         try await withMockedSuperTokensSession {
             let accessToken = makeSuperTokensTestJWT(expiresIn: 3600)

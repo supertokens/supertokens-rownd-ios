@@ -46,9 +46,17 @@ internal enum SuperTokensSessionBridge {
     }
 
     static func attemptRefresh() async -> Bool {
+        await attemptRefresh(refreshSession: SuperTokens.attemptRefreshingSession)
+    }
+
+    static func attemptRefresh(refreshSession: @escaping () throws -> Bool) async -> Bool {
         await onSessionQueue {
-            (try? SuperTokens.attemptRefreshingSession()) == true
-                && SuperTokens.doesSessionExist()
+            let previousAccessToken = SuperTokens.getAccessToken()
+            let refreshSucceeded = (try? refreshSession()) == true
+            if refreshSucceeded || SuperTokens.getAccessToken() != previousAccessToken {
+                sessionGeneration &+= 1
+            }
+            return refreshSucceeded && SuperTokens.doesSessionExist()
         }
     }
 
@@ -199,38 +207,92 @@ internal enum SuperTokensSessionBridge {
 
     @discardableResult
     static func syncRowndAuthStateFromSuperTokens(
-        afterTokenRead: () async -> Void
+        afterTokenRead: () async -> Void,
+        afterAuthDispatch: () async -> Void = {},
+        afterReconciliationDispatch: (Int) async -> Void = { _ in }
     ) async -> Bool {
+        let rowndAccessTokenBeforeSync = await MainActor.run {
+            Context.currentContext.store.state.auth.accessToken
+        }
         guard let snapshot = await onSessionQueue({
             SuperTokens.getAccessToken().map { ($0, sessionGeneration) }
         }) else { return false }
 
         let (accessToken, generation) = snapshot
         await afterTokenRead()
-        guard await onSessionQueue({ sessionGeneration == generation }) else {
+        let sessionBeforeDispatch = await onSessionQueue {
+            (generation: sessionGeneration, accessToken: SuperTokens.getAccessToken())
+        }
+        guard sessionBeforeDispatch.generation == generation,
+              sessionBeforeDispatch.accessToken == accessToken else {
+            await reconcileRowndAuthState(
+                replacing: rowndAccessTokenBeforeSync,
+                afterDispatch: afterReconciliationDispatch
+            )
             return false
         }
 
-        await MainActor.run {
-            Context.currentContext.store.dispatch(
+        let didDispatch = await MainActor.run {
+            let store = Context.currentContext.store
+            guard store.state.auth.accessToken == rowndAccessTokenBeforeSync else { return false }
+            store.dispatch(
                 SetAuthState(payload: AuthState(accessToken: accessToken, refreshToken: nil))
             )
+            return true
         }
+        guard didDispatch else { return false }
+        await afterAuthDispatch()
 
         let currentSession = await onSessionQueue {
             (generation: sessionGeneration, accessToken: SuperTokens.getAccessToken())
         }
-        guard currentSession.generation == generation else {
-            await MainActor.run {
-                let store = Context.currentContext.store
-                if currentSession.accessToken == nil,
-                   store.state.auth.accessToken == accessToken {
-                    store.dispatch(SetAuthState(payload: AuthState()))
-                }
-            }
+        guard currentSession.generation == generation,
+              currentSession.accessToken == accessToken else {
+            await reconcileRowndAuthState(
+                replacing: accessToken,
+                afterDispatch: afterReconciliationDispatch
+            )
             return false
         }
         return true
+    }
+
+    private static func reconcileRowndAuthState(
+        replacing expectedAccessToken: String?,
+        afterDispatch: (Int) async -> Void
+    ) async {
+        var expectedAccessToken = expectedAccessToken
+        for attempt in 0..<3 {
+            let session = await onSessionQueue {
+                (generation: sessionGeneration, accessToken: SuperTokens.getAccessToken())
+            }
+            let didDispatch = await MainActor.run {
+                let store = Context.currentContext.store
+                guard store.state.auth.accessToken == expectedAccessToken else { return false }
+                store.dispatch(SetAuthState(payload: AuthState(
+                    accessToken: session.accessToken,
+                    refreshToken: nil
+                )))
+                return true
+            }
+            guard didDispatch else { return }
+            await afterDispatch(attempt)
+
+            let verifiedSession = await onSessionQueue {
+                (generation: sessionGeneration, accessToken: SuperTokens.getAccessToken())
+            }
+            guard verifiedSession.generation != session.generation
+                    || verifiedSession.accessToken != session.accessToken else {
+                return
+            }
+            expectedAccessToken = session.accessToken
+        }
+
+        await MainActor.run {
+            let store = Context.currentContext.store
+            guard store.state.auth.accessToken == expectedAccessToken else { return }
+            store.dispatch(SetAuthState(payload: AuthState()))
+        }
     }
 
     static func buildFrontToken(from accessToken: String) -> String {

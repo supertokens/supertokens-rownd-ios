@@ -45,6 +45,11 @@ struct AppleSignInData: Codable {
 }
 
 class AppleSignUpCoordinator: NSObject, ASAuthorizationControllerDelegate, ASAuthorizationControllerPresentationContextProviding {
+    private let operationLock = NSLock()
+    private var currentOperationID: UUID?
+    private var completionTask: Task<Void, Never>?
+    private var currentHubRequestID: UUID?
+    private var authorizationOperations: [ObjectIdentifier: UUID] = [:]
     var parent: Rownd?
     var intent: RowndSignInIntent?
     var cancellables = Set<AnyCancellable>()
@@ -58,6 +63,7 @@ class AppleSignUpCoordinator: NSObject, ASAuthorizationControllerDelegate, ASAut
     var waitBeforeCompletion: () async -> Void = {
         try? await Task.sleep(nanoseconds: UInt64(2 * Double(NSEC_PER_SEC)))
     }
+    var beforeHubPresentation: () async -> Void = {}
     var dismissHub: (UUID) async -> Void = { requestID in
         await Rownd.dismissHub(requestID: requestID)
     }
@@ -92,6 +98,7 @@ class AppleSignUpCoordinator: NSObject, ASAuthorizationControllerDelegate, ASAut
         // Assigning the delegates
         authorizationController.presentationContextProvider = self
         authorizationController.delegate = self
+        registerAuthorizationOperation(controllerID: ObjectIdentifier(authorizationController))
         authorizationController.performRequests()
     }
 
@@ -106,9 +113,12 @@ class AppleSignUpCoordinator: NSObject, ASAuthorizationControllerDelegate, ASAut
 
     // If authorization is successful then this method will get triggered
     func authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization) {
+        guard let operationID = consumeAuthorizationOperation(
+            controllerID: ObjectIdentifier(controller)
+        ) else { return }
+
         switch authorization.credential {
         case let appleIDCredential as ASAuthorizationAppleIDCredential:
-
             // Create an account in your system.
             // let userIdentifier = appleIDCredential.user
             let fullName = appleIDCredential.fullName
@@ -135,22 +145,22 @@ class AppleSignUpCoordinator: NSObject, ASAuthorizationControllerDelegate, ASAut
                let authCode = String(data: authorizationCode, encoding: .utf8) {
 
                 let intent = self.intent
-                Task {
+                let task = Task {
                     let hubRequestID = UUID()
-                    await MainActor.run {
-                        Rownd.requestSignInForNativeCompletion(
-                            jsFnOptions: RowndSignInJsOptions(loginStep: .completing),
-                            requestID: hubRequestID
-                        )
-                    }
+                    guard await self.presentHubForNativeCompletion(
+                        operationID: operationID,
+                        hubRequestID: hubRequestID
+                    ) else { return }
                     await self.completeSignIn(
                         authorizationCode: authCode,
                         fullName: fullName,
                         email: email,
                         intent: intent,
-                        hubRequestID: hubRequestID
+                        hubRequestID: hubRequestID,
+                        operationID: operationID
                     )
                 }
+                setCompletionTask(task, for: operationID)
             } else {
                 logger.error("Missing data from Apple sign-in response: \(String(describing: appleIDCredential))")
                 Rownd.requestSignIn(jsFnOptions: RowndSignInJsOptions(
@@ -176,7 +186,45 @@ class AppleSignUpCoordinator: NSObject, ASAuthorizationControllerDelegate, ASAut
         intent: RowndSignInIntent?,
         hubRequestID: UUID
     ) async {
+        let operationID = beginOperation()
+        guard bindHubRequest(hubRequestID, to: operationID) else { return }
+        await completeSignIn(
+            authorizationCode: authorizationCode,
+            fullName: fullName,
+            email: email,
+            intent: intent,
+            hubRequestID: hubRequestID,
+            operationID: operationID
+        )
+    }
+
+    func presentHubForNativeCompletion(operationID: UUID, hubRequestID: UUID) async -> Bool {
+        guard bindHubRequest(hubRequestID, to: operationID) else { return false }
+        await beforeHubPresentation()
+        guard isCurrentOperation(operationID) else { return false }
+        return await MainActor.run {
+            guard self.isCurrentOperation(operationID),
+                  self.isHubRequestBound(hubRequestID, to: operationID) else {
+                return false
+            }
+            Rownd.requestSignInForNativeCompletion(
+                jsFnOptions: RowndSignInJsOptions(loginStep: .completing),
+                requestID: hubRequestID
+            )
+            return true
+        }
+    }
+
+    private func completeSignIn(
+        authorizationCode: String,
+        fullName: PersonNameComponents?,
+        email: String?,
+        intent: RowndSignInIntent?,
+        hubRequestID: UUID,
+        operationID: UUID
+    ) async {
         guard let clientType = await resolveAppleClientType() else {
+            guard isCurrentOperation(operationID) else { return }
             logger.error("Apple sign-in requires a non-empty ios_client_type in app config")
             await MainActor.run {
                 Rownd.updateSignInForNativeCompletion(
@@ -194,6 +242,7 @@ class AppleSignUpCoordinator: NSObject, ASAuthorizationControllerDelegate, ASAut
         do {
             signInResponse = try await signInWithApple(authorizationCode, clientType)
         } catch {
+            guard isCurrentOperation(operationID) else { return }
             await MainActor.run {
                 Rownd.updateSignInForNativeCompletion(
                     jsFnOptions: RowndSignInJsOptions(
@@ -206,7 +255,9 @@ class AppleSignUpCoordinator: NSObject, ASAuthorizationControllerDelegate, ASAut
             return
         }
 
+        guard isCurrentOperation(operationID) else { return }
         guard await syncAuthState() else {
+            guard isCurrentOperation(operationID) else { return }
             await MainActor.run {
                 Rownd.updateSignInForNativeCompletion(
                     jsFnOptions: RowndSignInJsOptions(
@@ -218,6 +269,7 @@ class AppleSignUpCoordinator: NSObject, ASAuthorizationControllerDelegate, ASAut
             }
             return
         }
+        guard isCurrentOperation(operationID) else { return }
 
         if Rownd.isNativeHubRequestActive(hubRequestID) {
             await MainActor.run {
@@ -234,15 +286,19 @@ class AppleSignUpCoordinator: NSObject, ASAuthorizationControllerDelegate, ASAut
 
             // Prevent fast auth handshakes from feeling jarring to the user
             await waitBeforeCompletion()
-            if Rownd.isNativeHubRequestActive(hubRequestID) {
+            if isCurrentOperation(operationID), Rownd.isNativeHubRequestActive(hubRequestID) {
                 await dismissHub(hubRequestID)
+                clearHubRequest(hubRequestID, for: operationID)
             }
         }
 
+        guard isCurrentOperation(operationID) else { return }
         await MainActor.run {
+            guard self.isCurrentOperation(operationID) else { return }
             Context.currentContext.store.dispatch(SetLastSignInMethod(payload: SignInMethodTypes.apple))
             self.updateUserDataWithAppleData(fullName: fullName, email: email)
         }
+        guard isCurrentOperation(operationID) else { return }
         await emitEvent(RowndEvent(
             event: .signInCompleted,
             data: [
@@ -251,6 +307,90 @@ class AppleSignUpCoordinator: NSObject, ASAuthorizationControllerDelegate, ASAut
                 "app_variant_user_type": AnyCodable(signInResponse.userType.rawValue)
             ]
         ))
+    }
+
+    private func beginOperation() -> UUID {
+        operationLock.lock()
+        completionTask?.cancel()
+        let previousHubRequestID = currentHubRequestID
+        let operationID = UUID()
+        currentOperationID = operationID
+        completionTask = nil
+        currentHubRequestID = nil
+        authorizationOperations.removeAll()
+        operationLock.unlock()
+        retireHubRequest(previousHubRequestID)
+        return operationID
+    }
+
+    @discardableResult
+    func registerAuthorizationOperation(controllerID: ObjectIdentifier) -> UUID {
+        operationLock.lock()
+        completionTask?.cancel()
+        let previousHubRequestID = currentHubRequestID
+        let operationID = UUID()
+        currentOperationID = operationID
+        completionTask = nil
+        currentHubRequestID = nil
+        authorizationOperations.removeAll()
+        authorizationOperations[controllerID] = operationID
+        operationLock.unlock()
+        retireHubRequest(previousHubRequestID)
+        return operationID
+    }
+
+    func consumeAuthorizationOperation(controllerID: ObjectIdentifier) -> UUID? {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        guard let operationID = authorizationOperations.removeValue(forKey: controllerID),
+              currentOperationID == operationID else {
+            return nil
+        }
+        return operationID
+    }
+
+    private func bindHubRequest(_ hubRequestID: UUID, to operationID: UUID) -> Bool {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        guard currentOperationID == operationID else { return false }
+        currentHubRequestID = hubRequestID
+        return true
+    }
+
+    private func isHubRequestBound(_ hubRequestID: UUID, to operationID: UUID) -> Bool {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        return currentOperationID == operationID && currentHubRequestID == hubRequestID
+    }
+
+    private func clearHubRequest(_ hubRequestID: UUID, for operationID: UUID) {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        guard currentOperationID == operationID,
+              currentHubRequestID == hubRequestID else { return }
+        currentHubRequestID = nil
+    }
+
+    private func retireHubRequest(_ hubRequestID: UUID?) {
+        guard let hubRequestID else { return }
+        Task { await dismissHub(hubRequestID) }
+    }
+
+    private func setCompletionTask(_ task: Task<Void, Never>, for operationID: UUID) {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        guard currentOperationID == operationID else {
+            task.cancel()
+            return
+        }
+        completionTask = task
+    }
+
+    private func isCurrentOperation(_ operationID: UUID) -> Bool {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        let isCancelled = withUnsafeCurrentTask { $0?.isCancelled == true }
+        return currentOperationID == operationID && !isCancelled
     }
 
     private func resolveAppleClientType() async -> String? {
@@ -358,6 +498,9 @@ class AppleSignUpCoordinator: NSObject, ASAuthorizationControllerDelegate, ASAut
 
     // If authorization faced any issue then this method will get triggered
     func authorizationController(controller: ASAuthorizationController, didCompleteWithError error: Error) {
+        guard consumeAuthorizationOperation(
+            controllerID: ObjectIdentifier(controller)
+        ) != nil else { return }
 
         // If there is any error will get it here
         logger.error("An error occurred while signing in with Apple. Error: \(String(describing: error))")

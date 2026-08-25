@@ -168,6 +168,147 @@ import Testing
         }
     }
 
+    @Test func newerCompletionInvalidatesOverlappingAppleSignIn() async throws {
+        try await withGlobalTestLock {
+            let recorder = AppleSignInStepRecorder()
+            let firstExchangeStarted = AppleSignInGate()
+            let finishFirstExchange = AppleSignInGate()
+            let (store, originalAppConfig) = await MainActor.run {
+                let store = Context.currentContext.store
+                return (store, store.state.appConfig)
+            }
+            await MainActor.run {
+                store.dispatch(SetAppConfig(payload: Self.appConfig(
+                    iosClientType: "native-apple-client"
+                )))
+            }
+
+            let coordinator = TestAppleSignUpCoordinator(Rownd.getInstance())
+            coordinator.signInWithApple = { authorizationCode, _ in
+                recorder.append("exchange-\(authorizationCode)")
+                if authorizationCode == "first" {
+                    await firstExchangeStarted.open()
+                    await finishFirstExchange.wait()
+                }
+                return SuperTokensThirdPartySignInResponse(
+                    status: "OK",
+                    createdNewRecipeUser: authorizationCode == "second"
+                )
+            }
+            coordinator.syncAuthState = {
+                recorder.append("sync")
+                return true
+            }
+            coordinator.waitBeforeCompletion = {}
+            coordinator.dismissHub = { _ in }
+            coordinator.emitEvent = { _ in recorder.append("event") }
+            coordinator.onUpdateUserData = { recorder.append("profile") }
+
+            let firstTask = Task {
+                await coordinator.completeSignIn(
+                    authorizationCode: "first",
+                    fullName: nil,
+                    email: nil,
+                    intent: nil,
+                    hubRequestID: UUID()
+                )
+            }
+            await firstExchangeStarted.wait()
+            await coordinator.completeSignIn(
+                authorizationCode: "second",
+                fullName: nil,
+                email: nil,
+                intent: nil,
+                hubRequestID: UUID()
+            )
+            await finishFirstExchange.open()
+            await firstTask.value
+
+            #expect(recorder.steps == [
+                "exchange-first",
+                "exchange-second",
+                "sync",
+                "profile",
+                "event"
+            ])
+            await MainActor.run {
+                store.dispatch(SetAppConfig(payload: originalAppConfig))
+            }
+        }
+    }
+
+    @Test func authorizationOperationsFollowInitiationOrderNotCallbackOrder() async throws {
+        try await withGlobalTestLock {
+            let coordinator = TestAppleSignUpCoordinator(Rownd.getInstance())
+            let firstController = NSObject()
+            let secondController = NSObject()
+
+            let firstOperationID = coordinator.registerAuthorizationOperation(
+                controllerID: ObjectIdentifier(firstController)
+            )
+            let secondOperationID = coordinator.registerAuthorizationOperation(
+                controllerID: ObjectIdentifier(secondController)
+            )
+
+            #expect(firstOperationID != secondOperationID)
+            #expect(coordinator.consumeAuthorizationOperation(
+                controllerID: ObjectIdentifier(firstController)
+            ) == nil)
+            #expect(coordinator.consumeAuthorizationOperation(
+                controllerID: ObjectIdentifier(secondController)
+            ) == secondOperationID)
+            #expect(coordinator.consumeAuthorizationOperation(
+                controllerID: ObjectIdentifier(secondController)
+            ) == nil)
+        }
+    }
+
+    @Test func invalidationBeforeHubPresentationRetiresOnlyStaleRequest() async throws {
+        try await withGlobalTestLock {
+            let recorder = AppleSignInStepRecorder()
+            let presentationPaused = AppleSignInGate()
+            let resumePresentation = AppleSignInGate()
+            let staleRequestRetired = AppleSignInGate()
+            let originalDisplayHubHandler = Rownd.displayHubHandler
+            defer { Rownd.displayHubHandler = originalDisplayHubHandler }
+            Rownd.displayHubHandler = { _, _ in recorder.append("present") }
+
+            let coordinator = TestAppleSignUpCoordinator(Rownd.getInstance())
+            coordinator.beforeHubPresentation = {
+                await presentationPaused.open()
+                await resumePresentation.wait()
+            }
+            let staleHubRequestID = UUID()
+            coordinator.dismissHub = { requestID in
+                #expect(requestID == staleHubRequestID)
+                recorder.append("retire")
+                await staleRequestRetired.open()
+            }
+
+            let firstController = NSObject()
+            let firstOperationID = coordinator.registerAuthorizationOperation(
+                controllerID: ObjectIdentifier(firstController)
+            )
+            let presentationTask = Task {
+                await coordinator.presentHubForNativeCompletion(
+                    operationID: firstOperationID,
+                    hubRequestID: staleHubRequestID
+                )
+            }
+            await presentationPaused.wait()
+
+            let secondController = NSObject()
+            _ = coordinator.registerAuthorizationOperation(
+                controllerID: ObjectIdentifier(secondController)
+            )
+            await staleRequestRetired.wait()
+            await resumePresentation.open()
+
+            #expect(await presentationTask.value == false)
+            #expect(recorder.steps == ["retire"])
+        }
+    }
+
     @Test func missingAppleClientTypeDoesNotExchangeAuthorizationCode() async throws {
         try await withGlobalTestLock {
             let originalConfig = Rownd.config
