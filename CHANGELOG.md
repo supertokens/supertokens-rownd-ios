@@ -1,5 +1,27 @@
 # Changelog
 
+## <small>0.1.11 (2026-08-25)</small>
+
+* test: avoid replacing key window in Apple dismissal tests ([9c86e36](https://github.com/supertokens/supertokens-rownd-ios/commit/9c86e36))
+* test: Confirm that you can close the email verification webview ([e51981b](https://github.com/supertokens/supertokens-rownd-ios/commit/e51981b))
+* test: cover Apple sign-in Hub dismissal ([827ffa8](https://github.com/supertokens/supertokens-rownd-ios/commit/827ffa8))
+* test: Extend e2e tests ([35a896a](https://github.com/supertokens/supertokens-rownd-ios/commit/35a896a))
+* test: Speed up tests ([032c5ce](https://github.com/supertokens/supertokens-rownd-ios/commit/032c5ce))
+* chore: Bump version ([ecede9e](https://github.com/supertokens/supertokens-rownd-ios/commit/ecede9e))
+* chore: Cleanup release and ci ([6d7bbf9](https://github.com/supertokens/supertokens-rownd-ios/commit/6d7bbf9))
+* chore: Update scheme ([832f0b4](https://github.com/supertokens/supertokens-rownd-ios/commit/832f0b4))
+* fix: dismiss Apple sign-in modal before completion ([f4343ac](https://github.com/supertokens/supertokens-rownd-ios/commit/f4343ac))
+* fix: Fix rownd lazy migration regression ([bbf7595](https://github.com/supertokens/supertokens-rownd-ios/commit/bbf7595))
+* fix: harden Apple sign-in Hub lifecycle ([42b31a6](https://github.com/supertokens/supertokens-rownd-ios/commit/42b31a6))
+* fix: prevent auth sync from racing with sign-out ([9494d3f](https://github.com/supertokens/supertokens-rownd-ios/commit/9494d3f))
+* fix: prevent overlapping auth state races ([43c4676](https://github.com/supertokens/supertokens-rownd-ios/commit/43c4676))
+* fix: require Apple client type before sign-in ([a78fec8](https://github.com/supertokens/supertokens-rownd-ios/commit/a78fec8))
+* fix: require auth state sync before completion ([42ee1b3](https://github.com/supertokens/supertokens-rownd-ios/commit/42ee1b3))
+* fix: support formatted SDK version declarations ([0106212](https://github.com/supertokens/supertokens-rownd-ios/commit/0106212))
+* fix: support vendored bottom sheet in CocoaPods ([b69e90e](https://github.com/supertokens/supertokens-rownd-ios/commit/b69e90e))
+* ci: tryfix ([9a45fa7](https://github.com/supertokens/supertokens-rownd-ios/commit/9a45fa7))
+* ci: use local rownd hub ([b2ca6e9](https://github.com/supertokens/supertokens-rownd-ios/commit/b2ca6e9))
+
 ## <small>0.1.8 (2026-08-11)</small>
 
 * chore: Update the supertokens-ios version ([663c1b9](https://github.com/supertokens/supertokens-rownd-ios/commit/663c1b9))
