@@ -31,12 +31,14 @@ Pod::Spec.new do |s|
   s.dependency 'Factory', '~> 1.2.8'
   s.dependency 'SuperTokensIOS', '~> 0.5.4'
 
-  s.dependency 'LBBottomSheet'
   s.dependency 'AnyCodable'
   s.dependency 'GzipSwift'
 
   s.subspec 'LBBottomSheet' do |ss|
-    ss.source_files = 'Packages/LBBottomSheet/Sources/**/*'
+    ss.source_files = 'Packages/LBBottomSheet/Sources/**/*.swift'
+    ss.resource_bundles = {
+      'RowndLBBottomSheet' => 'Packages/LBBottomSheet/Sources/LBBottomSheet/Resources/**/*'
+    }
   end
 
   s.subspec 'AnyCodable' do |ss|
@@ -45,7 +47,7 @@ Pod::Spec.new do |s|
   
   s.requires_arc     = true
   
-  s.source_files     = 'Sources/**/*'
+  s.source_files     = 'Sources/**/*.swift'
   s.swift_versions   = [ "5.5", "5.4", "5.3", "5.2", "5.0" ]
 
 end

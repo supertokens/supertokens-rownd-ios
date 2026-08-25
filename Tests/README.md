@@ -17,6 +17,8 @@ npm run test:e2e
 
 Run the same package and unit tests as the PR check with `npm run test:pr`. Run the complete release suite with `npm run test:all`.
 
+Run `npm run test:cocoapods` to install the local pod into generated static-library, static-framework, and dynamic-framework consumers and exercise the vendored bottom sheet on an iOS simulator. Set `COCOAPODS_RUNTIME_DESTINATION` to use a simulator other than `iPhone 17`. Set `KEEP_COCOAPODS_RUNTIME_FIXTURE=1` to retain each consumer under `$TMPDIR/rownd-cocoapods-runtime/<linkage>` for debugging.
+
 The E2E runner builds and starts the Hub automatically. Set `IOS_LOCAL_HUB_REPO` to use a different checkout path or `E2E_HUB_PORT` to change its port.
 
 This starts the local Hub, SuperTokens Core, and backend harness before running the native integration suite, hosted example test, and rendered XCUITests. The UI suite covers Hub OTP and magic-link authentication through the WKWebView bridge, restored-session sign-out, relaunch reconciliation of persisted legacy Rownd state against an existing SuperTokens session without remigration, and pending-email verification. Run UI and Safari tests through the E2E runner so it can manage their dependencies and cleanup.

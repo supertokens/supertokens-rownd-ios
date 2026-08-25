@@ -10,7 +10,6 @@ import AuthenticationServices
 import Foundation
 import Get
 import GoogleSignIn
-import LBBottomSheet
 import ReSwift
 import SwiftUI
 import SuperTokensIOS

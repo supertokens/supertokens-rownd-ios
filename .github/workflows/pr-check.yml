@@ -43,3 +43,6 @@ jobs:
 
       - name: Run example configuration test
         run: xcodebuild -workspace rownd.xcworkspace -scheme rownd_ios_example -destination 'platform=iOS Simulator,name=iPhone 17' -clonedSourcePackagesDirPath "$RUNNER_TEMP/swiftpm" -only-testing:rownd_ios_exampleTests/RowndExampleTests/testSuperTokensConfigDefaultsToAuthBasePath test
+
+      - name: Run CocoaPods consumer runtime test
+        run: npm run test:cocoapods

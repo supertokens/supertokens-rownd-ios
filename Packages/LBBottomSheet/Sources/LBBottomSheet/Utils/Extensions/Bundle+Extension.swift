@@ -23,7 +23,16 @@ import Foundation
 #if !SPM
 
 extension Bundle {
-    static var module:Bundle { Bundle(for: BottomSheetController.self) }
+    static var module: Bundle {
+        let bundleName = "RowndLBBottomSheet"
+        let containingBundle = Bundle(for: BottomSheetController.self)
+        guard let url = containingBundle.url(forResource: bundleName, withExtension: "bundle"),
+              let bundle = Bundle(url: url) else {
+            preconditionFailure("Missing required resource bundle: \(bundleName).bundle")
+        }
+
+        return bundle
+    }
 }
 
 #endif

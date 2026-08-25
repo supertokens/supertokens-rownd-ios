@@ -21,6 +21,7 @@
 import UIKit
 
 /// This view implementation makes us able to forward events not happening on the bottom sheet itself to the controller behind the bottom sheet.
+@objc(RowndLBBottomSheetForwardingEventsView)
 final class ForwardingEventsView: UIView {
 
     /// The view which must be the destination of the detected touch events.

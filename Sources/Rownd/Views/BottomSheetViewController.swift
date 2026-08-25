@@ -6,10 +6,12 @@
 //
 
 import UIKit
+#if canImport(LBBottomSheet)
 import LBBottomSheet
+#endif
 
 protocol BottomSheetControllerProtocol {
-    var detents: [LBBottomSheet.BottomSheetController.Behavior.HeightValue] { get set }
+    var detents: [BottomSheetController.Behavior.HeightValue] { get set }
 }
 
 protocol BottomSheetHostProtocol {
@@ -20,7 +22,7 @@ class BottomSheetViewController: UIViewController, BottomSheetInteractionDelegat
 
     let debouncer = Debouncer(delay: 0.1) // 500ms
     var controller: UIViewController?
-    var sheetController: LBBottomSheet.BottomSheetController?
+    var sheetController: BottomSheetController?
     var latestTargetHeight: CGFloat = 0.9
     var isKeyboardOpen = false
 
@@ -34,7 +36,7 @@ class BottomSheetViewController: UIViewController, BottomSheetInteractionDelegat
             hubViewController.hostController = self
         }
 
-        var behavior: LBBottomSheet.BottomSheetController.Behavior = .init(swipeMode: .full)
+        var behavior: BottomSheetController.Behavior = .init(swipeMode: .full)
         if let controller = controller as? BottomSheetControllerProtocol {
             behavior.heightMode = .specific(values: controller.detents, heightLimit: .statusBar)
         } else {
@@ -44,7 +46,7 @@ class BottomSheetViewController: UIViewController, BottomSheetInteractionDelegat
         subscribeToNotification(UIResponder.keyboardWillShowNotification, selector: #selector(keyboardWillShow))
         subscribeToNotification(UIResponder.keyboardWillHideNotification, selector: #selector(keyboardWillHide))
 
-        var theme: LBBottomSheet.BottomSheetController.Theme = .init()
+        var theme: BottomSheetController.Theme = .init()
         theme.cornerRadius = Rownd.config.customizations.sheetCornerBorderRadius
         theme.shadow?.color = .systemGray6
         theme.dimmingBackgroundColor = UIColor.black.withAlphaComponent(CGFloat(0.25))
