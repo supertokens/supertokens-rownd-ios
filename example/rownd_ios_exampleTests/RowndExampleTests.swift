@@ -468,7 +468,7 @@ private final class PostAppleUIKitFixture {
     let rootViewController = UIViewController()
     let button = UIButton(type: .system)
     private let window: UIWindow
-    private weak var previousKeyWindow: UIWindow?
+    private let previousRootViewController: UIViewController?
     private(set) var tapCount = 0
 
     init() throws {
@@ -477,10 +477,11 @@ private final class PostAppleUIKitFixture {
             .first(where: { $0.activationState == .foregroundActive }) else {
             throw E2ETestError.missingForegroundWindowScene
         }
-        let previousKeyWindow = scene.windows.first(where: \.isKeyWindow)
-        let window = UIWindow(windowScene: scene)
-        self.previousKeyWindow = previousKeyWindow
+        guard let window = scene.windows.first(where: \.isKeyWindow) else {
+            throw E2ETestError.missingForegroundWindowScene
+        }
         self.window = window
+        self.previousRootViewController = window.rootViewController
         rootViewController.view.frame = scene.coordinateSpace.bounds
         rootViewController.view.backgroundColor = .systemBackground
         button.setTitle("Continue onboarding", for: .normal)
@@ -488,14 +489,11 @@ private final class PostAppleUIKitFixture {
         button.addTarget(self, action: #selector(didTapButton), for: .touchUpInside)
         rootViewController.view.addSubview(button)
         window.rootViewController = rootViewController
-        window.makeKeyAndVisible()
     }
 
     func tearDown() {
         rootViewController.dismiss(animated: false)
-        window.isHidden = true
-        window.rootViewController = nil
-        previousKeyWindow?.makeKeyAndVisible()
+        window.rootViewController = previousRootViewController
     }
 
     func onboardingButtonReceivesWindowHitTest() -> Bool {
