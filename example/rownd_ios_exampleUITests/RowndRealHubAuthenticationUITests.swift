@@ -183,6 +183,37 @@ final class RowndRealHubAuthenticationUITests: XCTestCase {
         XCTAssertEqual(finalCounters["migrate"] as? Int, 0)
     }
 
+    func testClearSessionOnNewInstallationLaunchesSignedOutAndStillMigratesLegacySession() async throws {
+        let app = try await launchIsolatedApp(resetSession: true)
+        let createSessionButton = app.buttons["e2e-create-session-button"]
+        try scrollToElement(createSessionButton, in: app)
+        createSessionButton.tap()
+        try waitForLabel(app.staticTexts["e2e-auth-state"], equalTo: "authenticated")
+        let originalSessionHandle = app.staticTexts["e2e-session-handle"].label
+        XCTAssertNotEqual(originalSessionHandle, "no-session")
+
+        app.terminate()
+        app.launchEnvironment["ROWND_E2E_CLEAR_SESSION_ON_NEW_INSTALLATION"] = "1"
+        app.launchEnvironment["ROWND_E2E_SIMULATE_NEW_INSTALLATION"] = "1"
+        app.launch()
+        try waitForLabel(app.staticTexts["e2e-sdk-state"], equalTo: "ready")
+        try waitForLabel(app.staticTexts["e2e-auth-state"], equalTo: "signed-out")
+        try waitForLabel(app.staticTexts["e2e-session-handle"], equalTo: "no-session")
+
+        app.terminate()
+        _ = try await request("POST", path: "reset")
+        let fixture = try await request("POST", path: "test/legacy-session")
+        app.launchEnvironment["ROWND_E2E_LEGACY_ACCESS_TOKEN"] = try XCTUnwrap(fixture["accessToken"] as? String)
+        app.launchEnvironment["ROWND_E2E_LEGACY_REFRESH_TOKEN"] = try XCTUnwrap(fixture["refreshToken"] as? String)
+        app.launch()
+        removeLegacySeedEnvironment(from: app)
+
+        try waitForLabel(app.staticTexts["e2e-sdk-state"], equalTo: "ready")
+        let counters = try await waitForCounters { ($0["migrate"] as? Int) == 1 }
+        try waitForLabel(app.staticTexts["e2e-auth-state"], equalTo: "authenticated")
+        XCTAssertEqual(counters["legacyRefresh"] as? Int, 0)
+    }
+
     private func launchIsolatedApp(resetSession: Bool) async throws -> XCUIApplication {
         let app = XCUIApplication()
         app.terminate()

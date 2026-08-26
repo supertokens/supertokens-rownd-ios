@@ -145,6 +145,7 @@ let package = Package(
                 "GoogleSignIn",
                 "Lottie",
                 "Factory",
+                "SuperTokensIOS",
                 "Rownd"
             ]
         ),

@@ -114,7 +114,12 @@ enum E2ESupport {
             Rownd.config.customizations.loadingAnimation = LottieAnimation.named("loading")
             Rownd.addEventHandler(RowndEventHandler())
             Rownd.addEventHandler(E2EEventRecorder.shared)
+            try removeInstallationMarkersIfRequested()
             try seedLegacyAuthStateIfRequested()
+
+            let clearSessionOnNewInstallation = ProcessInfo.processInfo.environment[
+                "ROWND_E2E_CLEAR_SESSION_ON_NEW_INSTALLATION"
+            ] == "1"
 
             await Rownd.configure(
                 launchOptions: launchOptions,
@@ -122,7 +127,8 @@ enum E2ESupport {
                 supertokens: RowndSuperTokensConfig(
                     appName: "Rownd iOS E2E",
                     apiDomain: config.supertokens.appInfo.apiDomain,
-                    apiBasePath: config.supertokens.appInfo.apiBasePath
+                    apiBasePath: config.supertokens.appInfo.apiBasePath,
+                    clearSessionOnNewInstallation: clearSessionOnNewInstallation
                 )
             )
 
@@ -240,6 +246,22 @@ enum E2ESupport {
         }
 
         guard didSeed else { throw E2EError.missingPersistedState }
+    }
+
+    private static func removeInstallationMarkersIfRequested() throws {
+        guard ProcessInfo.processInfo.environment["ROWND_E2E_SIMULATE_NEW_INSTALLATION"] == "1" else {
+            return
+        }
+
+        for directory in Set(stateStorageURLs().map { $0.deletingLastPathComponent() }) {
+            guard FileManager.default.fileExists(atPath: directory.path) else { continue }
+            for url in try FileManager.default.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: nil
+            ) where url.lastPathComponent.hasPrefix("io.rownd.sdk.installation-marker.v1-") {
+                try FileManager.default.removeItem(at: url)
+            }
+        }
     }
 
     private static func seededStateData(
