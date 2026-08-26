@@ -5,7 +5,7 @@
 
 import Foundation
 import Get
-import SuperTokensIOS
+@testable import SuperTokensIOS
 import Testing
 
 @testable import Rownd
@@ -132,6 +132,90 @@ import Testing
             #expect(installedClientType == "native-apple-client")
             await MainActor.run {
                 store.dispatch(SetAppConfig(payload: originalAppConfig))
+            }
+        }
+    }
+
+    @Test func configureInitializesSuperTokensBeforeClearingNewInstallationSession() async throws {
+        try await withGlobalTestLock {
+            let originalApiClient = Rownd.apiClient
+            let originalConfig = Rownd.config
+            let originalSuperTokensInitialized = Rownd.isSuperTokensInitialized
+            let (store, originalAppConfig, originalAuth, originalClockSyncState) = await MainActor.run {
+                let store = Context.currentContext.store
+                return (
+                    store,
+                    store.state.appConfig,
+                    store.state.auth,
+                    store.state.clockSyncState
+                )
+            }
+            let originalSTConfig = SuperTokens.config
+            let originalSTIsInitCalled = SuperTokens.isInitCalled
+            let originalSTRefreshTokenURL = SuperTokens.refreshTokenUrl
+            let originalSTSignOutURL = SuperTokens.signOutUrl
+            let originalSTRID = SuperTokens.rid
+            let originalSTSessionExpiryStatusCode = SuperTokens.sessionExpiryStatusCode
+            let config = RowndSuperTokensConfig(
+                appName: "Example App",
+                apiDomain: "https://api.example.com",
+                clearSessionOnNewInstallation: true
+            )
+            let markerKey = InstallationSessionManager.installationMarkerKey(config: config)
+            let tokenStorage = InitializationAwareTokenStorage()
+            defer {
+                _ = Storage.shared.remove(forKey: markerKey)
+                AppConfig.testingProtocolClasses = nil
+                AppConfigRequestURLProtocol.reset()
+                SuperTokens.resetForTests()
+                _ = SDKStorage.configure(
+                    userDefaultsSuiteName: originalSTConfig?.userDefaultsSuiteName,
+                    keychainAccessGroup: originalSTConfig?.keychainAccessGroup,
+                    apiDomain: originalSTConfig?.apiDomain,
+                    apiBasePath: originalSTConfig?.apiBasePath
+                )
+                SuperTokens.config = originalSTConfig
+                SuperTokens.isInitCalled = originalSTIsInitCalled
+                SuperTokens.refreshTokenUrl = originalSTRefreshTokenURL
+                SuperTokens.signOutUrl = originalSTSignOutURL
+                SuperTokens.rid = originalSTRID
+                SuperTokens.sessionExpiryStatusCode = originalSTSessionExpiryStatusCode
+                Rownd.isSuperTokensInitialized = originalSuperTokensInitialized
+                Rownd.apiClient = originalApiClient
+                Rownd.config = originalConfig
+            }
+
+            _ = Storage.shared.remove(forKey: markerKey)
+            Rownd.isSuperTokensInitialized = false
+            Rownd.config = RowndConfig()
+            Rownd.config.enableSmartLinkPasteBehavior = false
+            SuperTokens.isInitCalled = true
+            SDKStorage.setTokenStorageForTests(tokenStorage)
+            tokenStorage.seedSession()
+            await MainActor.run {
+                store.dispatch(SetClockSync(clockSyncState: .synced))
+            }
+
+            AppConfigRequestURLProtocol.responseData = Self.appConfigResponseData
+            AppConfig.testingProtocolClasses = [AppConfigRequestURLProtocol.self]
+            Rownd.apiClient = APIClient(baseURL: URL(string: "https://ignored.example.com")!) {
+                $0.sessionConfiguration.protocolClasses = [AppConfigRequestURLProtocol.self]
+                $0.sessionConfiguration.urlCache = nil
+            }
+
+            #expect(!Storage.shared.hasInstallationMarker(forKey: markerKey))
+
+            _ = await Rownd.configure(appKey: "app_test", supertokens: config)
+
+            #expect(SuperTokens.isInitCalled)
+            #expect(Rownd.isSuperTokensInitialized)
+            #expect(tokenStorage.sessionValues.isEmpty)
+            #expect(tokenStorage.removedSessionKeys == tokenStorage.expectedSessionKeys)
+            #expect(Storage.shared.hasInstallationMarker(forKey: markerKey))
+            await MainActor.run {
+                store.dispatch(SetAppConfig(payload: originalAppConfig))
+                store.dispatch(SetAuthState(payload: originalAuth))
+                store.dispatch(SetClockSync(clockSyncState: originalClockSyncState))
             }
         }
     }
@@ -341,6 +425,44 @@ import Testing
       }
     }
     """.data(using: .utf8)!
+}
+
+private final class InitializationAwareTokenStorage: TokenStorage {
+    private(set) var sessionValues: [String: String] = [:]
+    private(set) var removedSessionKeys: Set<String> = []
+
+    var expectedSessionKeys: Set<String> {
+        [
+            SDKStorage.frontTokenKey,
+            SDKStorage.genericKey(SuperTokensConstants.ACCESS_TOKEN_NAME),
+            SDKStorage.genericKey(SuperTokensConstants.REFRESH_TOKEN_NAME),
+            SDKStorage.genericKey(SuperTokensConstants.LAST_ACCESS_TOKEN_UPDATE),
+            SDKStorage.genericKey("sIRTFrontend"),
+            SDKStorage.antiCSRFKey
+        ]
+    }
+
+    func seedSession() {
+        sessionValues = Dictionary(uniqueKeysWithValues: expectedSessionKeys.map { ($0, "persisted-session-value") })
+    }
+
+    func get(_ name: String) -> String? {
+        sessionValues[name]
+    }
+
+    func set(_ name: String, value: String) -> Bool {
+        sessionValues[name] = value
+        return true
+    }
+
+    func remove(_ name: String) -> Bool {
+        guard Rownd.isSuperTokensInitialized else { return false }
+        sessionValues.removeValue(forKey: name)
+        if expectedSessionKeys.contains(name) {
+            removedSessionKeys.insert(name)
+        }
+        return true
+    }
 }
 
 private final class AppConfigRequestURLProtocol: URLProtocol {

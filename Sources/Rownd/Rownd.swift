@@ -78,10 +78,10 @@ public class Rownd: NSObject {
 
         let installationPreparation: InstallationSessionManager.Preparation
         do {
+            try initializeSuperTokensIfNeeded()
             installationPreparation = try InstallationSessionManager.prepareForInitialization(
                 config: config.supertokens
             )
-            try initializeSuperTokensIfNeeded()
         } catch {
             fatalError("Failed to initialize SuperTokens: \(error)")
         }
