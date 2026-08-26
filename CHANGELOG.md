@@ -1,5 +1,9 @@
 # Changelog
 
+## <small>0.1.12 (2026-08-26)</small>
+
+* fix: initialize sessions before installation cleanup ([c444a35](https://github.com/supertokens/supertokens-rownd-ios/commit/c444a35))
+
 ## <small>0.1.11 (2026-08-25)</small>
 
 * test: avoid replacing key window in Apple dismissal tests ([9c86e36](https://github.com/supertokens/supertokens-rownd-ios/commit/9c86e36))
