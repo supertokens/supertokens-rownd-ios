@@ -16,6 +16,7 @@ protocol HubViewProtocol {
     func setLoading(_ isLoading: Bool)
     func show()
     func hide()
+    func hide(completion: (() -> Void)?)
     func updateBottomSheetHeight(_ height: CGFloat)
     func canTouchDimmingBackgroundToDismiss(_ enable: Bool)
 }
@@ -26,12 +27,13 @@ public class HubViewController: UIViewController, HubViewProtocol, BottomSheetHo
     var customLoadingAnimationView: UIView?
     var hubWebController = HubWebViewController()
     var targetPage = HubPageSelector.unknown
-    var hostController: BottomSheetViewController?
+    weak var hostController: BottomSheetViewController?
     var isBottomSheetDismissing: Bool = false
     var presentationRequestID: UUID?
     var onDismissalStarted: ((UUID) -> Void)?
     var onDisappeared: ((UUID) -> Void)?
     private var hideCompletions: [() -> Void] = []
+    private var isOuterDismissalScheduled = false
 
     static func buildHubLoaderUrl(
         baseUrl: String,
@@ -184,17 +186,36 @@ public class HubViewController: UIViewController, HubViewProtocol, BottomSheetHo
 
     public override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        handleHostContentWillDisappear()
+    }
+
+    func handleHostContentWillDisappear() {
+        guard let hostController, hostController.controller === self else {
+            self.hostController = nil
+            return
+        }
         if let presentationRequestID {
             onDismissalStarted?(presentationRequestID)
         }
-        guard !isBottomSheetDismissing else {
-            return
-        }
-        guard let hostController = hostController else {
+        guard !isBottomSheetDismissing, !isOuterDismissalScheduled else {
             return
         }
 
-        hostController.dismiss(animated: true)
+        isOuterDismissalScheduled = true
+        DispatchQueue.main.async { [weak self, weak hostController] in
+            guard let self, let hostController else { return }
+            self.isOuterDismissalScheduled = false
+            guard !self.isBottomSheetDismissing else { return }
+            guard hostController.controller === self else {
+                self.hostController = nil
+                return
+            }
+
+            self.isBottomSheetDismissing = true
+            hostController.dismiss(animated: true) {
+                hostController.outerDismissalDidComplete(for: self)
+            }
+        }
     }
 
     func setLoading(_ isLoading: Bool) {
@@ -249,6 +270,12 @@ public class HubViewController: UIViewController, HubViewProtocol, BottomSheetHo
             return
         }
 
+        guard bottomSheetController.controller === self else {
+            hostController = nil
+            completeHide()
+            return
+        }
+
         if let presentationRequestID {
             onDismissalStarted?(presentationRequestID)
         }
@@ -259,8 +286,15 @@ public class HubViewController: UIViewController, HubViewProtocol, BottomSheetHo
         
         isBottomSheetDismissing = true
         bottomSheetController.hideBottomSheet({
-            bottomSheetController.dismiss(animated: true) {
-                self.completeHide()
+            // UIKit can ignore a presenter dismissal started from its presented
+            // controller's dismissal callback while still invoking its completion.
+            // Start the outer dismissal on the next run loop. The dismissal
+            // completion provides a fallback if viewDidDisappear ran before
+            // UIKit fully detached the host.
+            DispatchQueue.main.async {
+                bottomSheetController.dismiss(animated: true) {
+                    bottomSheetController.outerDismissalDidComplete(for: self)
+                }
             }
         })
     }
@@ -280,6 +314,7 @@ public class HubViewController: UIViewController, HubViewProtocol, BottomSheetHo
 
     private func completeHide() {
         isBottomSheetDismissing = false
+        isOuterDismissalScheduled = false
         let completions = hideCompletions
         hideCompletions.removeAll()
         completions.forEach { $0() }

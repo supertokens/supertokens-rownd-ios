@@ -657,10 +657,12 @@ import Testing
         }
     }
 
-    @Test @MainActor func hubHideCompletesAfterBothModalLayersAreDismissed() {
+    @Test @MainActor func hubHideCompletesOnlyAfterOuterHostDisappears() async {
         let hostController = TestBottomSheetViewController()
         let hubViewController = HubViewController()
+        hostController.controller = hubViewController
         hubViewController.hostController = hostController
+        hostController.isOuterHostDetachedOverride = false
         var didComplete = false
 
         hubViewController.hide {
@@ -672,16 +674,52 @@ import Testing
         #expect(!didComplete)
 
         hostController.completeBottomSheetDismissal()
+        await nextMainRunLoop()
 
         #expect(hostController.didRequestOuterDismissal)
         #expect(!didComplete)
 
         hostController.completeOuterDismissal()
 
+        #expect(!didComplete)
+
+        hostController.isOuterHostDetachedOverride = true
+        hostController.viewDidDisappear(false)
+        await nextMainRunLoop()
+
         #expect(didComplete)
     }
 
-    @Test @MainActor func hostDisappearanceCompletesOverlappingHideRequestsOnce() {
+    @Test @MainActor func programmaticDismissalCompletionFinalizesDetachedOuterHostOnce() async {
+        let hostController = TestBottomSheetViewController()
+        let hubViewController = HubViewController()
+        hostController.controller = hubViewController
+        hubViewController.hostController = hostController
+        hostController.isOuterHostDetachedOverride = false
+        var completionCount = 0
+
+        hubViewController.hide {
+            completionCount += 1
+        }
+        hostController.completeBottomSheetDismissal()
+        await nextMainRunLoop()
+
+        #expect(hostController.didRequestOuterDismissal)
+        #expect(completionCount == 0)
+
+        hostController.isOuterHostDetachedOverride = true
+        hostController.completeOuterDismissal()
+
+        #expect(completionCount == 1)
+
+        hostController.viewDidDisappear(false)
+        hostController.completeOuterDismissal()
+        await nextMainRunLoop()
+
+        #expect(completionCount == 1)
+    }
+
+    @Test @MainActor func hostDisappearanceCompletesOverlappingHideRequestsOnce() async {
         let hostController = TestBottomSheetViewController()
         let hubViewController = HubViewController()
         hostController.controller = hubViewController
@@ -697,14 +735,135 @@ import Testing
 
         #expect(hostController.bottomSheetDismissalRequestCount == 1)
         hostController.completeBottomSheetDismissal()
+        await nextMainRunLoop()
         #expect(hostController.outerDismissalRequestCount == 1)
         #expect(completionCount == 0)
 
         hostController.viewDidDisappear(false)
+        await nextMainRunLoop()
 
         #expect(completionCount == 2)
         hostController.completeOuterDismissal()
         #expect(completionCount == 2)
+    }
+
+    @Test @MainActor func hostCoveredByInnerSheetDoesNotCompleteHide() async {
+        let hostController = TestBottomSheetViewController()
+        let hubViewController = HubViewController()
+        hostController.controller = hubViewController
+        hubViewController.hostController = hostController
+        hostController.shouldFinalizeDisappearanceOverride = false
+        var didComplete = false
+
+        hubViewController.hide {
+            didComplete = true
+        }
+        hostController.viewDidDisappear(false)
+        await nextMainRunLoop()
+
+        #expect(hostController.controller === hubViewController)
+        #expect(!didComplete)
+    }
+
+    @Test @MainActor func staleHubHideCompletesWithoutReusingFinalizedHost() {
+        let hostController = TestBottomSheetViewController()
+        let hubViewController = HubViewController()
+        let requestID = UUID()
+        var disappearanceCount = 0
+        var hideCompletionCount = 0
+        hubViewController.presentationRequestID = requestID
+        hubViewController.onDisappeared = { disappearedRequestID in
+            #expect(disappearedRequestID == requestID)
+            disappearanceCount += 1
+        }
+        hostController.controller = hubViewController
+        hubViewController.hostController = hostController
+
+        hostController.viewDidDisappear(false)
+
+        #expect(hostController.controller == nil)
+        #expect(hubViewController.hostController == nil)
+        #expect(disappearanceCount == 1)
+
+        hubViewController.hide {
+            hideCompletionCount += 1
+        }
+
+        #expect(hideCompletionCount == 1)
+        #expect(disappearanceCount == 1)
+        #expect(hostController.outerDismissalRequestCount == 0)
+        #expect(hostController.bottomSheetDismissalRequestCount == 0)
+    }
+
+    @Test @MainActor func staleHubCannotDismissNewHostOwner() {
+        let hostController = TestBottomSheetViewController()
+        let oldHubViewController = HubViewController()
+        hostController.controller = oldHubViewController
+        oldHubViewController.hostController = hostController
+        hostController.viewDidDisappear(false)
+
+        let newHubViewController = HubViewController()
+        hostController.controller = newHubViewController
+        newHubViewController.hostController = hostController
+        oldHubViewController.hostController = hostController
+        var hideCompletionCount = 0
+
+        oldHubViewController.hide {
+            hideCompletionCount += 1
+        }
+
+        #expect(hideCompletionCount == 1)
+        #expect(oldHubViewController.hostController == nil)
+        #expect(hostController.controller === newHubViewController)
+        #expect(hostController.outerDismissalRequestCount == 0)
+        #expect(hostController.bottomSheetDismissalRequestCount == 0)
+    }
+
+    @Test @MainActor func interactiveDismissalDefersOuterHostAndCompletesOnceDetached() async {
+        let hostController = TestBottomSheetViewController()
+        let hubViewController = HubViewController()
+        hostController.controller = hubViewController
+        hubViewController.hostController = hostController
+        hostController.isOuterHostDetachedOverride = false
+        var hideCompletionCount = 0
+
+        hubViewController.handleHostContentWillDisappear()
+
+        #expect(hostController.outerDismissalRequestCount == 0)
+
+        await nextMainRunLoop()
+
+        #expect(hostController.outerDismissalRequestCount == 1)
+
+        hubViewController.hide {
+            hideCompletionCount += 1
+        }
+
+        #expect(hostController.outerDismissalRequestCount == 1)
+        #expect(hostController.bottomSheetDismissalRequestCount == 0)
+        #expect(hideCompletionCount == 0)
+
+        hostController.isOuterHostDetachedOverride = true
+        hostController.completeOuterDismissal()
+
+        #expect(hideCompletionCount == 1)
+        #expect(hostController.controller == nil)
+        #expect(hubViewController.hostController == nil)
+
+        hostController.viewDidDisappear(false)
+        hostController.completeOuterDismissal()
+        await nextMainRunLoop()
+
+        #expect(hideCompletionCount == 1)
+        #expect(hostController.outerDismissalRequestCount == 1)
+    }
+
+    @MainActor private func nextMainRunLoop() async {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async {
+                continuation.resume()
+            }
+        }
     }
 
     @Test func staleAppleSuccessDoesNotReplaceANewerHubRequest() async throws {
@@ -851,7 +1010,8 @@ import Testing
             await MainActor.run {
                 hostController.viewDidDisappear(false)
             }
-            await Task.yield()
+            await nextMainRunLoop()
+            await nextMainRunLoop()
             let newController = await MainActor.run {
                 hostController.controller as? HubViewController
             }
@@ -945,6 +1105,16 @@ private final class TestBottomSheetViewController: BottomSheetViewController {
     private var outerDismissalCompletion: (() -> Void)?
     private(set) var bottomSheetDismissalRequestCount = 0
     private(set) var outerDismissalRequestCount = 0
+    var shouldFinalizeDisappearanceOverride: Bool?
+    var isOuterHostDetachedOverride: Bool?
+
+    override var shouldFinalizeDisappearance: Bool {
+        shouldFinalizeDisappearanceOverride ?? super.shouldFinalizeDisappearance
+    }
+
+    override var isOuterHostDetached: Bool {
+        isOuterHostDetachedOverride ?? super.isOuterHostDetached
+    }
 
     var didRequestBottomSheetDismissal: Bool {
         bottomSheetDismissalRequestCount > 0

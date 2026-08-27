@@ -91,35 +91,39 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
         targetPage == .signIn || targetPage == .deepLink
     }
 
-    static func completeAuthentication(
+    static func shouldForwardHubEvent(_ event: RowndEvent, on targetPage: HubPageSelector?) -> Bool {
+        event.event != .signInCompleted || !canHandleAuthentication(on: targetPage)
+    }
+
+    @MainActor static func completeAuthentication(
         store: Store<RowndState>,
         initialJsFunctionArgsAsJson: String,
         currentJsFunctionArgsAsJson: @escaping @MainActor () -> String?,
-        hideHub: @escaping @MainActor () -> Void,
+        hideHub: @escaping @MainActor (@escaping () -> Void) -> Void,
         eventData: [String: String] = [:]
     ) async {
-        await MainActor.run {
-            // Ensure user.isLoading = false so that the data is fetched properly
-            store.dispatch(SetUserLoading(isLoading: false))
-            store.dispatch(UserData.fetch())
-            store.dispatch(ResetSignInState())
+        // Ensure user.isLoading = false so that the data is fetched properly
+        store.dispatch(SetUserLoading(isLoading: false))
+        store.dispatch(UserData.fetch())
+        store.dispatch(ResetSignInState())
 
-            let signInCompletedData = eventData.reduce(into: [String: AnyCodable?]()) { result, entry in
-                result[entry.key] = AnyCodable(entry.value)
-            }
-            logger.debug("Emitting sign_in_completed from authentication result: user_type=\(eventData["user_type"] ?? "nil") app_variant_user_type=\(eventData["app_variant_user_type"] ?? "nil")")
-            RowndEventEmitter.emit(RowndEvent(
-                event: .signInCompleted,
-                data: signInCompletedData.isEmpty ? nil : signInCompletedData
-            ))
-        }
-
-        await MainActor.run {
-            // Close the hub as long as no other rownd api was called
-            if initialJsFunctionArgsAsJson == currentJsFunctionArgsAsJson() {
-                hideHub()
+        // Close the hub as long as no other rownd api was called
+        if initialJsFunctionArgsAsJson == currentJsFunctionArgsAsJson() {
+            await withCheckedContinuation { continuation in
+                hideHub {
+                    continuation.resume()
+                }
             }
         }
+
+        let signInCompletedData = eventData.reduce(into: [String: AnyCodable?]()) { result, entry in
+            result[entry.key] = AnyCodable(entry.value)
+        }
+        logger.debug("Emitting sign_in_completed from authentication result: user_type=\(eventData["user_type"] ?? "nil") app_variant_user_type=\(eventData["app_variant_user_type"] ?? "nil")")
+        RowndEventEmitter.emit(RowndEvent(
+            event: .signInCompleted,
+            data: signInCompletedData.isEmpty ? nil : signInCompletedData
+        ))
     }
 
     static func completeAuthenticationAfterAdoption(
@@ -866,7 +870,13 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
                                 store: store,
                                 initialJsFunctionArgsAsJson: initialJsFunctionArgsAsJson,
                                 currentJsFunctionArgsAsJson: { [weak self] in self?.jsFunctionArgsAsJson },
-                                hideHub: { [weak self] in self?.hubViewController?.hide() },
+                                hideHub: { [weak self] completion in
+                                    guard let hubViewController = self?.hubViewController else {
+                                        completion()
+                                        return
+                                    }
+                                    hubViewController.hide(completion: completion)
+                                },
                                 eventData: authMessage.signInCompletedEventData
                             )
                         }
@@ -950,6 +960,10 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
                 guard case .event(let eventMessage) = hubMessage.payload else { return }
                 let targetPage = self.hubViewController?.targetPage
                 logger.debug("Received Hub event message: event=\(eventMessage.event.rawValue) targetPage=\(String(describing: targetPage))")
+                // Authentication completion is emitted after native session adoption and
+                // Hub dismissal. Forwarding the Hub's duplicate event can release it as
+                // soon as the token becomes valid, while the Hub is still presented.
+                guard Self.shouldForwardHubEvent(eventMessage, on: targetPage) else { return }
                 logger.debug("Forwarding Hub event message: event=\(eventMessage.event.rawValue)")
                 RowndEventEmitter.emit(eventMessage)
                 break

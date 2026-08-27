@@ -18,18 +18,6 @@ import Foundation
         #expect(payload.antiCSRF == "anti-csrf-token")
     }
 
-    @Test func authenticationMessageDecodesUserTypePayload() throws {
-        let message = try RowndHubInteropMessage.fromJson(message: #"{"type":"authentication","payload":{"access_token":"access-token","refresh_token":"refresh-token","front_token":"front-token","user_type":"new_user","app_variant_user_type":"existing_user"}}"#)
-
-        guard case .authentication(let payload) = message.payload else {
-            Issue.record("Expected authentication payload")
-            return
-        }
-
-        #expect(payload.userType == "new_user")
-        #expect(payload.appVariantUserType == "existing_user")
-    }
-
     @Test func authenticationMessageDecodesFrontToken() throws {
         let message = try RowndHubInteropMessage.fromJson(message: #"{"type":"authentication","payload":{"access_token":"access-token","refresh_token":"refresh-token","front_token":"front-token"}}"#)
 
@@ -58,6 +46,16 @@ import Foundation
         #expect(HubWebViewController.canHandleAuthentication(on: .deepLink))
         #expect(!HubWebViewController.canHandleAuthentication(on: .manageAccount))
         #expect(!HubWebViewController.canHandleAuthentication(on: nil))
+    }
+
+    @Test func signInCompletionHubEventIsSuppressedOnAuthenticationPages() {
+        let signInCompleted = RowndEvent(event: .signInCompleted)
+        let userUpdated = RowndEvent(event: .userUpdated)
+
+        #expect(!HubWebViewController.shouldForwardHubEvent(signInCompleted, on: .signIn))
+        #expect(!HubWebViewController.shouldForwardHubEvent(signInCompleted, on: .deepLink))
+        #expect(HubWebViewController.shouldForwardHubEvent(signInCompleted, on: .manageAccount))
+        #expect(HubWebViewController.shouldForwardHubEvent(userUpdated, on: .signIn))
     }
 
     @Test func failedSessionAdoptionSkipsAuthenticationCompletion() async {
@@ -120,7 +118,7 @@ import Foundation
         #expect(request.script == "rownd.requestSignIn(\(request.arguments))")
     }
 
-    @Test func authenticationCompletionEmitsSignInCompletedEvent() async throws {
+    @Test func existingAccountHubAuthenticationEmitsCompletionDataOnlyAfterDismissalCompletes() async throws {
         try await withGlobalTestLock {
             let originalContext = Context.currentContext
             let isolatedStore = createStore()
@@ -138,21 +136,39 @@ import Foundation
                 )))
             }
 
+            let message = try RowndHubInteropMessage.fromJson(message: #"{"type":"authentication","payload":{"access_token":"access-token","refresh_token":"refresh-token","front_token":"front-token","user_type":"existing_user","app_variant_user_type":"existing_user"}}"#)
+            guard case .authentication(let payload) = message.payload else {
+                Issue.record("Expected authentication payload")
+                return
+            }
+
+            let dismissal = await MainActor.run { HubDismissalProbe() }
             let eventHandler = RecordingRowndEventHandler()
             Rownd.addEventHandler(eventHandler)
 
-            await HubWebViewController.completeAuthentication(
-                store: Context.currentContext.store,
-                initialJsFunctionArgsAsJson: "{}",
-                currentJsFunctionArgsAsJson: { "{}" },
-                hideHub: {}
-            )
+            let completionTask = Task { @MainActor in
+                await HubWebViewController.completeAuthentication(
+                    store: Context.currentContext.store,
+                    initialJsFunctionArgsAsJson: "{}",
+                    currentJsFunctionArgsAsJson: { "{}" },
+                    hideHub: dismissal.hide,
+                    eventData: payload.signInCompletedEventData
+                )
+            }
 
+            await dismissal.waitUntilStarted()
+            #expect(eventHandler.events.isEmpty)
+            await dismissal.complete()
+            await completionTask.value
+
+            let event = try #require(eventHandler.events.first)
             #expect(eventHandler.events.map(\.event) == [.signInCompleted])
+            #expect(event.data?["user_type"]??.value as? String == "existing_user")
+            #expect(event.data?["app_variant_user_type"]??.value as? String == "existing_user")
         }
     }
 
-    @Test func newUserAuthenticationCompletionEmitsUserTypeDataAndHidesHub() async throws {
+    @Test func authenticationCompletionKeepsHubOpenAfterNewerAPICall() async throws {
         try await withGlobalTestLock {
             var didHideHub = false
             let originalContext = Context.currentContext
@@ -176,19 +192,16 @@ import Foundation
 
             await HubWebViewController.completeAuthentication(
                 store: Context.currentContext.store,
-                initialJsFunctionArgsAsJson: "{}",
-                currentJsFunctionArgsAsJson: { "{}" },
-                hideHub: { didHideHub = true },
-                eventData: [
-                    "user_type": "new_user",
-                    "app_variant_user_type": "existing_user"
-                ]
+                initialJsFunctionArgsAsJson: #"{"login_step":"init"}"#,
+                currentJsFunctionArgsAsJson: { #"{"login_step":"verification"}"# },
+                hideHub: { completion in
+                    didHideHub = true
+                    completion()
+                }
             )
 
-            let event = try #require(eventHandler.events.first)
-            #expect(event.data?["user_type"]??.value as? String == "new_user")
-            #expect(event.data?["app_variant_user_type"]??.value as? String == "existing_user")
-            #expect(didHideHub)
+            #expect(!didHideHub)
+            #expect(eventHandler.events.map(\.event) == [.signInCompleted])
         }
     }
 
@@ -217,7 +230,7 @@ import Foundation
                 store: Context.currentContext.store,
                 initialJsFunctionArgsAsJson: "{}",
                 currentJsFunctionArgsAsJson: { "{}" },
-                hideHub: {}
+                hideHub: { completion in completion() }
             )
 
             await MainActor.run {
@@ -241,5 +254,29 @@ private final class RecordingRowndEventHandler: RowndEventHandlerDelegate {
 
     func handleRowndEvent(_ event: RowndEvent) {
         events.append(event)
+    }
+}
+
+@MainActor private final class HubDismissalProbe {
+    private var completion: (() -> Void)?
+    private var startedContinuation: CheckedContinuation<Void, Never>?
+
+    func hide(completion: @escaping () -> Void) {
+        self.completion = completion
+        startedContinuation?.resume()
+        startedContinuation = nil
+    }
+
+    func waitUntilStarted() async {
+        guard completion == nil else { return }
+        await withCheckedContinuation { continuation in
+            startedContinuation = continuation
+        }
+    }
+
+    func complete() {
+        let completion = completion
+        self.completion = nil
+        completion?()
     }
 }

@@ -21,10 +21,22 @@ protocol BottomSheetHostProtocol {
 class BottomSheetViewController: UIViewController, BottomSheetInteractionDelegate {
 
     let debouncer = Debouncer(delay: 0.1) // 500ms
-    var controller: UIViewController?
+    var controller: UIViewController? {
+        didSet {
+            if oldValue !== controller,
+               let oldHubViewController = oldValue as? HubViewController,
+               oldHubViewController.hostController === self {
+                oldHubViewController.hostController = nil
+            }
+            if oldValue == nil, controller != nil {
+                didFinalizeDisappearance = false
+            }
+        }
+    }
     var sheetController: BottomSheetController?
     var latestTargetHeight: CGFloat = 0.9
     var isKeyboardOpen = false
+    private var didFinalizeDisappearance = false
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
@@ -75,10 +87,44 @@ class BottomSheetViewController: UIViewController, BottomSheetInteractionDelegat
 
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
+        guard shouldFinalizeDisappearance else {
+            return
+        }
+        let disappearingController = controller
+        guard !finalizeDisappearanceIfDetached(for: disappearingController) else {
+            return
+        }
+        DispatchQueue.main.async { [weak self] in
+            self?.finalizeDisappearanceIfDetached(for: disappearingController)
+        }
+    }
+
+    var shouldFinalizeDisappearance: Bool {
+        isBeingDismissed || presentingViewController == nil
+    }
+
+    var isOuterHostDetached: Bool {
+        presentingViewController == nil && viewIfLoaded?.window == nil
+    }
+
+    func outerDismissalDidComplete(for controller: UIViewController) {
+        finalizeDisappearanceIfDetached(for: controller)
+    }
+
+    @discardableResult
+    private func finalizeDisappearanceIfDetached(for expectedController: UIViewController?) -> Bool {
+        guard let expectedController,
+              controller === expectedController,
+              !didFinalizeDisappearance,
+              isOuterHostDetached else {
+            return false
+        }
+        didFinalizeDisappearance = true
         let hubViewController = controller as? HubViewController
-        self.controller = nil
-        self.sheetController = nil
+        controller = nil
+        sheetController = nil
         hubViewController?.hostDidDisappear()
+        return true
     }
 
     func updateBottomSheetHeight(_ number: CGFloat) {

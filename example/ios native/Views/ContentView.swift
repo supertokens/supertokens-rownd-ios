@@ -249,6 +249,25 @@ struct ContentView: View {
                 .accessibilityIdentifier("e2e-create-session-button")
                 .disabled(!e2eReadiness.isReady)
 
+                if !isAuthenticated {
+                    FlowButton("E2E sign up with email") {
+                        scenarioStatus = "e2e_email_sign_up_requested"
+                        Rownd.requestSignIn(
+                            with: .email,
+                            signInOptions: RowndSignInOptions(intent: .signUp)
+                        )
+                    }
+                    .accessibilityIdentifier("e2e-sign-up-email-button")
+                    .disabled(!e2eReadiness.isReady)
+                }
+
+                if e2eReadiness.onboardingState == .started {
+                    FlowButton("Continue onboarding") {
+                        e2eReadiness.advanceOnboarding()
+                    }
+                    .accessibilityIdentifier("e2e-onboarding-continue-button")
+                }
+
                 FlowButton("E2E update profile") {
                     Task {
                         try? await E2ESupport.updateProfile()

@@ -360,6 +360,9 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
           appConfig: {
             id: appId,
             name: appName,
+            auth: {
+              useExplicitSignUpFlow: true,
+            },
             userVerificationFields: ['email'],
             signInMethods: [
               { method: 'google', iosClientId: 'test-google-ios-client-id' },
@@ -625,6 +628,35 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
       count: counters.passwordlessConsume,
       changedDuringObservation: counters.passwordlessConsume !== initialCount,
       statuses: passwordlessConsumeStatuses,
+    });
+  });
+
+  app.post('/test/existing-passwordless-user', async (req, res) => {
+    const email = req.body?.email;
+    if (typeof email !== 'string' || email.length === 0) {
+      res.status(400).json({ status: 'ERROR', message: 'email is required' });
+      return;
+    }
+
+    const signInResult = await Passwordless.signInUp({
+      email,
+      tenantId: 'public',
+    });
+    const userId = signInResult.user.id;
+    const sessionHandles = await Session.getAllSessionHandlesForUser(userId, true);
+    if (sessionHandles.length > 0) {
+      res.status(500).json({
+        status: 'ERROR',
+        message: 'Existing passwordless fixture unexpectedly has a session',
+      });
+      return;
+    }
+
+    res.json({
+      status: 'OK',
+      email,
+      userId,
+      sessionHandleCount: sessionHandles.length,
     });
   });
 

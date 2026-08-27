@@ -20,15 +20,7 @@ final class RowndRealHubAuthenticationUITests: XCTestCase {
         let capture = try await waitForPasswordlessCapture(email: email)
         let code = try XCTUnwrap(capture["userInputCode"] as? String)
 
-        let webView = app.webViews.firstMatch
-        let useCodeButton = webView.buttons["Use a code instead"]
-        XCTAssertTrue(useCodeButton.waitForExistence(timeout: 10))
-        useCodeButton.tap()
-        let codeField = webView.textFields.firstMatch
-        XCTAssertTrue(codeField.waitForExistence(timeout: 10))
-        codeField.tap()
-        codeField.typeText(code)
-        webView.buttons["Continue"].tap()
+        completeEmailOTP(code, in: app)
 
         try waitForLabel(app.staticTexts["e2e-auth-state"], equalTo: "authenticated")
         try waitForLabel(app.staticTexts["e2e-challenge-state"], equalTo: "clear")
@@ -41,6 +33,39 @@ final class RowndRealHubAuthenticationUITests: XCTestCase {
         try waitForLabel(app.staticTexts["e2e-scenario-state"], equalTo: "protected_loaded")
         let counters = try await waitForCounters { ($0["protected"] as? Int) == 1 }
         XCTAssertEqual(counters["passwordlessConsume"] as? Int, 1)
+    }
+
+    func testExistingPasswordlessUserExplicitSignUpStartsTappableOnboardingAfterHubDismissal() async throws {
+        let app = try await launchIsolatedApp(resetSession: true)
+        let email = uniqueEmail(prefix: "ios-existing-sign-up")
+        let fixture = try await request(
+            "POST",
+            path: "test/existing-passwordless-user",
+            jsonBody: ["email": email]
+        )
+        let fixtureUserId = try XCTUnwrap(fixture["userId"] as? String)
+        XCTAssertEqual(fixture["status"] as? String, "OK")
+        XCTAssertEqual(fixture["email"] as? String, email)
+        XCTAssertEqual(fixture["sessionHandleCount"] as? Int, 0)
+
+        try startEmailFlow(email, buttonIdentifier: "e2e-sign-up-email-button", in: app)
+        let capture = try await waitForPasswordlessCapture(email: email)
+        completeEmailOTP(try XCTUnwrap(capture["userInputCode"] as? String), in: app)
+
+        try waitForLabel(app.staticTexts["e2e-auth-state"], equalTo: "authenticated")
+        try waitForLabel(app.staticTexts["e2e-user-id"], equalTo: fixtureUserId)
+        try waitForLabel(app.staticTexts["e2e-sign-in-completed-count"], equalTo: "1")
+        try waitForLabel(app.staticTexts["e2e-onboarding-state"], equalTo: "started")
+        try waitForLabel(app.staticTexts["e2e-sign-in-user-type"], equalTo: "existing_user")
+        try waitForLabel(app.staticTexts["e2e-sign-in-app-variant-user-type"], equalTo: "existing_user")
+        XCTAssertEqual(app.staticTexts["e2e-modal-at-onboarding-start"].label, "false")
+        try waitForDisappearance(app.webViews.firstMatch)
+
+        let onboardingButton = app.buttons["e2e-onboarding-continue-button"]
+        try scrollToElement(onboardingButton, in: app)
+        XCTAssertTrue(onboardingButton.isHittable)
+        onboardingButton.tap()
+        try waitForLabel(app.staticTexts["e2e-onboarding-state"], equalTo: "advanced")
     }
 
     func testMagicLinkCompletesThroughCustomSchemeAndReplayDoesNotReplaceSession() async throws {
@@ -236,8 +261,16 @@ final class RowndRealHubAuthenticationUITests: XCTestCase {
     }
 
     private func startEmailSignIn(_ email: String, in app: XCUIApplication) throws {
+        try startEmailFlow(email, buttonIdentifier: "e2e-sign-in-email-button", in: app)
+    }
+
+    private func startEmailFlow(
+        _ email: String,
+        buttonIdentifier: String,
+        in app: XCUIApplication
+    ) throws {
         try waitForLabel(app.staticTexts["e2e-challenge-state"], equalTo: "clear")
-        let signInButton = app.buttons["e2e-sign-in-email-button"]
+        let signInButton = app.buttons[buttonIdentifier]
         try scrollToElement(signInButton, in: app)
         signInButton.tap()
 
@@ -250,6 +283,20 @@ final class RowndRealHubAuthenticationUITests: XCTestCase {
         XCTAssertTrue(continueButton.waitForExistence(timeout: 10))
         continueButton.tap()
         try waitForLabel(app.staticTexts["e2e-challenge-state"], equalTo: "active")
+    }
+
+    private func completeEmailOTP(_ code: String, in app: XCUIApplication) {
+        let webView = app.webViews.firstMatch
+        let useCodeButton = webView.buttons["Use a code instead"]
+        XCTAssertTrue(useCodeButton.waitForExistence(timeout: 10))
+        useCodeButton.tap()
+        let codeField = webView.textFields.firstMatch
+        XCTAssertTrue(codeField.waitForExistence(timeout: 10))
+        codeField.tap()
+        codeField.typeText(code)
+        let continueButton = webView.buttons["Continue"]
+        XCTAssertTrue(continueButton.waitForExistence(timeout: 10))
+        continueButton.tap()
     }
 
     private func removeLegacySeedEnvironment(from app: XCUIApplication) {
@@ -369,9 +416,17 @@ final class RowndRealHubAuthenticationUITests: XCTestCase {
         throw RealHubUITestError.timedOut
     }
 
-    private func request(_ method: String, path: String) async throws -> [String: Any] {
+    private func request(
+        _ method: String,
+        path: String,
+        jsonBody: [String: Any]? = nil
+    ) async throws -> [String: Any] {
         var request = URLRequest(url: backendURL.appendingPathComponent(path))
         request.httpMethod = method
+        if let jsonBody {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: jsonBody)
+        }
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let response = response as? HTTPURLResponse,
               (200..<300).contains(response.statusCode),

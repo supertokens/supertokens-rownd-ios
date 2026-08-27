@@ -31,10 +31,20 @@ struct E2EHarnessConfig: Decodable {
 
 @MainActor
 final class E2EReadiness: ObservableObject {
+    enum OnboardingState: String {
+        case idle
+        case started
+        case advanced
+    }
+
     static let shared = E2EReadiness()
 
     @Published private(set) var isReady = false
     @Published private(set) var signInCompletedCount = 0
+    @Published private(set) var onboardingState = OnboardingState.idle
+    @Published private(set) var userType = "not-recorded"
+    @Published private(set) var appVariantUserType = "not-recorded"
+    @Published private(set) var hadPresentedControllerAtOnboardingStart: Bool?
 
     private init() {}
 
@@ -42,10 +52,19 @@ final class E2EReadiness: ObservableObject {
         isReady = true
     }
 
-    func record(_ event: RowndEvent) {
+    func record(_ event: RowndEvent, hadPresentedControllerAtReceipt: Bool) {
         if event.event == .signInCompleted {
             signInCompletedCount += 1
+            userType = event.data?["user_type"]??.value as? String ?? "missing"
+            appVariantUserType = event.data?["app_variant_user_type"]??.value as? String ?? "missing"
+            hadPresentedControllerAtOnboardingStart = hadPresentedControllerAtReceipt
+            onboardingState = .started
         }
+    }
+
+    func advanceOnboarding() {
+        guard onboardingState == .started else { return }
+        onboardingState = .advanced
     }
 }
 
@@ -55,9 +74,34 @@ final class E2EEventRecorder: RowndEventHandlerDelegate {
     private init() {}
 
     func handleRowndEvent(_ event: RowndEvent) {
+        let hadPresentedController = Self.capturePresentedControllerState()
         Task { @MainActor in
-            E2EReadiness.shared.record(event)
+            E2EReadiness.shared.record(
+                event,
+                hadPresentedControllerAtReceipt: hadPresentedController
+            )
         }
+    }
+
+    private static func capturePresentedControllerState() -> Bool {
+        if Thread.isMainThread {
+            return MainActor.assumeIsolated {
+                hasPresentedController()
+            }
+        }
+
+        return DispatchQueue.main.sync {
+            MainActor.assumeIsolated {
+                hasPresentedController()
+            }
+        }
+    }
+
+    @MainActor private static func hasPresentedController() -> Bool {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .contains { $0.rootViewController?.presentedViewController != nil }
     }
 }
 
@@ -330,6 +374,14 @@ struct E2EStatusView: View {
                     .accessibilityIdentifier("e2e-challenge-state")
                 Text(String(readiness.signInCompletedCount))
                     .accessibilityIdentifier("e2e-sign-in-completed-count")
+                Text(readiness.onboardingState.rawValue)
+                    .accessibilityIdentifier("e2e-onboarding-state")
+                Text(readiness.userType)
+                    .accessibilityIdentifier("e2e-sign-in-user-type")
+                Text(readiness.appVariantUserType)
+                    .accessibilityIdentifier("e2e-sign-in-app-variant-user-type")
+                Text(readiness.hadPresentedControllerAtOnboardingStart.map(String.init) ?? "not-recorded")
+                    .accessibilityIdentifier("e2e-modal-at-onboarding-start")
             }
         }
     }
