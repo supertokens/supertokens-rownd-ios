@@ -1,5 +1,10 @@
 # Changelog
 
+## <small>0.1.13 (2026-08-27)</small>
+
+* fix: clear retained Hub session on reinstall ([d7a6737](https://github.com/supertokens/supertokens-rownd-ios/commit/d7a6737))
+* fix: dismiss auth hub before sign-in completion ([b446ffd](https://github.com/supertokens/supertokens-rownd-ios/commit/b446ffd))
+
 ## <small>0.1.12 (2026-08-26)</small>
 
 * fix: initialize sessions before installation cleanup ([c444a35](https://github.com/supertokens/supertokens-rownd-ios/commit/c444a35))
