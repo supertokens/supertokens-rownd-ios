@@ -21,6 +21,8 @@ Run `npm run test:cocoapods` to install the local pod into generated static-libr
 
 The E2E runner builds and starts the Hub automatically. Set `IOS_LOCAL_HUB_REPO` to use a different checkout path or `E2E_HUB_PORT` to change its port.
 
+To run only a selected UI script while still starting its Hub and backend dependencies, set `IOS_E2E_ONLY_UI=1` together with `IOS_E2E_UI_SCRIPT`.
+
 This starts the local Hub, SuperTokens Core, and backend harness before running the native integration suite, hosted example test, and rendered XCUITests. The UI suite covers Hub OTP and magic-link authentication through the WKWebView bridge, restored-session sign-out, relaunch reconciliation of persisted legacy Rownd state against an existing SuperTokens session without remigration, and pending-email verification. Run UI and Safari tests through the E2E runner so it can manage their dependencies and cleanup.
 
 The Safari custom-scheme handoff test runs separately on the simulator because the normal UI suite excludes it:

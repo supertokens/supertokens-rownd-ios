@@ -208,7 +208,7 @@ final class RowndRealHubAuthenticationUITests: XCTestCase {
         XCTAssertEqual(finalCounters["migrate"] as? Int, 0)
     }
 
-    func testClearSessionOnNewInstallationLaunchesSignedOutAndStillMigratesLegacySession() async throws {
+    func testClearSessionOnNewInstallationClearsNativeSession() async throws {
         let app = try await launchIsolatedApp(resetSession: true)
         let createSessionButton = app.buttons["e2e-create-session-button"]
         try scrollToElement(createSessionButton, in: app)
@@ -221,22 +221,34 @@ final class RowndRealHubAuthenticationUITests: XCTestCase {
         app.launchEnvironment["ROWND_E2E_CLEAR_SESSION_ON_NEW_INSTALLATION"] = "1"
         app.launchEnvironment["ROWND_E2E_SIMULATE_NEW_INSTALLATION"] = "1"
         app.launch()
+        removeNewInstallationEnvironment(from: app)
         try waitForLabel(app.staticTexts["e2e-sdk-state"], equalTo: "ready")
         try waitForLabel(app.staticTexts["e2e-auth-state"], equalTo: "signed-out")
         try waitForLabel(app.staticTexts["e2e-session-handle"], equalTo: "no-session")
+    }
+
+    func testClearSessionOnNewInstallationPreservesLegacyStateMigration() async throws {
+        let app = try await launchIsolatedApp(resetSession: true)
 
         app.terminate()
         _ = try await request("POST", path: "reset")
         let fixture = try await request("POST", path: "test/legacy-session")
         app.launchEnvironment["ROWND_E2E_LEGACY_ACCESS_TOKEN"] = try XCTUnwrap(fixture["accessToken"] as? String)
         app.launchEnvironment["ROWND_E2E_LEGACY_REFRESH_TOKEN"] = try XCTUnwrap(fixture["refreshToken"] as? String)
+        app.launchEnvironment["ROWND_E2E_CLEAR_SESSION_ON_NEW_INSTALLATION"] = "1"
+        app.launchEnvironment["ROWND_E2E_SIMULATE_NEW_INSTALLATION"] = "1"
         app.launch()
         removeLegacySeedEnvironment(from: app)
+        removeNewInstallationEnvironment(from: app)
 
         try waitForLabel(app.staticTexts["e2e-sdk-state"], equalTo: "ready")
         let counters = try await waitForCounters { ($0["migrate"] as? Int) == 1 }
         try waitForLabel(app.staticTexts["e2e-auth-state"], equalTo: "authenticated")
         XCTAssertEqual(counters["legacyRefresh"] as? Int, 0)
+    }
+
+    func testInstallationCleanupPreventsRetainedHubSessionResurrection() async throws {
+        try await assertHubDoesNotResurrectSession()
     }
 
     private func launchIsolatedApp(resetSession: Bool) async throws -> XCUIApplication {
@@ -302,6 +314,96 @@ final class RowndRealHubAuthenticationUITests: XCTestCase {
     private func removeLegacySeedEnvironment(from app: XCUIApplication) {
         app.launchEnvironment.removeValue(forKey: "ROWND_E2E_LEGACY_ACCESS_TOKEN")
         app.launchEnvironment.removeValue(forKey: "ROWND_E2E_LEGACY_REFRESH_TOKEN")
+    }
+
+    private func removeNewInstallationEnvironment(from app: XCUIApplication) {
+        app.launchEnvironment.removeValue(forKey: "ROWND_E2E_CLEAR_SESSION_ON_NEW_INSTALLATION")
+        app.launchEnvironment.removeValue(forKey: "ROWND_E2E_SIMULATE_NEW_INSTALLATION")
+    }
+
+    private func assertHubDoesNotResurrectSession() async throws {
+        let app = try await launchIsolatedApp(resetSession: true)
+        let email = uniqueEmail(prefix: "ios-installation-cleanup")
+
+        try startEmailSignIn(email, in: app)
+        let capture = try await waitForPasswordlessCapture(email: email)
+        completeEmailOTP(try XCTUnwrap(capture["userInputCode"] as? String), in: app)
+        try waitForLabel(app.staticTexts["e2e-auth-state"], equalTo: "authenticated")
+        try waitForLabel(app.staticTexts["e2e-sign-in-completed-count"], equalTo: "1")
+        try waitForDisappearance(app.webViews.firstMatch)
+        let authenticatedUserId = app.staticTexts["e2e-user-id"].label
+
+        let authenticatedCounters = try await request("GET", path: "counters")
+        let authenticatedConsumeCount = authenticatedCounters["passwordlessConsume"] as? Int ?? 0
+        let authenticatedMigrateCount = authenticatedCounters["migrate"] as? Int ?? 0
+        XCTAssertGreaterThan(authenticatedConsumeCount, 0)
+        XCTAssertEqual(authenticatedMigrateCount, 0, "Passwordless authentication unexpectedly involved migration")
+
+        app.terminate()
+        app.launchEnvironment["ROWND_E2E_CLEAR_SESSION_ON_NEW_INSTALLATION"] = "1"
+        app.launchEnvironment["ROWND_E2E_SIMULATE_NEW_INSTALLATION"] = "1"
+        app.launch()
+        removeNewInstallationEnvironment(from: app)
+
+        try waitForLabel(app.staticTexts["e2e-sdk-state"], equalTo: "ready")
+        try waitForLabel(app.staticTexts["e2e-auth-state"], equalTo: "signed-out")
+        try waitForLabel(app.staticTexts["e2e-session-handle"], equalTo: "no-session")
+        try waitForLabel(app.staticTexts["e2e-sign-in-completed-count"], equalTo: "0")
+
+        let countersBeforeOpeningHub = try await request("GET", path: "counters")
+        let consumeCountBeforeOpeningHub = countersBeforeOpeningHub["passwordlessConsume"] as? Int ?? 0
+        let migrateCountBeforeOpeningHub = countersBeforeOpeningHub["migrate"] as? Int ?? 0
+        XCTAssertEqual(consumeCountBeforeOpeningHub, authenticatedConsumeCount)
+        XCTAssertEqual(migrateCountBeforeOpeningHub, authenticatedMigrateCount)
+
+        let signInButton = app.buttons["e2e-sign-in-account-button"]
+        try scrollToElement(signInButton, in: app)
+        signInButton.tap()
+        try waitForLabel(app.staticTexts["e2e-scenario-state"], equalTo: "modal_open_requested")
+        let webView = app.webViews.firstMatch
+        let webViewAppeared = webView.waitForExistence(timeout: 15)
+
+        let settled = try await request("GET", path: "test/passwordless/consumes/settled")
+        let finalCounters = try await request("GET", path: "counters")
+        let authState = app.staticTexts["e2e-auth-state"].label
+        let sessionHandle = app.staticTexts["e2e-session-handle"].label
+        let completionCount = app.staticTexts["e2e-sign-in-completed-count"].label
+        let userId = app.staticTexts["e2e-user-id"].label
+        let scenarioState = app.staticTexts["e2e-scenario-state"].label
+        let remainedSignedOut = app.state == .runningForeground
+            && scenarioState == "modal_open_requested"
+            && webViewAppeared
+            && webView.exists
+            && authState == "signed-out"
+            && sessionHandle == "no-session"
+            && completionCount == "0"
+            && (settled["count"] as? Int) == consumeCountBeforeOpeningHub
+            && (settled["changedDuringObservation"] as? Bool) == false
+            && (finalCounters["migrate"] as? Int) == migrateCountBeforeOpeningHub
+
+        if !remainedSignedOut {
+            let screenshot = XCTAttachment(screenshot: app.screenshot())
+            screenshot.name = "Session resurrection state"
+            screenshot.lifetime = .keepAlways
+            add(screenshot)
+        }
+        XCTAssertTrue(
+            remainedSignedOut,
+            """
+            Hub did not remain signed out without user interaction.
+            appState=\(app.state.rawValue)
+            scenario=\(scenarioState)
+            webViewAppeared=\(webViewAppeared)
+            webViewExists=\(webView.exists)
+            auth=\(authState)
+            session=\(sessionHandle)
+            completion=\(completionCount)
+            userId=\(userId)
+            authenticatedUserId=\(authenticatedUserId)
+            settled=\(settled)
+            counters=\(finalCounters)
+            """
+        )
     }
 
     private func waitForAccessTokenResolution(

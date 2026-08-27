@@ -82,6 +82,10 @@ public class Rownd: NSObject {
             installationPreparation = try InstallationSessionManager.prepareForInitialization(
                 config: config.supertokens
             )
+            if installationPreparation.didClearSuperTokensSession,
+               !Bundle.main.bundlePath.hasSuffix(".appex") {
+                try await HubWebsiteDataCleaner.clear(for: config.baseUrl)
+            }
         } catch {
             fatalError("Failed to initialize SuperTokens: \(error)")
         }

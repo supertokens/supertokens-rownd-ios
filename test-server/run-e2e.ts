@@ -167,10 +167,12 @@ async function main() {
     });
 
     await Promise.all([waitForHealth(`${apiUrl}/health`), waitForHealth(hubHealthUrl)]);
-    await run('npm', ['run', 'test:integration']);
-    assertResourcesRunning();
-    await run('npm', ['run', 'test:e2e:example']);
-    assertResourcesRunning();
+    if (process.env.IOS_E2E_ONLY_UI !== '1') {
+      await run('npm', ['run', 'test:integration']);
+      assertResourcesRunning();
+      await run('npm', ['run', 'test:e2e:example']);
+      assertResourcesRunning();
+    }
     await run('npm', ['run', process.env.IOS_E2E_UI_SCRIPT || 'test:e2e:ui']);
     assertResourcesRunning();
   } catch (error) {
