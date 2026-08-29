@@ -257,6 +257,19 @@ public class Rownd: NSObject {
         inst.displayHubOnMainActor(.signIn, jsFnOptions: jsFnOptions, requestID: requestID)
     }
 
+    @MainActor internal static func requestSignInForNativeCompletionFallback(
+        jsFnOptions: Encodable?,
+        replacing completedRequestID: UUID,
+        requestID: UUID
+    ) -> Bool {
+        let activeRequestID = inst.activeHubRequestID
+        guard activeRequestID == nil || activeRequestID == completedRequestID else {
+            return false
+        }
+        inst.displayHubOnMainActor(.signIn, jsFnOptions: jsFnOptions, requestID: requestID)
+        return true
+    }
+
     @MainActor internal static func updateSignInForNativeCompletion(
         jsFnOptions: Encodable?,
         requestID: UUID
@@ -269,6 +282,11 @@ public class Rownd: NSObject {
 
     @MainActor internal static func isNativeHubRequestActive(_ requestID: UUID) -> Bool {
         inst.activeHubRequestID == requestID
+    }
+
+    @MainActor internal static func canCommitAuthState(forNativeHubRequest requestID: UUID) -> Bool {
+        let activeRequestID = inst.activeHubRequestID
+        return activeRequestID == nil || activeRequestID == requestID
     }
 
     internal static func openHubDeepLink(_ url: URL) {

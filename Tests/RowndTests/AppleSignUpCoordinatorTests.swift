@@ -1,10 +1,11 @@
 import Foundation
+import ReSwift
 import Testing
 
 @testable import Rownd
 
 @Suite(.serialized) struct AppleSignUpCoordinatorTests {
-    @Test func failedAuthSyncShowsErrorAndBlocksSuccessSideEffects() async throws {
+    @Test func failedAuthSyncAfterDismissalShowsFreshErrorAndBlocksSuccessSideEffects() async throws {
         try await withGlobalTestLock {
             let recorder = AppleSignInStepRecorder()
             let originalDisplayHubHandler = Rownd.displayHubHandler
@@ -35,7 +36,7 @@ import Testing
                     createdNewRecipeUser: true
                 )
             }
-            coordinator.syncAuthState = {
+            coordinator.syncAuthState = { _ in
                 recorder.append("sync-auth")
                 return false
             }
@@ -62,9 +63,14 @@ import Testing
             #expect(recorder.steps == [
                 "hub-completing",
                 "exchange",
+                "hub-success",
+                "wait",
+                "dismiss",
                 "sync-auth",
                 "hub-error"
             ])
+            let originalRequestIsActive = await Rownd.isNativeHubRequestActive(hubRequestID)
+            #expect(!originalRequestIsActive)
             let signIn = await MainActor.run { store.state.signIn }
             #expect(signIn == originalSignIn)
             await MainActor.run {
@@ -73,7 +79,7 @@ import Testing
         }
     }
 
-    @Test func dismissesHubBeforeEmittingSignInCompleted() async throws {
+    @Test func dismissesHubBeforePublishingAuthAndEmittingSignInCompleted() async throws {
         try await withGlobalTestLock {
             let recorder = AppleSignInStepRecorder()
             let allowDismissalToFinish = AppleSignInGate()
@@ -102,7 +108,7 @@ import Testing
                     createdNewRecipeUser: true
                 )
             }
-            coordinator.syncAuthState = {
+            coordinator.syncAuthState = { _ in
                 recorder.append("sync-auth")
                 return true
             }
@@ -147,6 +153,7 @@ import Testing
             }
 
             let didStartDismissal = await dismissalStarted.waitUntilOpen()
+            #expect(!recorder.steps.contains("sync-auth"))
             #expect(!recorder.steps.contains("sign-in-completed"))
             await allowDismissalToFinish.open()
             await signInTask.value
@@ -154,14 +161,182 @@ import Testing
             #expect(didStartDismissal)
             #expect(recorder.steps == [
                 "exchange",
-                "sync-auth",
                 "hub-success",
                 "wait",
                 "hub-dismiss-started",
                 "hub-dismissed",
+                "sync-auth",
                 "sign-in-completed"
             ])
             Rownd.displayHubHandler = originalDisplayHubHandler
+            await MainActor.run {
+                store.dispatch(SetAppConfig(payload: originalAppConfig))
+            }
+        }
+    }
+
+    @Test func newerHubDuringCompletionDelaySuppressesAuthPublicationAndCompletion() async throws {
+        try await withGlobalTestLock {
+            let recorder = AppleSignInStepRecorder()
+            let completionDelayStarted = AppleSignInGate()
+            let finishCompletionDelay = AppleSignInGate()
+            let originalDisplayHubHandler = Rownd.displayHubHandler
+            let (store, originalAppConfig) = await MainActor.run {
+                let store = Context.currentContext.store
+                return (store, store.state.appConfig)
+            }
+            defer { Rownd.displayHubHandler = originalDisplayHubHandler }
+
+            Rownd.displayHubHandler = { _, options in
+                guard let options = options as? RowndSignInJsOptions,
+                      let loginStep = options.loginStep else {
+                    return
+                }
+                recorder.append("hub-\(loginStep.rawValue)")
+            }
+            await MainActor.run {
+                store.dispatch(SetAppConfig(payload: Self.appConfig(
+                    iosClientType: "native-apple-client"
+                )))
+            }
+
+            let coordinator = TestAppleSignUpCoordinator(Rownd.getInstance())
+            coordinator.signInWithApple = { _, _ in
+                recorder.append("exchange")
+                return SuperTokensThirdPartySignInResponse(
+                    status: "OK",
+                    createdNewRecipeUser: false
+                )
+            }
+            coordinator.syncAuthState = { _ in
+                recorder.append("sync")
+                return true
+            }
+            coordinator.waitBeforeCompletion = {
+                await completionDelayStarted.open()
+                await finishCompletionDelay.wait()
+            }
+            coordinator.dismissHub = { _ in recorder.append("dismiss") }
+            coordinator.emitEvent = { _ in recorder.append("event") }
+            coordinator.onUpdateUserData = { recorder.append("profile") }
+
+            let appleRequestID = UUID()
+            let newerRequestID = UUID()
+            await MainActor.run {
+                Rownd.requestSignInForNativeCompletion(
+                    jsFnOptions: RowndSignInJsOptions(loginStep: .completing),
+                    requestID: appleRequestID
+                )
+            }
+            let signInTask = Task {
+                await coordinator.completeSignIn(
+                    authorizationCode: "apple-auth-code",
+                    fullName: nil,
+                    email: nil,
+                    intent: nil,
+                    hubRequestID: appleRequestID
+                )
+            }
+
+            await completionDelayStarted.wait()
+            await MainActor.run {
+                Rownd.requestSignInForNativeCompletion(
+                    jsFnOptions: RowndSignInJsOptions(loginStep: .completing),
+                    requestID: newerRequestID
+                )
+            }
+            await finishCompletionDelay.open()
+            await signInTask.value
+
+            #expect(recorder.steps == [
+                "hub-completing",
+                "exchange",
+                "hub-success",
+                "hub-completing"
+            ])
+            #expect(await Rownd.isNativeHubRequestActive(newerRequestID))
+            await MainActor.run {
+                store.dispatch(SetAppConfig(payload: originalAppConfig))
+            }
+        }
+    }
+
+    @Test func syncFailureFallbackDoesNotReplaceNewerHubRequest() async throws {
+        try await withGlobalTestLock {
+            let recorder = AppleSignInStepRecorder()
+            let syncStarted = AppleSignInGate()
+            let finishSync = AppleSignInGate()
+            let originalDisplayHubHandler = Rownd.displayHubHandler
+            let (store, originalAppConfig) = await MainActor.run {
+                let store = Context.currentContext.store
+                return (store, store.state.appConfig)
+            }
+            defer { Rownd.displayHubHandler = originalDisplayHubHandler }
+
+            Rownd.displayHubHandler = { _, options in
+                guard let options = options as? RowndSignInJsOptions,
+                      let loginStep = options.loginStep else {
+                    return
+                }
+                recorder.append("hub-\(loginStep.rawValue)")
+            }
+            await MainActor.run {
+                store.dispatch(SetAppConfig(payload: Self.appConfig(
+                    iosClientType: "native-apple-client"
+                )))
+            }
+
+            let coordinator = TestAppleSignUpCoordinator(Rownd.getInstance())
+            coordinator.signInWithApple = { _, _ in
+                SuperTokensThirdPartySignInResponse(
+                    status: "OK",
+                    createdNewRecipeUser: false
+                )
+            }
+            coordinator.syncAuthState = { _ in
+                await syncStarted.open()
+                await finishSync.wait()
+                return false
+            }
+            coordinator.waitBeforeCompletion = {}
+            coordinator.dismissHub = { _ in }
+            coordinator.emitEvent = { _ in recorder.append("event") }
+            coordinator.onUpdateUserData = { recorder.append("profile") }
+
+            let appleRequestID = UUID()
+            let newerRequestID = UUID()
+            await MainActor.run {
+                Rownd.requestSignInForNativeCompletion(
+                    jsFnOptions: RowndSignInJsOptions(loginStep: .completing),
+                    requestID: appleRequestID
+                )
+            }
+            let signInTask = Task {
+                await coordinator.completeSignIn(
+                    authorizationCode: "apple-auth-code",
+                    fullName: nil,
+                    email: nil,
+                    intent: nil,
+                    hubRequestID: appleRequestID
+                )
+            }
+
+            await syncStarted.wait()
+            await MainActor.run {
+                Rownd.requestSignInForNativeCompletion(
+                    jsFnOptions: RowndSignInJsOptions(loginStep: .completing),
+                    requestID: newerRequestID
+                )
+            }
+            await finishSync.open()
+            await signInTask.value
+
+            #expect(recorder.steps == [
+                "hub-completing",
+                "hub-success",
+                "hub-completing"
+            ])
+            #expect(await Rownd.isNativeHubRequestActive(newerRequestID))
             await MainActor.run {
                 store.dispatch(SetAppConfig(payload: originalAppConfig))
             }
@@ -173,10 +348,13 @@ import Testing
             let recorder = AppleSignInStepRecorder()
             let firstExchangeStarted = AppleSignInGate()
             let finishFirstExchange = AppleSignInGate()
+            let originalDisplayHubHandler = Rownd.displayHubHandler
             let (store, originalAppConfig) = await MainActor.run {
                 let store = Context.currentContext.store
                 return (store, store.state.appConfig)
             }
+            defer { Rownd.displayHubHandler = originalDisplayHubHandler }
+            Rownd.displayHubHandler = { _, _ in }
             await MainActor.run {
                 store.dispatch(SetAppConfig(payload: Self.appConfig(
                     iosClientType: "native-apple-client"
@@ -195,7 +373,7 @@ import Testing
                     createdNewRecipeUser: authorizationCode == "second"
                 )
             }
-            coordinator.syncAuthState = {
+            coordinator.syncAuthState = { _ in
                 recorder.append("sync")
                 return true
             }
@@ -204,22 +382,36 @@ import Testing
             coordinator.emitEvent = { _ in recorder.append("event") }
             coordinator.onUpdateUserData = { recorder.append("profile") }
 
+            let firstRequestID = UUID()
+            let secondRequestID = UUID()
+            await MainActor.run {
+                Rownd.requestSignInForNativeCompletion(
+                    jsFnOptions: RowndSignInJsOptions(loginStep: .completing),
+                    requestID: firstRequestID
+                )
+            }
             let firstTask = Task {
                 await coordinator.completeSignIn(
                     authorizationCode: "first",
                     fullName: nil,
                     email: nil,
                     intent: nil,
-                    hubRequestID: UUID()
+                    hubRequestID: firstRequestID
                 )
             }
             await firstExchangeStarted.wait()
+            await MainActor.run {
+                Rownd.requestSignInForNativeCompletion(
+                    jsFnOptions: RowndSignInJsOptions(loginStep: .completing),
+                    requestID: secondRequestID
+                )
+            }
             await coordinator.completeSignIn(
                 authorizationCode: "second",
                 fullName: nil,
                 email: nil,
                 intent: nil,
-                hubRequestID: UUID()
+                hubRequestID: secondRequestID
             )
             await finishFirstExchange.open()
             await firstTask.value
@@ -237,29 +429,281 @@ import Testing
         }
     }
 
+    @Test func newerAppleOperationInvalidatesInFlightSyncBeforeAuthCommit() async throws {
+        try await withGlobalTestLock {
+            let recorder = AppleSignInStepRecorder()
+            let firstSyncStarted = AppleSignInGate()
+            let finishFirstSync = AppleSignInGate()
+            let secondExchangeStarted = AppleSignInGate()
+            let finishSecondExchange = AppleSignInGate()
+            let originalDisplayHubHandler = Rownd.displayHubHandler
+            let (store, originalAppConfig) = await MainActor.run {
+                let store = Context.currentContext.store
+                return (store, store.state.appConfig)
+            }
+            defer { Rownd.displayHubHandler = originalDisplayHubHandler }
+
+            Rownd.displayHubHandler = { _, _ in }
+            await MainActor.run {
+                store.dispatch(SetAppConfig(payload: Self.appConfig(
+                    iosClientType: "native-apple-client"
+                )))
+            }
+
+            let coordinator = TestAppleSignUpCoordinator(Rownd.getInstance())
+            coordinator.signInWithApple = { authorizationCode, _ in
+                recorder.append("exchange-\(authorizationCode)")
+                if authorizationCode == "second" {
+                    await secondExchangeStarted.open()
+                    await finishSecondExchange.wait()
+                }
+                return SuperTokensThirdPartySignInResponse(
+                    status: "OK",
+                    createdNewRecipeUser: false
+                )
+            }
+            coordinator.syncAuthState = { commitIf in
+                recorder.append("sync-started")
+                await firstSyncStarted.open()
+                await finishFirstSync.wait()
+                let shouldCommit = await MainActor.run { commitIf() }
+                recorder.append(shouldCommit ? "auth-committed" : "auth-suppressed")
+                return shouldCommit
+            }
+            coordinator.waitBeforeCompletion = {}
+            coordinator.dismissHub = { _ in }
+            coordinator.emitEvent = { _ in recorder.append("event") }
+            coordinator.onUpdateUserData = { recorder.append("profile") }
+
+            let firstRequestID = UUID()
+            await MainActor.run {
+                Rownd.requestSignInForNativeCompletion(
+                    jsFnOptions: RowndSignInJsOptions(loginStep: .completing),
+                    requestID: firstRequestID
+                )
+            }
+            let firstTask = Task {
+                await coordinator.completeSignIn(
+                    authorizationCode: "first",
+                    fullName: nil,
+                    email: nil,
+                    intent: nil,
+                    hubRequestID: firstRequestID
+                )
+            }
+            await firstSyncStarted.wait()
+
+            let secondTask = Task {
+                await coordinator.completeSignIn(
+                    authorizationCode: "second",
+                    fullName: nil,
+                    email: nil,
+                    intent: nil,
+                    hubRequestID: UUID()
+                )
+            }
+            await secondExchangeStarted.wait()
+            await finishFirstSync.open()
+            await firstTask.value
+
+            secondTask.cancel()
+            await finishSecondExchange.open()
+            await secondTask.value
+
+            #expect(recorder.steps == [
+                "exchange-first",
+                "sync-started",
+                "exchange-second",
+                "auth-suppressed"
+            ])
+            await MainActor.run {
+                store.dispatch(SetAppConfig(payload: originalAppConfig))
+            }
+        }
+    }
+
+    @Test func newerHubAfterSyncSuppressesAtomicProfileAndEventFinalization() async throws {
+        try await withGlobalTestLock {
+            let recorder = AppleSignInStepRecorder()
+            let finalizationStarted = AppleSignInGate()
+            let finishFinalization = AppleSignInGate()
+            let originalDisplayHubHandler = Rownd.displayHubHandler
+            let (store, originalAppConfig) = await MainActor.run {
+                let store = Context.currentContext.store
+                return (store, store.state.appConfig)
+            }
+            defer { Rownd.displayHubHandler = originalDisplayHubHandler }
+
+            Rownd.displayHubHandler = { _, _ in }
+            await MainActor.run {
+                store.dispatch(SetAppConfig(payload: Self.appConfig(
+                    iosClientType: "native-apple-client"
+                )))
+            }
+
+            let coordinator = TestAppleSignUpCoordinator(Rownd.getInstance())
+            coordinator.signInWithApple = { _, _ in
+                SuperTokensThirdPartySignInResponse(
+                    status: "OK",
+                    createdNewRecipeUser: false
+                )
+            }
+            coordinator.syncAuthState = { commitIf in
+                let shouldCommit = await MainActor.run { commitIf() }
+                if shouldCommit {
+                    recorder.append("sync")
+                }
+                return shouldCommit
+            }
+            coordinator.waitBeforeCompletion = {}
+            coordinator.dismissHub = { _ in }
+            coordinator.beforeFinalization = {
+                await finalizationStarted.open()
+                await finishFinalization.wait()
+            }
+            coordinator.emitEvent = { _ in recorder.append("event") }
+            coordinator.onUpdateUserData = { recorder.append("profile") }
+
+            let appleRequestID = UUID()
+            let newerRequestID = UUID()
+            await MainActor.run {
+                Rownd.requestSignInForNativeCompletion(
+                    jsFnOptions: RowndSignInJsOptions(loginStep: .completing),
+                    requestID: appleRequestID
+                )
+            }
+            let signInTask = Task {
+                await coordinator.completeSignIn(
+                    authorizationCode: "apple-auth-code",
+                    fullName: nil,
+                    email: nil,
+                    intent: nil,
+                    hubRequestID: appleRequestID
+                )
+            }
+
+            await finalizationStarted.wait()
+            await MainActor.run {
+                Rownd.requestSignInForNativeCompletion(
+                    jsFnOptions: RowndSignInJsOptions(loginStep: .completing),
+                    requestID: newerRequestID
+                )
+            }
+            await finishFinalization.open()
+            await signInTask.value
+
+            #expect(recorder.steps == ["sync"])
+            #expect(await Rownd.isNativeHubRequestActive(newerRequestID))
+            await MainActor.run {
+                store.dispatch(SetAppConfig(payload: originalAppConfig))
+            }
+        }
+    }
+
+    @Test func reentrantOperationDuringFinalizationSuppressesProfileAndEvent() async throws {
+        try await withGlobalTestLock {
+            let recorder = AppleSignInStepRecorder()
+            let originalDisplayHubHandler = Rownd.displayHubHandler
+            let (store, originalAppConfig) = await MainActor.run {
+                let store = Context.currentContext.store
+                return (store, store.state.appConfig)
+            }
+            defer { Rownd.displayHubHandler = originalDisplayHubHandler }
+
+            Rownd.displayHubHandler = { _, _ in }
+            await MainActor.run {
+                store.dispatch(SetAppConfig(payload: Self.appConfig(
+                    iosClientType: "native-apple-client"
+                )))
+                store.dispatch(ResetSignInState())
+            }
+
+            let coordinator = TestAppleSignUpCoordinator(Rownd.getInstance())
+            coordinator.signInWithApple = { _, _ in
+                SuperTokensThirdPartySignInResponse(
+                    status: "OK",
+                    createdNewRecipeUser: false
+                )
+            }
+            coordinator.syncAuthState = { commitIf in
+                let shouldCommit = await MainActor.run { commitIf() }
+                if shouldCommit {
+                    recorder.append("sync")
+                }
+                return shouldCommit
+            }
+            coordinator.waitBeforeCompletion = {}
+            coordinator.dismissHub = { _ in }
+            coordinator.emitEvent = { _ in recorder.append("event") }
+            coordinator.onUpdateUserData = { recorder.append("profile") }
+
+            let appleRequestID = UUID()
+            let newerRequestID = UUID()
+            let observer = await MainActor.run {
+                let observer = ReentrantAppleSignInObserver {
+                    recorder.append("reentrant-operation")
+                    _ = coordinator.registerAuthorizationOperation(
+                        controllerID: ObjectIdentifier(NSObject())
+                    )
+                    Rownd.requestSignInForNativeCompletion(
+                        jsFnOptions: RowndSignInJsOptions(loginStep: .completing),
+                        requestID: newerRequestID
+                    )
+                }
+                store.subscribe(observer) {
+                    $0.select { $0.signIn }
+                }
+                Rownd.requestSignInForNativeCompletion(
+                    jsFnOptions: RowndSignInJsOptions(loginStep: .completing),
+                    requestID: appleRequestID
+                )
+                return observer
+            }
+
+            await coordinator.completeSignIn(
+                authorizationCode: "apple-auth-code",
+                fullName: nil,
+                email: nil,
+                intent: nil,
+                hubRequestID: appleRequestID
+            )
+
+            #expect(recorder.steps == ["sync", "reentrant-operation"])
+            #expect(await Rownd.isNativeHubRequestActive(newerRequestID))
+            await MainActor.run {
+                store.unsubscribe(observer)
+                store.dispatch(SetAppConfig(payload: originalAppConfig))
+                store.dispatch(ResetSignInState())
+            }
+        }
+    }
+
     @Test func authorizationOperationsFollowInitiationOrderNotCallbackOrder() async throws {
         try await withGlobalTestLock {
             let coordinator = TestAppleSignUpCoordinator(Rownd.getInstance())
             let firstController = NSObject()
             let secondController = NSObject()
 
-            let firstOperationID = coordinator.registerAuthorizationOperation(
+            let firstOperationID = await coordinator.registerAuthorizationOperation(
                 controllerID: ObjectIdentifier(firstController)
             )
-            let secondOperationID = coordinator.registerAuthorizationOperation(
+            let secondOperationID = await coordinator.registerAuthorizationOperation(
                 controllerID: ObjectIdentifier(secondController)
             )
 
             #expect(firstOperationID != secondOperationID)
-            #expect(coordinator.consumeAuthorizationOperation(
+            let staleOperationID = await coordinator.consumeAuthorizationOperation(
                 controllerID: ObjectIdentifier(firstController)
-            ) == nil)
-            #expect(coordinator.consumeAuthorizationOperation(
+            )
+            let consumedOperationID = await coordinator.consumeAuthorizationOperation(
                 controllerID: ObjectIdentifier(secondController)
-            ) == secondOperationID)
-            #expect(coordinator.consumeAuthorizationOperation(
+            )
+            let duplicateOperationID = await coordinator.consumeAuthorizationOperation(
                 controllerID: ObjectIdentifier(secondController)
-            ) == nil)
+            )
+            #expect(staleOperationID == nil)
+            #expect(consumedOperationID == secondOperationID)
+            #expect(duplicateOperationID == nil)
         }
     }
 
@@ -286,7 +730,7 @@ import Testing
             }
 
             let firstController = NSObject()
-            let firstOperationID = coordinator.registerAuthorizationOperation(
+            let firstOperationID = await coordinator.registerAuthorizationOperation(
                 controllerID: ObjectIdentifier(firstController)
             )
             let presentationTask = Task {
@@ -298,7 +742,7 @@ import Testing
             await presentationPaused.wait()
 
             let secondController = NSObject()
-            _ = coordinator.registerAuthorizationOperation(
+            _ = await coordinator.registerAuthorizationOperation(
                 controllerID: ObjectIdentifier(secondController)
             )
             await staleRequestRetired.wait()
@@ -335,7 +779,7 @@ import Testing
                     createdNewRecipeUser: true
                 )
             }
-            coordinator.syncAuthState = { true }
+            coordinator.syncAuthState = { _ in true }
             coordinator.waitBeforeCompletion = {}
             coordinator.dismissHub = { _ in }
             coordinator.emitEvent = { _ in }
@@ -389,7 +833,7 @@ import Testing
                     createdNewRecipeUser: false
                 )
             }
-            coordinator.syncAuthState = { true }
+            coordinator.syncAuthState = { _ in true }
             coordinator.waitBeforeCompletion = {}
             coordinator.dismissHub = { _ in }
             coordinator.emitEvent = { _ in }
@@ -508,7 +952,7 @@ import Testing
                     createdNewRecipeUser: false
                 )
             }
-            coordinator.syncAuthState = { true }
+            coordinator.syncAuthState = { _ in true }
             coordinator.waitBeforeCompletion = {}
             coordinator.dismissHub = { _ in }
             coordinator.emitEvent = { _ in }
@@ -621,7 +1065,7 @@ import Testing
                     createdNewRecipeUser: false
                 )
             }
-            coordinator.syncAuthState = { true }
+            coordinator.syncAuthState = { _ in true }
             coordinator.waitBeforeCompletion = {}
             coordinator.dismissHub = { _ in }
             coordinator.emitEvent = { _ in }
@@ -906,8 +1350,8 @@ import Testing
     @Test func userDismissalBlocksStaleHubWorkButFinalizesAppleSignIn() async throws {
         try await withGlobalTestLock {
             let recorder = AppleSignInStepRecorder()
-            let syncStarted = AppleSignInGate()
-            let finishSync = AppleSignInGate()
+            let completionDelayStarted = AppleSignInGate()
+            let finishCompletionDelay = AppleSignInGate()
             let originalDisplayHubHandler = Rownd.displayHubHandler
             let (store, originalAppConfig) = await MainActor.run {
                 let store = Context.currentContext.store
@@ -928,12 +1372,14 @@ import Testing
                     createdNewRecipeUser: false
                 )
             }
-            coordinator.syncAuthState = {
-                await syncStarted.open()
-                await finishSync.wait()
-                return true
+            coordinator.syncAuthState = { commitIf in
+                recorder.append("sync")
+                return await MainActor.run { commitIf() }
             }
-            coordinator.waitBeforeCompletion = { recorder.append("wait") }
+            coordinator.waitBeforeCompletion = {
+                await completionDelayStarted.open()
+                await finishCompletionDelay.wait()
+            }
             coordinator.dismissHub = { _ in recorder.append("dismiss") }
             coordinator.emitEvent = { _ in recorder.append("event") }
             coordinator.onUpdateUserData = { recorder.append("profile") }
@@ -955,11 +1401,11 @@ import Testing
                 )
             }
 
-            let didStartSync = await syncStarted.waitUntilOpen()
+            let didStartCompletionDelay = await completionDelayStarted.waitUntilOpen()
             await MainActor.run {
                 Rownd.getInstance().bottomSheetController.viewDidDisappear(false)
             }
-            await finishSync.open()
+            await finishCompletionDelay.open()
             await signInTask.value
 
             let lifecycleState = await MainActor.run {
@@ -970,8 +1416,8 @@ import Testing
             }
             #expect(!lifecycleState.0)
             #expect(lifecycleState.1 == nil)
-            #expect(didStartSync)
-            #expect(recorder.steps == ["profile", "event"])
+            #expect(didStartCompletionDelay)
+            #expect(recorder.steps == ["sync", "profile", "event"])
             await MainActor.run {
                 store.dispatch(SetAppConfig(payload: originalAppConfig))
             }
@@ -1097,6 +1543,21 @@ private final class TestAppleSignUpCoordinator: AppleSignUpCoordinator {
 
     @MainActor override func updateUserDataWithAppleData(fullName: PersonNameComponents?, email: String?) {
         onUpdateUserData?()
+    }
+}
+
+private final class ReentrantAppleSignInObserver: StoreSubscriber {
+    private let onAppleSignIn: () -> Void
+    private var hasTriggered = false
+
+    init(onAppleSignIn: @escaping () -> Void) {
+        self.onAppleSignIn = onAppleSignIn
+    }
+
+    func newState(state: SignInState) {
+        guard state.lastSignIn == .apple, !hasTriggered else { return }
+        hasTriggered = true
+        onAppleSignIn()
     }
 }
 

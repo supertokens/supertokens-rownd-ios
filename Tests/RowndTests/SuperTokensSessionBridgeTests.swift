@@ -375,6 +375,79 @@ import Network
         }
     }
 
+    @Test func commitPredicatePreventsRowndAuthDispatch() async throws {
+        try await withMockedSuperTokensSession {
+            let originalContext = Context.currentContext
+            let isolatedStore = createStore()
+            _ = Context(isolatedStore)
+            defer { Context.currentContext = originalContext }
+
+            let accessToken = makeSuperTokensTestJWT(expiresIn: 3600)
+            let refreshToken = makeSuperTokensTestJWT(expiresIn: 7200)
+            let adopted = await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: accessToken,
+                    refreshToken: refreshToken
+                )
+            }.value
+            #expect(adopted)
+
+            let synced = await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens(
+                afterTokenRead: {},
+                commitIf: { false }
+            )
+
+            #expect(!synced)
+            await MainActor.run {
+                #expect(isolatedStore.state.auth.accessToken == nil)
+                #expect(!isolatedStore.state.auth.isAuthenticated)
+            }
+        }
+    }
+
+    @Test func commitPredicatePreventsReconciliationAuthDispatch() async throws {
+        try await withMockedSuperTokensSession {
+            let originalContext = Context.currentContext
+            let isolatedStore = createStore()
+            _ = Context(isolatedStore)
+            defer { Context.currentContext = originalContext }
+
+            let accessToken = makeSuperTokensTestJWT(expiresIn: 3600)
+            let refreshToken = makeSuperTokensTestJWT(expiresIn: 7200)
+            let replacementAccessToken = makeSuperTokensTestJWT(expiresIn: 1800)
+            let adopted = await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: accessToken,
+                    refreshToken: refreshToken
+                )
+            }.value
+            #expect(adopted)
+
+            let synced = await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens(
+                afterTokenRead: {
+                    let refreshed = await SuperTokensSessionBridge.attemptRefresh {
+                        SDKStorage.set(
+                            "st-storage-item-st-access-token",
+                            value: replacementAccessToken
+                        ) && FrontToken.setItem(
+                            frontToken: SuperTokensSessionBridge.buildFrontToken(
+                                from: replacementAccessToken
+                            )
+                        )
+                    }
+                    #expect(refreshed)
+                },
+                commitIf: { false }
+            )
+
+            #expect(!synced)
+            await MainActor.run {
+                #expect(isolatedStore.state.auth.accessToken == nil)
+                #expect(!isolatedStore.state.auth.isAuthenticated)
+            }
+        }
+    }
+
     @Test func refreshTokenChangeDuringSyncReconcilesRowndToRefreshedToken() async throws {
         try await withMockedSuperTokensSession {
             let originalContext = Context.currentContext
@@ -452,6 +525,62 @@ import Network
 
             #expect(!synced)
             #expect(await MainActor.run { isolatedStore.state.auth.accessToken } == replacementAccessToken)
+        }
+    }
+
+    @Test func reconciliationContinuesAfterInitialCommitPermissionIsRevoked() async throws {
+        try await withMockedSuperTokensSession {
+            let originalContext = Context.currentContext
+            let isolatedStore = createStore()
+            _ = Context(isolatedStore)
+            defer { Context.currentContext = originalContext }
+
+            let originalAccessToken = makeSuperTokensTestJWT(expiresIn: 3600)
+            let originalRefreshToken = makeSuperTokensTestJWT(expiresIn: 7200)
+            let replacementAccessToken = makeSuperTokensTestJWT(expiresIn: 1800)
+            let replacementRefreshToken = makeSuperTokensTestJWT(expiresIn: 5400)
+            let permission = await MainActor.run { SessionCommitPermission() }
+            let adopted = await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: originalAccessToken,
+                    refreshToken: originalRefreshToken
+                )
+            }.value
+            #expect(adopted)
+
+            let synced = await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens(
+                afterTokenRead: {},
+                afterAuthDispatch: {
+                    await MainActor.run {
+                        #expect(isolatedStore.state.auth.accessToken == originalAccessToken)
+                        permission.isAllowed = false
+                    }
+                    let replaced = await Task.detached {
+                        SuperTokensSessionBridge.bootstrapSession(
+                            accessToken: replacementAccessToken,
+                            refreshToken: replacementRefreshToken,
+                            refreshSession: {
+                                SDKStorage.set(
+                                    "st-storage-item-st-access-token",
+                                    value: replacementAccessToken
+                                ) && FrontToken.setItem(
+                                    frontToken: SuperTokensSessionBridge.buildFrontToken(
+                                        from: replacementAccessToken
+                                    )
+                                )
+                            }
+                        )
+                    }.value
+                    #expect(replaced)
+                },
+                commitIf: { permission.isAllowed }
+            )
+
+            #expect(!synced)
+            #expect(await MainActor.run { !permission.isAllowed })
+            #expect(await MainActor.run {
+                isolatedStore.state.auth.accessToken == replacementAccessToken
+            })
         }
     }
 
@@ -847,6 +976,11 @@ import Network
             #expect(completed)
         }
     }
+}
+
+@MainActor
+private final class SessionCommitPermission {
+    var isAllowed = true
 }
 
 private actor SessionSyncGate {

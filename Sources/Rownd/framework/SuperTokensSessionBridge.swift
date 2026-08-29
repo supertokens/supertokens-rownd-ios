@@ -209,7 +209,8 @@ internal enum SuperTokensSessionBridge {
     static func syncRowndAuthStateFromSuperTokens(
         afterTokenRead: () async -> Void,
         afterAuthDispatch: () async -> Void = {},
-        afterReconciliationDispatch: (Int) async -> Void = { _ in }
+        afterReconciliationDispatch: (Int) async -> Void = { _ in },
+        commitIf: @MainActor () -> Bool = { true }
     ) async -> Bool {
         let rowndAccessTokenBeforeSync = await MainActor.run {
             Context.currentContext.store.state.auth.accessToken
@@ -227,7 +228,9 @@ internal enum SuperTokensSessionBridge {
               sessionBeforeDispatch.accessToken == accessToken else {
             await reconcileRowndAuthState(
                 replacing: rowndAccessTokenBeforeSync,
-                afterDispatch: afterReconciliationDispatch
+                afterDispatch: afterReconciliationDispatch,
+                firstCommitAlreadyOccurred: false,
+                commitIf: commitIf
             )
             return false
         }
@@ -235,6 +238,7 @@ internal enum SuperTokensSessionBridge {
         let didDispatch = await MainActor.run {
             let store = Context.currentContext.store
             guard store.state.auth.accessToken == rowndAccessTokenBeforeSync else { return false }
+            guard commitIf() else { return false }
             store.dispatch(
                 SetAuthState(payload: AuthState(accessToken: accessToken, refreshToken: nil))
             )
@@ -250,7 +254,9 @@ internal enum SuperTokensSessionBridge {
               currentSession.accessToken == accessToken else {
             await reconcileRowndAuthState(
                 replacing: accessToken,
-                afterDispatch: afterReconciliationDispatch
+                afterDispatch: afterReconciliationDispatch,
+                firstCommitAlreadyOccurred: true,
+                commitIf: commitIf
             )
             return false
         }
@@ -259,16 +265,21 @@ internal enum SuperTokensSessionBridge {
 
     private static func reconcileRowndAuthState(
         replacing expectedAccessToken: String?,
-        afterDispatch: (Int) async -> Void
+        afterDispatch: (Int) async -> Void,
+        firstCommitAlreadyOccurred: Bool,
+        commitIf: @MainActor () -> Bool
     ) async {
         var expectedAccessToken = expectedAccessToken
+        var hasCommittedState = firstCommitAlreadyOccurred
         for attempt in 0..<3 {
             let session = await onSessionQueue {
                 (generation: sessionGeneration, accessToken: SuperTokens.getAccessToken())
             }
+            let requiresCommitPermission = !hasCommittedState
             let didDispatch = await MainActor.run {
                 let store = Context.currentContext.store
                 guard store.state.auth.accessToken == expectedAccessToken else { return false }
+                guard !requiresCommitPermission || commitIf() else { return false }
                 store.dispatch(SetAuthState(payload: AuthState(
                     accessToken: session.accessToken,
                     refreshToken: nil
@@ -276,6 +287,7 @@ internal enum SuperTokensSessionBridge {
                 return true
             }
             guard didDispatch else { return }
+            hasCommittedState = true
             await afterDispatch(attempt)
 
             let verifiedSession = await onSessionQueue {
@@ -291,6 +303,7 @@ internal enum SuperTokensSessionBridge {
         await MainActor.run {
             let store = Context.currentContext.store
             guard store.state.auth.accessToken == expectedAccessToken else { return }
+            guard hasCommittedState || commitIf() else { return }
             store.dispatch(SetAuthState(payload: AuthState()))
         }
     }

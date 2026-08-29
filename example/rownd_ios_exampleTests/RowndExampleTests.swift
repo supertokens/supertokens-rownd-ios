@@ -1,6 +1,7 @@
 import XCTest
 import SuperTokensIOS
 import UIKit
+import ReSwift
 
 @testable import Rownd
 
@@ -55,17 +56,61 @@ final class RowndExampleTests: XCTestCase {
     }
 
     func testPostAppleCompletionDismissesRealBottomSheetBeforeRestoringOnboardingTouches() async throws {
-        let fixture = try await MainActor.run { try PostAppleUIKitFixture() }
+        try await assertAppleCompletionIntentAuthPublicationOrdering(
+            createdNewRecipeUser: true,
+            intent: .signUp,
+            expectedUserType: .NewUser
+        )
+    }
+
+    func testAppleCompletionSignUpIntentExistingUserPublishesAuthAfterHubDismissal() async throws {
+        try await assertAppleCompletionIntentAuthPublicationOrdering(
+            createdNewRecipeUser: false,
+            intent: .signUp,
+            expectedUserType: .ExistingUser
+        )
+    }
+
+    func testAppleCompletionSignInIntentPublishesAuthAfterHubDismissal() async throws {
+        try await assertAppleCompletionIntentAuthPublicationOrdering(
+            createdNewRecipeUser: false,
+            intent: .signIn,
+            expectedUserType: .ExistingUser
+        )
+    }
+
+    private func assertAppleCompletionIntentAuthPublicationOrdering(
+        createdNewRecipeUser: Bool,
+        intent: RowndSignInIntent,
+        expectedUserType: UserType
+    ) async throws {
+        let fixture = try await acquirePostAppleUIKitFixture()
         let gateReached = PostAppleGate()
         let releaseCompletion = PostAppleGate()
         let recorder = await MainActor.run { PostAppleCompletionRecorder() }
+        let authStore = Store<AuthState>(reducer: authReducer, state: AuthState())
         let (store, originalAppConfig, originalDisplayHubHandler) = await MainActor.run {
-            (Context.currentContext.store, Context.currentContext.store.state.appConfig, Rownd.displayHubHandler)
+            let store = Context.currentContext.store
+            return (store, store.state.appConfig, Rownd.displayHubHandler)
+        }
+        let onboardingObserver = await MainActor.run {
+            let observer = PostAppleOnboardingObserver {
+                recorder.recordAuthPublication(
+                    rootHasModal: fixture.rootViewController.presentedViewController != nil,
+                    hubIsDisplayed: Rownd.isDisplayingHub(),
+                    onboardingButtonWinsHitTest: fixture.onboardingButtonReceivesWindowHitTest()
+                )
+            }
+            authStore.subscribe(observer) {
+                $0.select { $0.isAuthenticated }
+            }
+            return observer
         }
 
         let cleanup: () async -> Void = {
             await releaseCompletion.open()
             await MainActor.run {
+                authStore.unsubscribe(onboardingObserver)
                 Rownd.displayHubHandler = originalDisplayHubHandler
                 store.dispatch(SetAppConfig(payload: originalAppConfig))
                 fixture.tearDown()
@@ -80,21 +125,28 @@ final class RowndExampleTests: XCTestCase {
                 coordinator.signInWithApple = { authorizationCode, clientType in
                     XCTAssertEqual(authorizationCode, "fake-apple-auth-code")
                     XCTAssertEqual(clientType, "native-apple-client")
-                    return SuperTokensThirdPartySignInResponse(status: "OK", createdNewRecipeUser: true)
+                    return SuperTokensThirdPartySignInResponse(
+                        status: "OK",
+                        createdNewRecipeUser: createdNewRecipeUser
+                    )
                 }
-                coordinator.syncAuthState = { true }
+                coordinator.syncAuthState = { commitIf in
+                    await MainActor.run {
+                        guard commitIf() else { return false }
+                        authStore.dispatch(SetAuthState(payload: Self.authenticatedTestState()))
+                        return true
+                    }
+                }
                 coordinator.waitBeforeCompletion = {
                     await gateReached.open()
                     await releaseCompletion.wait()
                 }
                 coordinator.emitEvent = { event in
-                    await MainActor.run {
-                        recorder.record(
-                            event,
-                            rootHasModal: fixture.rootViewController.presentedViewController != nil,
-                            hubIsDisplayed: Rownd.isDisplayingHub()
-                        )
-                    }
+                    recorder.record(
+                        event,
+                        rootHasModal: fixture.rootViewController.presentedViewController != nil,
+                        hubIsDisplayed: Rownd.isDisplayingHub()
+                    )
                 }
                 return coordinator
             }
@@ -104,8 +156,26 @@ final class RowndExampleTests: XCTestCase {
                 coordinator: coordinator,
                 gateReached: gateReached,
                 releaseCompletion: releaseCompletion,
-                recorder: recorder
+                recorder: recorder,
+                intent: intent,
+                captureHubSuccessOptions: true
             )
+
+            let recordedState = await MainActor.run {
+                (
+                    recorder.authPublicationStates,
+                    recorder.hubSuccessOptions,
+                    recorder.events.first?.data?["user_type"]??.value as? String
+                )
+            }
+            XCTAssertEqual(recordedState.0.count, 1)
+            let authPublicationState = try XCTUnwrap(recordedState.0.first)
+            XCTAssertFalse(authPublicationState.rootHasModal)
+            XCTAssertFalse(authPublicationState.hubIsDisplayed)
+            XCTAssertTrue(authPublicationState.onboardingButtonWinsHitTest)
+            XCTAssertEqual(recordedState.1.count, 1)
+            XCTAssertEqual(recordedState.1.first?.intent, intent)
+            XCTAssertEqual(recordedState.2, expectedUserType.rawValue)
         } catch {
             await cleanup()
             throw error
@@ -114,38 +184,23 @@ final class RowndExampleTests: XCTestCase {
     }
 
     func testHarnessBackedAppleCompletionCreatesUsableSessionAndDismissesRealHub() async throws {
+        let fixture = try await acquirePostAppleUIKitFixture()
         let originalConfig = Rownd.config
-        _ = try await request("POST", path: "/reset")
-        let config = try await harnessConfig()
-        Rownd.config.baseUrl = config.hubBaseUrl
-        Rownd.config.enableSmartLinkPasteBehavior = false
-        _ = await Rownd.configure(
-            appKey: config.appKey,
-            supertokens: RowndSuperTokensConfig(
-                appName: "Rownd iOS Example E2E",
-                apiDomain: config.supertokens.appInfo.apiDomain,
-                apiBasePath: config.supertokens.appInfo.apiBasePath
-            )
-        )
-        await Rownd.signOut()
-
-        let fixture = try await MainActor.run { try PostAppleUIKitFixture() }
         let gateReached = PostAppleGate()
         let releaseCompletion = PostAppleGate()
         let recorder = await MainActor.run { PostAppleCompletionRecorder() }
         let eventHandler = PostAppleEventHandler()
+        var didMutateRowndConfiguration = false
         let (store, originalAppConfig, originalDisplayHubHandler, originalListeners) = await MainActor.run {
             let context = Context.currentContext
-            let values = (context.store, context.store.state.appConfig, Rownd.displayHubHandler, context.eventListeners)
-            Rownd.displayHubHandler = nil
-            context.eventListeners = [eventHandler]
-            context.store.dispatch(SetAppConfig(payload: AppConfigState()))
-            return values
+            return (context.store, context.store.state.appConfig, Rownd.displayHubHandler, context.eventListeners)
         }
 
         let cleanup: () async -> Void = {
             await releaseCompletion.open()
-            await Rownd.signOut()
+            if didMutateRowndConfiguration {
+                await Rownd.signOut()
+            }
             await MainActor.run {
                 Rownd.config = originalConfig
                 Rownd.displayHubHandler = originalDisplayHubHandler
@@ -156,6 +211,26 @@ final class RowndExampleTests: XCTestCase {
         }
 
         do {
+            _ = try await request("POST", path: "/reset")
+            let config = try await harnessConfig()
+            didMutateRowndConfiguration = true
+            Rownd.config.baseUrl = config.hubBaseUrl
+            Rownd.config.enableSmartLinkPasteBehavior = false
+            _ = await Rownd.configure(
+                appKey: config.appKey,
+                supertokens: RowndSuperTokensConfig(
+                    appName: "Rownd iOS Example E2E",
+                    apiDomain: config.supertokens.appInfo.apiDomain,
+                    apiBasePath: config.supertokens.appInfo.apiBasePath
+                )
+            )
+            await Rownd.signOut()
+            await MainActor.run {
+                Rownd.displayHubHandler = nil
+                Context.currentContext.eventListeners = [eventHandler]
+                store.dispatch(SetAppConfig(payload: AppConfigState()))
+            }
+
             let coordinator = await MainActor.run { () -> PostAppleCoordinator in
                 let coordinator = PostAppleCoordinator(Rownd.getInstance())
                 coordinator.waitBeforeCompletion = {
@@ -163,14 +238,12 @@ final class RowndExampleTests: XCTestCase {
                     await releaseCompletion.wait()
                 }
                 coordinator.emitEvent = { event in
-                    await MainActor.run {
-                        recorder.record(
-                            event,
-                            rootHasModal: fixture.rootViewController.presentedViewController != nil,
-                            hubIsDisplayed: Rownd.isDisplayingHub()
-                        )
-                        RowndEventEmitter.emit(event)
-                    }
+                    recorder.record(
+                        event,
+                        rootHasModal: fixture.rootViewController.presentedViewController != nil,
+                        hubIsDisplayed: Rownd.isDisplayingHub()
+                    )
+                    RowndEventEmitter.emit(event)
                 }
                 return coordinator
             }
@@ -187,7 +260,7 @@ final class RowndExampleTests: XCTestCase {
                         Context.currentContext.store.state.auth.isAuthenticated
                     }
                     XCTAssertTrue(sessionExists)
-                    XCTAssertTrue(isAuthenticated)
+                    XCTAssertFalse(isAuthenticated)
                 }
             )
 
@@ -219,6 +292,8 @@ final class RowndExampleTests: XCTestCase {
         gateReached: PostAppleGate,
         releaseCompletion: PostAppleGate,
         recorder: PostAppleCompletionRecorder,
+        intent: RowndSignInIntent = .signUp,
+        captureHubSuccessOptions: Bool = false,
         whileCompletionVisible: (() async -> Void)? = nil
     ) async throws {
         let requestID = UUID()
@@ -232,15 +307,28 @@ final class RowndExampleTests: XCTestCase {
             fixture.rootViewController.presentedViewController is BottomSheetViewController
                 && Rownd.getInstance().bottomSheetController.presentedViewController != nil
                 && Rownd.isDisplayingHub()
+                && fixture.presentedModalIsAttached
+                && !fixture.onboardingButtonReceivesWindowHitTest()
         }
         XCTAssertTrue(presentedBothLayers)
+        if captureHubSuccessOptions {
+            await MainActor.run {
+                Rownd.displayHubHandler = { _, options in
+                    guard let options = options as? RowndSignInJsOptions,
+                          options.loginStep == .success else {
+                        return
+                    }
+                    recorder.recordHubSuccess(options)
+                }
+            }
+        }
 
         let signInTask = Task {
             await coordinator.completeSignIn(
                 authorizationCode: "fake-apple-auth-code",
                 fullName: nil,
                 email: nil,
-                intent: .signUp,
+                intent: intent,
                 hubRequestID: requestID
             )
         }
@@ -268,6 +356,52 @@ final class RowndExampleTests: XCTestCase {
         }
     }
 
+    private func acquirePostAppleUIKitFixture(
+        timeoutNanoseconds: UInt64 = 5_000_000_000
+    ) async throws -> PostAppleUIKitFixture {
+        let deadline = DispatchTime.now().uptimeNanoseconds + timeoutNanoseconds
+        var didRequestSceneActivation = false
+        while DispatchTime.now().uptimeNanoseconds < deadline {
+            do {
+                let fixture = try await MainActor.run(body: { try PostAppleUIKitFixture() })
+                await nextPostAppleMainRunLoop()
+                if await MainActor.run(body: { fixture.rootIsAttached }) {
+                    return fixture
+                }
+                await MainActor.run { fixture.tearDown() }
+            } catch E2ETestError.missingForegroundWindowScene {
+                if !didRequestSceneActivation {
+                    didRequestSceneActivation = await MainActor.run {
+                        guard let scene = UIApplication.shared.connectedScenes
+                            .compactMap({ $0 as? UIWindowScene })
+                            .first(where: {
+                                $0.activationState == .foregroundInactive
+                                    || $0.activationState == .background
+                            }) else {
+                            return false
+                        }
+                        UIApplication.shared.requestSceneSessionActivation(
+                            scene.session,
+                            userActivity: nil,
+                            options: nil
+                        )
+                        return true
+                    }
+                }
+                try await Task.sleep(nanoseconds: 10_000_000)
+            }
+        }
+        throw E2ETestError.missingForegroundWindowScene
+    }
+
+    private func nextPostAppleMainRunLoop() async {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async {
+                continuation.resume()
+            }
+        }
+    }
+
     private func protectedResource() async throws -> [String: Any] {
         let url = backendURL.appendingPathComponent("test/protected")
         let (data, response) = try await URLSession.shared.data(from: url)
@@ -286,6 +420,15 @@ final class RowndExampleTests: XCTestCase {
                 )
             ))
         ))
+    }
+
+    private static func authenticatedTestState() -> AuthState {
+        AuthState(
+            accessToken: "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiJwb3N0LWFwcGxlLXRlc3QtdXNlciIsImV4cCI6NDEwMjQ0NDgwMH0.",
+            refreshToken: "post-apple-test-refresh-token",
+            isVerifiedUser: true,
+            userId: "post-apple-test-user"
+        )
     }
 
     private func harnessConfig() async throws -> E2EHarnessConfig {
@@ -469,6 +612,7 @@ private final class PostAppleUIKitFixture {
     let button = UIButton(type: .system)
     private let window: UIWindow
     private let previousRootViewController: UIViewController?
+    private let animationsWereEnabled: Bool
     private(set) var tapCount = 0
 
     init() throws {
@@ -482,6 +626,8 @@ private final class PostAppleUIKitFixture {
         }
         self.window = window
         self.previousRootViewController = window.rootViewController
+        self.animationsWereEnabled = UIView.areAnimationsEnabled
+        UIView.setAnimationsEnabled(false)
         rootViewController.view.frame = scene.coordinateSpace.bounds
         rootViewController.view.backgroundColor = .systemBackground
         button.setTitle("Continue onboarding", for: .normal)
@@ -494,6 +640,16 @@ private final class PostAppleUIKitFixture {
     func tearDown() {
         rootViewController.dismiss(animated: false)
         window.rootViewController = previousRootViewController
+        UIView.setAnimationsEnabled(animationsWereEnabled)
+    }
+
+    var presentedModalIsAttached: Bool {
+        rootViewController.presentedViewController?.viewIfLoaded?.window === window
+    }
+
+    var rootIsAttached: Bool {
+        window.rootViewController === rootViewController
+            && rootViewController.viewIfLoaded?.window === window
     }
 
     func onboardingButtonReceivesWindowHitTest() -> Bool {
@@ -514,10 +670,52 @@ private final class PostAppleUIKitFixture {
     @objc private func didTapButton() { tapCount += 1 }
 }
 
+private struct PostAppleAuthPublicationState {
+    let rootHasModal: Bool
+    let hubIsDisplayed: Bool
+    let onboardingButtonWinsHitTest: Bool
+}
+
+@MainActor
+private final class PostAppleOnboardingObserver: @preconcurrency StoreSubscriber {
+    typealias StoreSubscriberStateType = Bool
+
+    private let onAuthenticated: () -> Void
+    private var hasObservedAuthentication = false
+
+    init(onAuthenticated: @escaping () -> Void) {
+        self.onAuthenticated = onAuthenticated
+    }
+
+    func newState(state isAuthenticated: Bool) {
+        guard isAuthenticated, !hasObservedAuthentication else { return }
+        hasObservedAuthentication = true
+        onAuthenticated()
+    }
+}
+
 @MainActor
 private final class PostAppleCompletionRecorder {
     private(set) var events: [RowndEvent] = []
     private(set) var presentationStates: [(Bool, Bool)] = []
+    private(set) var authPublicationStates: [PostAppleAuthPublicationState] = []
+    private(set) var hubSuccessOptions: [RowndSignInJsOptions] = []
+
+    func recordAuthPublication(
+        rootHasModal: Bool,
+        hubIsDisplayed: Bool,
+        onboardingButtonWinsHitTest: Bool
+    ) {
+        authPublicationStates.append(PostAppleAuthPublicationState(
+            rootHasModal: rootHasModal,
+            hubIsDisplayed: hubIsDisplayed,
+            onboardingButtonWinsHitTest: onboardingButtonWinsHitTest
+        ))
+    }
+
+    func recordHubSuccess(_ options: RowndSignInJsOptions) {
+        hubSuccessOptions.append(options)
+    }
 
     func record(_ event: RowndEvent, rootHasModal: Bool, hubIsDisplayed: Bool) {
         events.append(event)
