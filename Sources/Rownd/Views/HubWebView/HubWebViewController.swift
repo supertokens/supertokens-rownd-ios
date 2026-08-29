@@ -102,8 +102,6 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
         hideHub: @escaping @MainActor (@escaping () -> Void) -> Void,
         eventData: [String: String] = [:]
     ) async {
-        // Ensure user.isLoading = false so that the data is fetched properly
-        store.dispatch(SetUserLoading(isLoading: false))
         store.dispatch(UserData.fetch())
         store.dispatch(ResetSignInState())
 
@@ -438,8 +436,13 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
         getAccessToken: () async -> String? = SuperTokensSessionBridge.getAccessToken,
         getRefreshToken: () -> String? = SuperTokensSessionBridge.getRefreshToken,
         getFrontToken: () -> String? = SuperTokensSessionBridge.getFrontToken,
-        syncAuthState: () async -> Bool = SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens
-    ) async throws {
+        syncReplacementState: (String, String?) async throws -> SuperTokensSessionBridge.ReplacementRowndStateSyncResult = {
+            try await SuperTokensSessionBridge.syncReplacementRowndStateFromSuperTokens(
+                expectedAccessToken: $0,
+                expectedPreviousRowndAccessToken: $1
+            )
+        }
+    ) async throws -> (Data, HTTPURLResponse) {
         let previousAccessToken = await getAccessToken()
         let cancellation = URLSessionTaskCancellation()
         let result: (Data, URLResponse) = try await withTaskCancellationHandler {
@@ -469,18 +472,23 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
             throw RowndError("Email verification failed")
         }
 
-        guard let replacementAccessToken = await getAccessToken(),
+        guard let replacementAccessToken = response.value(forHTTPHeaderField: "st-access-token"),
               !replacementAccessToken.isEmpty,
               replacementAccessToken != previousAccessToken,
+              let replacementStableIdentity = SuperTokensSessionBridge.stableSessionIdentity(
+                from: replacementAccessToken
+              ),
+              let currentAccessToken = await getAccessToken(),
+              SuperTokensSessionBridge.stableSessionIdentity(from: currentAccessToken)
+                == replacementStableIdentity,
               let refreshToken = getRefreshToken(),
               !refreshToken.isEmpty,
               let frontToken = getFrontToken(),
               !frontToken.isEmpty else {
             throw RowndError("Email verification did not establish a replacement session")
         }
-        guard await syncAuthState() else {
-            throw RowndError("Email verification could not synchronize the replacement session")
-        }
+        _ = try await syncReplacementState(replacementAccessToken, previousAccessToken)
+        return (result.0, response)
     }
 
     let webConfiguration = WKWebViewConfiguration()
@@ -631,12 +639,12 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
                     apiDomain: Rownd.config.supertokens.apiDomain,
                     apiBasePath: Rownd.config.supertokens.apiBasePath
                 )
-                try await Self.performNativeEmailVerification(
+                _ = try await Self.performNativeEmailVerification(
                     request: request,
                     session: Self.nativeEmailVerificationSession()
                 )
                 guard !Task.isCancelled else { return }
-                await self?.sendNativeEmailVerificationResponse(
+                self?.sendNativeEmailVerificationResponse(
                     requestId: requestId,
                     requestedURL: requestedURL,
                     requestedNavigationGeneration: requestedNavigationGeneration,
@@ -645,7 +653,7 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
             } catch {
                 guard !Task.isCancelled else { return }
                 logger.warning("Native email verification failed: \(String(describing: error))")
-                await self?.sendNativeEmailVerificationResponse(
+                self?.sendNativeEmailVerificationResponse(
                     requestId: requestId,
                     requestedURL: requestedURL,
                     requestedNavigationGeneration: requestedNavigationGeneration,

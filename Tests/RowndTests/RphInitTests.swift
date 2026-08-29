@@ -7,6 +7,7 @@
 
 import Testing
 @testable import Rownd
+import AnyCodable
 import Foundation
 
 @Suite(.serialized) struct RphInitTests {
@@ -59,6 +60,84 @@ import Foundation
             let decoded = try decodeRphInit(rphInit)
 
             #expect(decoded["app_user_id"] == "jwt-user-id")
+        }
+    }
+
+    @Test func authStatePrefersJwtUserIdWhenCachedProfileBelongsToPreviousAccount() async throws {
+        try await withGlobalTestLock {
+            let originalContext = Context.currentContext
+            let isolatedStore = createStore()
+            _ = Context(isolatedStore)
+            defer { Context.currentContext = originalContext }
+
+            let accessToken = try makeUnsignedJwt(payload: ["app_user_id": "jwt-user-id"])
+            await MainActor.run {
+                isolatedStore.dispatch(SetAppConfig(payload: AppConfigState(id: "app1")))
+                isolatedStore.dispatch(SetAuthState(payload: AuthState(
+                    accessToken: accessToken,
+                    refreshToken: "refreshToken"
+                )))
+                isolatedStore.dispatch(SetUserData(data: [
+                    "user_id": AnyCodable("profile-user-id")
+                ]))
+            }
+
+            let rphInit = try #require(isolatedStore.state.auth.toRphInitHash())
+            let decoded = try decodeRphInit(rphInit)
+
+            #expect(decoded["app_user_id"] == "jwt-user-id")
+        }
+    }
+
+    @Test func authStateFallsBackToCachedUserIdOnlyWhenSignedSubjectMatches() async throws {
+        try await withGlobalTestLock {
+            let originalContext = Context.currentContext
+            let isolatedStore = createStore()
+            _ = Context(isolatedStore)
+            defer { Context.currentContext = originalContext }
+
+            let accessToken = try makeUnsignedJwt(payload: ["sub": "profile-user-id"])
+            await MainActor.run {
+                isolatedStore.dispatch(SetAppConfig(payload: AppConfigState(id: "app1")))
+                isolatedStore.dispatch(SetAuthState(payload: AuthState(
+                    accessToken: accessToken,
+                    refreshToken: "refreshToken"
+                )))
+                isolatedStore.dispatch(SetUserData(data: [
+                    "user_id": AnyCodable("profile-user-id")
+                ]))
+            }
+
+            let rphInit = try #require(isolatedStore.state.auth.toRphInitHash())
+            let decoded = try decodeRphInit(rphInit)
+
+            #expect(decoded["app_user_id"] == "profile-user-id")
+        }
+    }
+
+    @Test func authStateOmitsCachedUserIdWhenSignedSubjectDoesNotMatch() async throws {
+        try await withGlobalTestLock {
+            let originalContext = Context.currentContext
+            let isolatedStore = createStore()
+            _ = Context(isolatedStore)
+            defer { Context.currentContext = originalContext }
+
+            let accessToken = try makeUnsignedJwt(payload: ["sub": "new-account"])
+            await MainActor.run {
+                isolatedStore.dispatch(SetAppConfig(payload: AppConfigState(id: "app1")))
+                isolatedStore.dispatch(SetAuthState(payload: AuthState(
+                    accessToken: accessToken,
+                    refreshToken: "refreshToken"
+                )))
+                isolatedStore.dispatch(SetUserData(data: [
+                    "user_id": AnyCodable("previous-account")
+                ]))
+            }
+
+            let rphInit = try #require(isolatedStore.state.auth.toRphInitHash())
+            let decoded = try decodeRphInit(rphInit)
+
+            #expect(decoded["app_user_id"] == nil)
         }
     }
 

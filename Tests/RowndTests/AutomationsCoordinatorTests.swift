@@ -13,13 +13,17 @@ struct AutomationsCoordinatorTests {
 
         let coordinator = AutomationsCoordinator()
         let iterations = 50
+        let userFetchOperationID = UUID()
 
         // Dispatch a flurry of actions while starting the coordinator
         let dispatchTask = Task { @MainActor in
             for i in 0..<iterations {
                 let state: ClockSyncState = (i % 2 == 0) ? .waiting : .synced
                 store.dispatch(SetClockSync(clockSyncState: state))
-                store.dispatch(SetUserLoading(isLoading: i % 3 == 0))
+                store.dispatch(SetUserFetchLoading(
+                    operationId: userFetchOperationID,
+                    isLoading: i % 3 == 0
+                ))
             }
         }
 

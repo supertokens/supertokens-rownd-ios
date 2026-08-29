@@ -463,10 +463,36 @@ import AnyCodable
         #expect(meta["tier"] as? String == "pro")
         #expect(metaUpdate["statusCode"] as? Int == 200)
 
+        let rowndAccessToken = try #require(await MainActor.run {
+            Context.currentContext.store.state.auth.accessToken
+        })
+        let expectedIdentity = try #require(
+            await SuperTokensSessionBridge.currentSessionIdentity(matching: rowndAccessToken)
+        )
+        let ticket = try #require(UserData.fetchCoordinator.begin(
+            accessToken: rowndAccessToken,
+            purpose: .foreground
+        ))
+        let didSaveExpectedSession = await UserData.saveExpectedSession(
+            ["first_name": AnyCodable("Bound")],
+            expectedData: await MainActor.run { Context.currentContext.store.state.user.data },
+            expectedSessionIdentity: expectedIdentity,
+            ticket: ticket
+        )
+        UserData.fetchCoordinator.finish(ticket)
+        #expect(didSaveExpectedSession)
+
+        let expectedSessionUpdate = try await waitForCapturedRequest(named: "userUpdate")
+        try assertSuperTokensOnlyHeaders(expectedSessionUpdate)
+        #expect(expectedSessionUpdate["authorization"] as? String == "Bearer \(expectedIdentity.accessToken)")
+        let expectedSessionBody = try #require(expectedSessionUpdate["body"] as? [String: Any])
+        let expectedSessionData = try #require(expectedSessionBody["data"] as? [String: Any])
+        #expect(expectedSessionData["first_name"] as? String == "Bound")
+
         let persistedProfile = try await getJSON(path: "auth/plugin/rownd/user")
         let persistedData = try #require(persistedProfile["data"] as? [String: Any])
         let persistedMeta = try #require(persistedProfile["meta"] as? [String: Any])
-        #expect(persistedData["first_name"] as? String == "Updated")
+        #expect(persistedData["first_name"] as? String == "Bound")
         #expect(persistedData["email"] as? String == email)
         #expect(persistedMeta["tier"] as? String == "pro")
     }
@@ -532,7 +558,6 @@ import AnyCodable
             firstName: "Existing"
         )
 
-        _ = try await hydrateUserProfile()
         let localEmail: String? = Rownd.user.get(field: "email")
         #expect(localEmail == editedEmail)
 
@@ -701,7 +726,10 @@ import AnyCodable
     }
 
     private func hydrateUserProfile() async throws -> UserStateResponse {
-        let user = try #require(try await UserData.fetchUserData(Context.currentContext.store.state))
+        let result = try await UserData.fetchUserData(Context.currentContext.store.state)
+        guard case .profile(let user) = result else {
+            throw RowndError("Expected user profile")
+        }
         await MainActor.run {
             Context.currentContext.store.dispatch(SetUserState(payload: user.toUserState()))
         }
@@ -881,13 +909,16 @@ import AnyCodable
             "token": token,
         ])
 
-        let (data, response) = try await URLSession.shared.data(for: request)
-        let statusCode = try #require((response as? HTTPURLResponse)?.statusCode)
+        let (data, response) = try await HubWebViewController.performNativeEmailVerification(
+            request: request,
+            session: HubWebViewController.nativeEmailVerificationSession()
+        )
+        let statusCode = response.statusCode
         #expect(statusCode == 200)
         let body = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
         return (
             body,
-            try #require(response as? HTTPURLResponse),
+            response,
             token,
             pendingVerificationId
         )

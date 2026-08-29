@@ -183,13 +183,19 @@ actor Authenticator: AuthenticatorProtocol {
     private func syncCompatibilityAuthState(accessToken: String) async -> AuthState {
         let currentAuthState = AuthenticatorSubscription.currentAuthState
             ?? Context.currentContext.store.state.auth
-        let isSameAccessToken = currentAuthState.accessToken == accessToken
-        let newAuthState = AuthState(
-            accessToken: accessToken,
-            refreshToken: nil,
-            isVerifiedUser: isSameAccessToken ? currentAuthState.isVerifiedUser : nil,
+        let isSameSession = SuperTokensSessionBridge.tokensBelongToSameSession(
+            currentAuthState.accessToken,
+            accessToken
+        )
+        var newAuthState = isSameSession ? currentAuthState : AuthState(
             hasPreviouslySignedIn: currentAuthState.hasPreviouslySignedIn
         )
+        newAuthState.accessToken = accessToken
+        newAuthState.refreshToken = nil
+        let stableIdentity = SuperTokensSessionBridge.stableSessionIdentity(from: accessToken)
+        if newAuthState.replacementProfilePendingSessionIdentity != stableIdentity {
+            newAuthState.replacementProfilePendingSessionIdentity = nil
+        }
 
         AuthenticatorSubscription.currentAuthState = newAuthState
 

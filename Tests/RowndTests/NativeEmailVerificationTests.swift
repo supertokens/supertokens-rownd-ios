@@ -156,14 +156,27 @@ import Testing
         configuration.protocolClasses = [EmailVerificationResponseURLProtocol.self]
         let session = URLSession(configuration: configuration)
 
+        let oldAccessToken = generateJwt(
+            expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+            sessionHandle: "old-session"
+        )
+        let newAccessToken = generateJwt(
+            expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+            sessionHandle: "new-session"
+        )
         EmailVerificationResponseURLProtocol.responseBody = #"{"status":"OK"}"#.data(using: .utf8)!
-        try await HubWebViewController.performNativeEmailVerification(
+        EmailVerificationResponseURLProtocol.replacementAccessToken = newAccessToken
+        _ = try await HubWebViewController.performNativeEmailVerification(
             request: request,
             session: session,
-            getAccessToken: accessTokenSequence("old-access-token", "new-access-token"),
+            getAccessToken: accessTokenSequence(oldAccessToken, newAccessToken),
             getRefreshToken: { "new-refresh-token" },
             getFrontToken: { "new-front-token" },
-            syncAuthState: { true }
+            syncReplacementState: { expectedAccessToken, previousAccessToken in
+                #expect(expectedAccessToken == newAccessToken)
+                #expect(previousAccessToken == oldAccessToken)
+                return .profileSynchronized
+            }
         )
 
         EmailVerificationResponseURLProtocol.responseBody = #"{"status":"EMAIL_VERIFICATION_INVALID_TOKEN_ERROR"}"#.data(using: .utf8)!
@@ -179,54 +192,168 @@ import Testing
         let session = URLSession(configuration: configuration)
         EmailVerificationResponseURLProtocol.responseBody = #"{"status":"OK"}"#.data(using: .utf8)!
 
+        let sameAccessToken = generateJwt(
+            expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+            sessionHandle: "same-session"
+        )
+        let oldAccessToken = generateJwt(
+            expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+            sessionHandle: "old-session"
+        )
+        let newAccessToken = generateJwt(
+            expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+            sessionHandle: "new-session"
+        )
+
+        EmailVerificationResponseURLProtocol.replacementAccessToken = sameAccessToken
         await #expect(throws: (any Error).self) {
             try await HubWebViewController.performNativeEmailVerification(
                 request: request,
                 session: session,
-                getAccessToken: accessTokenSequence("same-token", "same-token"),
+                getAccessToken: accessTokenSequence(sameAccessToken, sameAccessToken),
                 getRefreshToken: { "refresh-token" },
                 getFrontToken: { "front-token" },
-                syncAuthState: { true }
+                syncReplacementState: { _, _ in .profileSynchronized }
+            )
+        }
+        EmailVerificationResponseURLProtocol.replacementAccessToken = newAccessToken
+        await #expect(throws: (any Error).self) {
+            try await HubWebViewController.performNativeEmailVerification(
+                request: request,
+                session: session,
+                getAccessToken: accessTokenSequence(oldAccessToken, nil),
+                getRefreshToken: { "refresh-token" },
+                getFrontToken: { "front-token" },
+                syncReplacementState: { _, _ in .profileSynchronized }
             )
         }
         await #expect(throws: (any Error).self) {
             try await HubWebViewController.performNativeEmailVerification(
                 request: request,
                 session: session,
-                getAccessToken: accessTokenSequence("old-token", nil),
-                getRefreshToken: { "refresh-token" },
-                getFrontToken: { "front-token" },
-                syncAuthState: { true }
-            )
-        }
-        await #expect(throws: (any Error).self) {
-            try await HubWebViewController.performNativeEmailVerification(
-                request: request,
-                session: session,
-                getAccessToken: accessTokenSequence("old-token", "new-token"),
+                getAccessToken: accessTokenSequence(oldAccessToken, newAccessToken),
                 getRefreshToken: { nil },
                 getFrontToken: { "front-token" },
-                syncAuthState: { true }
+                syncReplacementState: { _, _ in .profileSynchronized }
             )
         }
         await #expect(throws: (any Error).self) {
             try await HubWebViewController.performNativeEmailVerification(
                 request: request,
                 session: session,
-                getAccessToken: accessTokenSequence("old-token", "new-token"),
+                getAccessToken: accessTokenSequence(oldAccessToken, newAccessToken),
                 getRefreshToken: { "refresh-token" },
                 getFrontToken: { "" },
-                syncAuthState: { true }
+                syncReplacementState: { _, _ in .profileSynchronized }
             )
         }
         await #expect(throws: (any Error).self) {
             try await HubWebViewController.performNativeEmailVerification(
                 request: request,
                 session: session,
-                getAccessToken: accessTokenSequence("old-token", "new-token"),
+                getAccessToken: accessTokenSequence(oldAccessToken, newAccessToken),
                 getRefreshToken: { "refresh-token" },
                 getFrontToken: { "front-token" },
-                syncAuthState: { false }
+                syncReplacementState: { _, _ in
+                    throw RowndError("Replacement auth persistence failed")
+                }
+            )
+        }
+    }
+
+    @Test func verificationStillCompletesWhenReplacementProfileIsUnavailable() async throws {
+        let request = URLRequest(url: URL(string: "https://api.example.com/auth/user/email/verify")!)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [EmailVerificationResponseURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let oldAccessToken = generateJwt(
+            expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+            sessionHandle: "old-session"
+        )
+        let newAccessToken = generateJwt(
+            expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+            sessionHandle: "new-session"
+        )
+        EmailVerificationResponseURLProtocol.responseBody = #"{"status":"OK"}"#.data(using: .utf8)!
+        EmailVerificationResponseURLProtocol.replacementAccessToken = newAccessToken
+
+        let (_, response) = try await HubWebViewController.performNativeEmailVerification(
+            request: request,
+            session: session,
+            getAccessToken: accessTokenSequence(oldAccessToken, newAccessToken),
+            getRefreshToken: { "refresh-token" },
+            getFrontToken: { "front-token" },
+            syncReplacementState: { _, _ in .profileUnavailable }
+        )
+
+        #expect(response.statusCode == 200)
+    }
+
+    @Test func verificationAcceptsCurrentTokenRotationFromResponseSession() async throws {
+        let request = URLRequest(url: URL(string: "https://api.example.com/auth/user/email/verify")!)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [EmailVerificationResponseURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let oldAccessToken = generateJwt(
+            expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+            sessionHandle: "old-session"
+        )
+        let responseAccessToken = generateJwt(
+            expires: Date(timeIntervalSinceNow: 1800).timeIntervalSince1970,
+            sessionHandle: "replacement-session"
+        )
+        let rotatedAccessToken = generateJwt(
+            expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+            sessionHandle: "replacement-session"
+        )
+        EmailVerificationResponseURLProtocol.responseBody = #"{"status":"OK"}"#.data(using: .utf8)!
+        EmailVerificationResponseURLProtocol.replacementAccessToken = responseAccessToken
+
+        _ = try await HubWebViewController.performNativeEmailVerification(
+            request: request,
+            session: session,
+            getAccessToken: accessTokenSequence(oldAccessToken, rotatedAccessToken),
+            getRefreshToken: { "refresh-token" },
+            getFrontToken: { "front-token" },
+            syncReplacementState: { expectedAccessToken, previousAccessToken in
+                #expect(expectedAccessToken == responseAccessToken)
+                #expect(previousAccessToken == oldAccessToken)
+                return .profileSynchronized
+            }
+        )
+    }
+
+    @Test func verificationResponseCannotSynchronizeAConcurrentNewerSession() async throws {
+        let request = URLRequest(url: URL(string: "https://api.example.com/auth/user/email/verify")!)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [EmailVerificationResponseURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let oldAccessToken = generateJwt(
+            expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+            sessionHandle: "old-session"
+        )
+        let verificationAccessToken = generateJwt(
+            expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+            sessionHandle: "verification-session"
+        )
+        let newerAccessToken = generateJwt(
+            expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+            sessionHandle: "newer-session"
+        )
+        EmailVerificationResponseURLProtocol.responseBody = #"{"status":"OK"}"#.data(using: .utf8)!
+        EmailVerificationResponseURLProtocol.replacementAccessToken = verificationAccessToken
+
+        await #expect(throws: (any Error).self) {
+            try await HubWebViewController.performNativeEmailVerification(
+                request: request,
+                session: session,
+                getAccessToken: accessTokenSequence(oldAccessToken, newerAccessToken),
+                getRefreshToken: { "newer-refresh-token" },
+                getFrontToken: { "newer-front-token" },
+                syncReplacementState: { _, _ in
+                    Issue.record("A stale verification response must not synchronize newer auth")
+                    return .profileSynchronized
+                }
             )
         }
     }
@@ -267,16 +394,19 @@ private func accessTokenSequence(_ values: String?...) -> () async -> String? {
 
 private final class EmailVerificationResponseURLProtocol: URLProtocol {
     static var responseBody = Data()
+    static var replacementAccessToken: String?
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
+        var headerFields = ["Content-Type": "application/json"]
+        headerFields["st-access-token"] = Self.replacementAccessToken
         let response = HTTPURLResponse(
             url: request.url!,
             statusCode: 200,
             httpVersion: nil,
-            headerFields: ["Content-Type": "application/json"]
+            headerFields: headerFields
         )!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Self.responseBody)

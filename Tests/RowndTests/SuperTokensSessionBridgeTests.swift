@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import Network
+import AnyCodable
 @testable import SuperTokensIOS
 
 @testable import Rownd
@@ -319,6 +320,1028 @@ import Network
             #expect(await !SuperTokensSessionBridge.doesSessionExist())
             #expect(await SuperTokensSessionBridge.getAccessToken() == nil)
             #expect(Self.activeStore.get("supertokens-ios-fronttoken-key") == nil)
+        }
+    }
+
+    @Test func conditionalSignOutCannotClearReplacementInstalledAfterSuperTokensClear() async throws {
+        try await withMockedSuperTokensSession {
+            let originalContext = Context.currentContext
+            let isolatedStore = createStore()
+            _ = Context(isolatedStore)
+            defer { Context.currentContext = originalContext }
+
+            let originalAccessToken = generateJwt(
+                expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+                sessionHandle: "profile-404-session"
+            )
+            let replacementAccessToken = generateJwt(
+                expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+                sessionHandle: "replacement-session"
+            )
+            #expect(await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: originalAccessToken,
+                    refreshToken: makeSuperTokensTestJWT(expiresIn: 7200)
+                )
+            }.value)
+            await MainActor.run {
+                isolatedStore.dispatch(SetAuthState(payload: AuthState(
+                    accessToken: originalAccessToken
+                )))
+            }
+            let originalIdentity = try #require(
+                await SuperTokensSessionBridge.currentSessionIdentity(matching: originalAccessToken)
+            )
+
+            let didClearRowndState = await SuperTokensSessionBridge.signOutIfCurrentSession(
+                originalIdentity,
+                expectedRowndAccessToken: originalAccessToken,
+                afterSuperTokensSignOut: {
+                    #expect(await Task.detached {
+                        SuperTokensSessionBridge.bootstrapSession(
+                            accessToken: replacementAccessToken,
+                            refreshToken: makeSuperTokensTestJWT(expiresIn: 7200)
+                        )
+                    }.value)
+                    await MainActor.run {
+                        isolatedStore.dispatch(SetAuthState(payload: AuthState(
+                            accessToken: replacementAccessToken
+                        )))
+                        isolatedStore.dispatch(SetUserState(payload: UserState(data: [
+                            "email": AnyCodable("replacement@example.com")
+                        ])))
+                    }
+                }
+            )
+
+            #expect(!didClearRowndState)
+            #expect(await SuperTokensSessionBridge.getAccessToken() == replacementAccessToken)
+            await MainActor.run {
+                #expect(isolatedStore.state.auth.accessToken == replacementAccessToken)
+                #expect(isolatedStore.state.user.data["email"]?.value as? String == "replacement@example.com")
+            }
+        }
+    }
+
+    @Test func replacementStateSyncPersistsClearedCacheBeforeCanonicalProfile() async throws {
+        try await withMockedSuperTokensSession {
+            let originalContext = Context.currentContext
+            let isolatedStore = createStore()
+            _ = Context(isolatedStore)
+            defer { Context.currentContext = originalContext }
+
+            let oldAccessToken = makeSuperTokensTestJWT(expiresIn: 3600)
+            let replacementAccessToken = makeSuperTokensTestJWT(expiresIn: 1800)
+            await MainActor.run {
+                isolatedStore.dispatch(SetAuthState(payload: AuthState(accessToken: oldAccessToken)))
+                isolatedStore.dispatch(SetUserState(payload: UserState(data: [
+                    "email": AnyCodable("stale@example.com")
+                ])))
+            }
+            #expect(await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: replacementAccessToken,
+                    refreshToken: makeSuperTokensTestJWT(expiresIn: 5400)
+                )
+            }.value)
+
+            let persistedStates = StatePersistenceRecorder()
+            let outcome = try await SuperTokensSessionBridge.syncReplacementRowndStateFromSuperTokens(
+                expectedAccessToken: replacementAccessToken,
+                expectedPreviousRowndAccessToken: oldAccessToken,
+                fetchUserData: { state in
+                    #expect(state.auth.accessToken == replacementAccessToken)
+                    #expect(state.user.data.isEmpty)
+                    return UserStateResponse(data: [
+                        "email": AnyCodable("verified@example.com")
+                    ])
+                },
+                persistState: persistedStates.persist
+            )
+
+            #expect(outcome == .profileSynchronized)
+            let snapshots = persistedStates.snapshots
+            try #require(snapshots.count == 2)
+            #expect(snapshots[0].auth.accessToken == replacementAccessToken)
+            #expect(snapshots[0].user.data.isEmpty)
+            #expect(snapshots[1].auth.accessToken == replacementAccessToken)
+            #expect(snapshots[1].user.data["email"]?.value as? String == "verified@example.com")
+        }
+    }
+
+    @Test func alreadySynchronizedReplacementAuthMetadataSurvivesProfileCommit() async throws {
+        try await withMockedSuperTokensSession {
+            let originalContext = Context.currentContext
+            let isolatedStore = createStore()
+            _ = Context(isolatedStore)
+            defer { Context.currentContext = originalContext }
+
+            let replacementAccessToken = makeSuperTokensTestJWT(expiresIn: 1800)
+            #expect(await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: replacementAccessToken,
+                    refreshToken: makeSuperTokensTestJWT(expiresIn: 5400)
+                )
+            }.value)
+            await MainActor.run {
+                isolatedStore.dispatch(SetAuthState(payload: AuthState(
+                    accessToken: replacementAccessToken,
+                    isVerifiedUser: true,
+                    challengeId: "preserved-challenge",
+                    userIdentifier: "preserved@example.com"
+                )))
+            }
+
+            let outcome = try await SuperTokensSessionBridge.syncReplacementRowndStateFromSuperTokens(
+                expectedAccessToken: replacementAccessToken,
+                expectedPreviousRowndAccessToken: "old-access-token",
+                fetchUserData: { _ in
+                    UserStateResponse(data: ["email": AnyCodable("verified@example.com")])
+                }
+            )
+
+            #expect(outcome == .profileSynchronized)
+            await MainActor.run {
+                #expect(isolatedStore.state.auth.accessToken == replacementAccessToken)
+                #expect(isolatedStore.state.auth.isVerifiedUser == true)
+                #expect(isolatedStore.state.auth.challengeId == "preserved-challenge")
+                #expect(isolatedStore.state.auth.userIdentifier == "preserved@example.com")
+            }
+        }
+    }
+
+    @Test func replacementStateSyncKeepsDurableAuthAndInvalidatesProfileWhenFetchFails() async throws {
+        try await withMockedSuperTokensSession {
+            let originalContext = Context.currentContext
+            let isolatedStore = createStore()
+            _ = Context(isolatedStore)
+            defer { Context.currentContext = originalContext }
+
+            let replacementAccessToken = makeSuperTokensTestJWT(expiresIn: 1800)
+            await MainActor.run {
+                isolatedStore.dispatch(SetAuthState(payload: AuthState(accessToken: "old-access-token")))
+                isolatedStore.dispatch(SetUserState(payload: UserState(data: [
+                    "email": AnyCodable("stale@example.com")
+                ])))
+            }
+            #expect(await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: replacementAccessToken,
+                    refreshToken: makeSuperTokensTestJWT(expiresIn: 5400)
+                )
+            }.value)
+
+            let persistedStates = StatePersistenceRecorder()
+            let outcome = try await SuperTokensSessionBridge.syncReplacementRowndStateFromSuperTokens(
+                expectedAccessToken: replacementAccessToken,
+                expectedPreviousRowndAccessToken: "old-access-token",
+                fetchUserData: { _ in throw ReplacementProfileTestError.unavailable },
+                persistState: persistedStates.persist
+            )
+
+            #expect(outcome == .profileUnavailable)
+            let snapshots = persistedStates.snapshots
+            try #require(snapshots.count == 1)
+            #expect(snapshots[0].auth.accessToken == replacementAccessToken)
+            #expect(snapshots[0].user.data.isEmpty)
+            await MainActor.run {
+                #expect(isolatedStore.state.auth.accessToken == replacementAccessToken)
+                #expect(isolatedStore.state.user.data.isEmpty)
+            }
+        }
+    }
+
+    @Test func replacementStateSyncTreatsAuthPersistenceFailureAsHardError() async throws {
+        try await withMockedSuperTokensSession {
+            let originalContext = Context.currentContext
+            let isolatedStore = createStore()
+            _ = Context(isolatedStore)
+            defer { Context.currentContext = originalContext }
+
+            let replacementAccessToken = makeSuperTokensTestJWT(expiresIn: 1800)
+            #expect(await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: replacementAccessToken,
+                    refreshToken: makeSuperTokensTestJWT(expiresIn: 5400)
+                )
+            }.value)
+
+            await #expect(throws: (any Error).self) {
+                try await SuperTokensSessionBridge.syncReplacementRowndStateFromSuperTokens(
+                    expectedAccessToken: replacementAccessToken,
+                    expectedPreviousRowndAccessToken: nil,
+                    fetchUserData: { _ in
+                        Issue.record("Profile fetch must not start before replacement auth is durable")
+                        return UserStateResponse()
+                    },
+                    persistState: { _ in false }
+                )
+            }
+        }
+    }
+
+    @Test func staleReplacementSyncCannotMutateNewerSignedInAccount() async throws {
+        try await withMockedSuperTokensSession {
+            let originalContext = Context.currentContext
+            let isolatedStore = createStore()
+            _ = Context(isolatedStore)
+            defer { Context.currentContext = originalContext }
+
+            let staleAccessToken = generateJwt(
+                expires: Date(timeIntervalSinceNow: 1800).timeIntervalSince1970,
+                sessionHandle: "stale-verification-session"
+            )
+            let newerAccessToken = generateJwt(
+                expires: Date(timeIntervalSinceNow: 1200).timeIntervalSince1970,
+                sessionHandle: "newer-sign-in-session"
+            )
+            #expect(await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: newerAccessToken,
+                    refreshToken: makeSuperTokensTestJWT(expiresIn: 5400)
+                )
+            }.value)
+            await MainActor.run {
+                isolatedStore.dispatch(SetAuthState(payload: AuthState(accessToken: newerAccessToken)))
+                isolatedStore.dispatch(SetUserState(payload: UserState(data: [
+                    "email": AnyCodable("newer@example.com")
+                ])))
+            }
+
+            let persistedStates = StatePersistenceRecorder()
+            await #expect(throws: (any Error).self) {
+                try await SuperTokensSessionBridge.syncReplacementRowndStateFromSuperTokens(
+                    expectedAccessToken: staleAccessToken,
+                    expectedPreviousRowndAccessToken: "old-access-token",
+                    fetchUserData: { _ in
+                        Issue.record("A superseded verification must not fetch a profile")
+                        return UserStateResponse()
+                    },
+                    persistState: persistedStates.persist
+                )
+            }
+
+            #expect(persistedStates.snapshots.isEmpty)
+            await MainActor.run {
+                #expect(isolatedStore.state.auth.accessToken == newerAccessToken)
+                #expect(isolatedStore.state.user.data["email"]?.value as? String == "newer@example.com")
+            }
+        }
+    }
+
+    @Test func replacementSyncRejectsUnexpectedRowndAccountBeforeMutation() async throws {
+        try await withMockedSuperTokensSession {
+            let originalContext = Context.currentContext
+            let isolatedStore = createStore()
+            _ = Context(isolatedStore)
+            defer { Context.currentContext = originalContext }
+
+            let replacementAccessToken = makeSuperTokensTestJWT(expiresIn: 1800)
+            #expect(await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: replacementAccessToken,
+                    refreshToken: makeSuperTokensTestJWT(expiresIn: 5400)
+                )
+            }.value)
+            await MainActor.run {
+                isolatedStore.dispatch(SetAuthState(payload: AuthState(accessToken: "newer-rownd-token")))
+                isolatedStore.dispatch(SetUserState(payload: UserState(data: [
+                    "email": AnyCodable("newer@example.com")
+                ])))
+            }
+
+            let persistedStates = StatePersistenceRecorder()
+            await #expect(throws: (any Error).self) {
+                try await SuperTokensSessionBridge.syncReplacementRowndStateFromSuperTokens(
+                    expectedAccessToken: replacementAccessToken,
+                    expectedPreviousRowndAccessToken: "old-access-token",
+                    fetchUserData: { _ in
+                        Issue.record("An unexpected Rownd account must prevent profile fetch")
+                        return UserStateResponse()
+                    },
+                    persistState: persistedStates.persist
+                )
+            }
+
+            #expect(persistedStates.snapshots.isEmpty)
+            await MainActor.run {
+                #expect(isolatedStore.state.auth.accessToken == "newer-rownd-token")
+                #expect(isolatedStore.state.user.data["email"]?.value as? String == "newer@example.com")
+            }
+        }
+    }
+
+    @Test func replacementSyncAcceptsPreviousSessionTokenRotation() async throws {
+        try await withMockedSuperTokensSession {
+            let originalContext = Context.currentContext
+            let isolatedStore = createStore()
+            _ = Context(isolatedStore)
+            defer { Context.currentContext = originalContext }
+
+            let previousAccessToken = generateJwt(
+                expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+                sessionHandle: "previous-session"
+            )
+            let rotatedPreviousAccessToken = generateJwt(
+                expires: Date(timeIntervalSinceNow: 3500).timeIntervalSince1970,
+                sessionHandle: "previous-session"
+            )
+            let replacementAccessToken = generateJwt(
+                expires: Date(timeIntervalSinceNow: 1800).timeIntervalSince1970,
+                sessionHandle: "replacement-session"
+            )
+            await MainActor.run {
+                isolatedStore.dispatch(SetAuthState(payload: AuthState(
+                    accessToken: rotatedPreviousAccessToken
+                )))
+            }
+            #expect(await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: replacementAccessToken,
+                    refreshToken: makeSuperTokensTestJWT(expiresIn: 5400)
+                )
+            }.value)
+
+            let outcome = try await SuperTokensSessionBridge.syncReplacementRowndStateFromSuperTokens(
+                expectedAccessToken: replacementAccessToken,
+                expectedPreviousRowndAccessToken: previousAccessToken,
+                fetchUserData: { _ in
+                    UserStateResponse(data: ["email": AnyCodable("verified@example.com")])
+                }
+            )
+
+            #expect(outcome == .profileSynchronized)
+            await MainActor.run {
+                #expect(isolatedStore.state.auth.accessToken == replacementAccessToken)
+                #expect(isolatedStore.state.user.data["email"]?.value as? String == "verified@example.com")
+            }
+        }
+    }
+
+    @Test func replacementSyncRejectsDifferentSessionForSameUser() async throws {
+        try await withMockedSuperTokensSession {
+            let originalContext = Context.currentContext
+            let isolatedStore = createStore()
+            _ = Context(isolatedStore)
+            defer { Context.currentContext = originalContext }
+
+            let previousAccessToken = generateJwt(
+                expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+                sessionHandle: "previous-session"
+            )
+            let newerAccessToken = generateJwt(
+                expires: Date(timeIntervalSinceNow: 3500).timeIntervalSince1970,
+                sessionHandle: "newer-session"
+            )
+            let replacementAccessToken = generateJwt(
+                expires: Date(timeIntervalSinceNow: 1800).timeIntervalSince1970,
+                sessionHandle: "replacement-session"
+            )
+            await MainActor.run {
+                isolatedStore.dispatch(SetAuthState(payload: AuthState(accessToken: newerAccessToken)))
+            }
+            #expect(await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: replacementAccessToken,
+                    refreshToken: makeSuperTokensTestJWT(expiresIn: 5400)
+                )
+            }.value)
+
+            await #expect(throws: (any Error).self) {
+                try await SuperTokensSessionBridge.syncReplacementRowndStateFromSuperTokens(
+                    expectedAccessToken: replacementAccessToken,
+                    expectedPreviousRowndAccessToken: previousAccessToken,
+                    fetchUserData: { _ in
+                        Issue.record("A newer session must prevent profile fetch")
+                        return UserStateResponse()
+                    }
+                )
+            }
+
+            await MainActor.run {
+                #expect(isolatedStore.state.auth.accessToken == newerAccessToken)
+            }
+        }
+    }
+
+    @Test func newSignInDuringReplacementProfileFetchCannotBeOverwritten() async throws {
+        try await withMockedSuperTokensSession {
+            let originalContext = Context.currentContext
+            let isolatedStore = createStore()
+            _ = Context(isolatedStore)
+            defer { Context.currentContext = originalContext }
+
+            let replacementAccessToken = makeSuperTokensTestJWT(expiresIn: 1800)
+            let newerAccessToken = makeSuperTokensTestJWT(expiresIn: 1200)
+            await MainActor.run {
+                isolatedStore.dispatch(SetAuthState(payload: AuthState(accessToken: "old-access-token")))
+            }
+            #expect(await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: replacementAccessToken,
+                    refreshToken: makeSuperTokensTestJWT(expiresIn: 5400)
+                )
+            }.value)
+
+            let persistedStates = StatePersistenceRecorder()
+            await #expect(throws: (any Error).self) {
+                try await SuperTokensSessionBridge.syncReplacementRowndStateFromSuperTokens(
+                    expectedAccessToken: replacementAccessToken,
+                    expectedPreviousRowndAccessToken: "old-access-token",
+                    fetchUserData: { _ in
+                        let replaced = await Task.detached {
+                            SuperTokensSessionBridge.bootstrapSession(
+                                accessToken: newerAccessToken,
+                                refreshToken: makeSuperTokensTestJWT(expiresIn: 4800),
+                                refreshSession: {
+                                    SDKStorage.set(
+                                        "st-storage-item-st-access-token",
+                                        value: newerAccessToken
+                                    ) && FrontToken.setItem(
+                                        frontToken: SuperTokensSessionBridge.buildFrontToken(
+                                            from: newerAccessToken
+                                        )
+                                    )
+                                }
+                            )
+                        }.value
+                        #expect(replaced)
+                        await MainActor.run {
+                            isolatedStore.dispatch(SetAuthState(payload: AuthState(
+                                accessToken: newerAccessToken
+                            )))
+                            isolatedStore.dispatch(SetUserState(payload: UserState(data: [
+                                "email": AnyCodable("newer@example.com")
+                            ])))
+                        }
+                        return UserStateResponse(data: [
+                            "email": AnyCodable("stale-verification@example.com")
+                        ])
+                    },
+                    persistState: persistedStates.persist
+                )
+            }
+
+            let snapshots = persistedStates.snapshots
+            try #require(snapshots.count == 1)
+            #expect(snapshots[0].auth.accessToken == replacementAccessToken)
+            #expect(snapshots[0].user.data.isEmpty)
+            await MainActor.run {
+                #expect(isolatedStore.state.auth.accessToken == newerAccessToken)
+                #expect(isolatedStore.state.user.data["email"]?.value as? String == "newer@example.com")
+            }
+        }
+    }
+
+    @Test func signOutDuringReplacementProfileFetchCannotRestoreVerifiedSession() async throws {
+        try await withMockedSuperTokensSession {
+            let originalContext = Context.currentContext
+            let isolatedStore = createStore()
+            _ = Context(isolatedStore)
+            defer { Context.currentContext = originalContext }
+
+            let replacementAccessToken = makeSuperTokensTestJWT(expiresIn: 1800)
+            await MainActor.run {
+                isolatedStore.dispatch(SetAuthState(payload: AuthState(accessToken: "old-access-token")))
+            }
+            #expect(await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: replacementAccessToken,
+                    refreshToken: makeSuperTokensTestJWT(expiresIn: 5400)
+                )
+            }.value)
+
+            await #expect(throws: (any Error).self) {
+                try await SuperTokensSessionBridge.syncReplacementRowndStateFromSuperTokens(
+                    expectedAccessToken: replacementAccessToken,
+                    expectedPreviousRowndAccessToken: "old-access-token",
+                    fetchUserData: { _ in
+                        await SuperTokensSessionBridge.signOut()
+                        await MainActor.run {
+                            isolatedStore.dispatch(SetAuthState(payload: AuthState()))
+                        }
+                        return UserStateResponse(data: [
+                            "email": AnyCodable("stale-verification@example.com")
+                        ])
+                    }
+                )
+            }
+
+            #expect(await !SuperTokensSessionBridge.doesSessionExist())
+            await MainActor.run {
+                #expect(!isolatedStore.state.auth.isAuthenticated)
+                #expect(isolatedStore.state.user.data.isEmpty)
+            }
+        }
+    }
+
+    @Test func replacementProfileNotFoundRetainsExactReplacementSession() async throws {
+        try await withMockedSuperTokensSession {
+            let originalContext = Context.currentContext
+            let isolatedStore = createStore()
+            _ = Context(isolatedStore)
+            defer { Context.currentContext = originalContext }
+
+            let replacementAccessToken = makeSuperTokensTestJWT(expiresIn: 1800)
+            await MainActor.run {
+                isolatedStore.dispatch(SetAuthState(payload: AuthState(accessToken: "old-access-token")))
+                isolatedStore.dispatch(SetUserState(payload: UserState(data: [
+                    "email": AnyCodable("stale@example.com")
+                ])))
+            }
+            #expect(await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: replacementAccessToken,
+                    refreshToken: makeSuperTokensTestJWT(expiresIn: 5400)
+                )
+            }.value)
+
+            let outcome = try await SuperTokensSessionBridge.syncReplacementRowndStateFromSuperTokens(
+                expectedAccessToken: replacementAccessToken,
+                expectedPreviousRowndAccessToken: "old-access-token",
+                fetchUserData: { _ in nil }
+            )
+
+            #expect(outcome == .profileUnavailable)
+            #expect(await SuperTokensSessionBridge.getAccessToken() == replacementAccessToken)
+            await MainActor.run {
+                #expect(isolatedStore.state.auth.accessToken == replacementAccessToken)
+                #expect(isolatedStore.state.user.data.isEmpty)
+            }
+        }
+    }
+
+    @Test func pendingReplacementProfileSurvivesRestartAndForeground404UntilCanonicalHydration() async throws {
+        try await withMockedSuperTokensSession {
+            let originalContext = Context.currentContext
+            let initialStore = createStore()
+            _ = Context(initialStore)
+            defer { Context.currentContext = originalContext }
+
+            let replacementAccessToken = generateJwt(
+                expires: Date(timeIntervalSinceNow: 1800).timeIntervalSince1970,
+                sessionHandle: "pending-replacement-session"
+            )
+            await MainActor.run {
+                initialStore.dispatch(SetAuthState(payload: AuthState(accessToken: "old-access-token")))
+                initialStore.dispatch(SetUserState(payload: UserState(data: [
+                    "email": AnyCodable("stale@example.com")
+                ])))
+            }
+            #expect(await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: replacementAccessToken,
+                    refreshToken: makeSuperTokensTestJWT(expiresIn: 5400)
+                )
+            }.value)
+
+            let replacementOutcome = try await SuperTokensSessionBridge
+                .syncReplacementRowndStateFromSuperTokens(
+                    expectedAccessToken: replacementAccessToken,
+                    expectedPreviousRowndAccessToken: "old-access-token",
+                    fetchUserData: { _ in nil },
+                    persistState: { _ in true }
+                )
+            #expect(replacementOutcome == .profileUnavailable)
+
+            let encodedState = try #require(try initialStore.state.toJson()?.data(using: .utf8))
+            let restartedState = try JSONDecoder().decode(RowndState.self, from: encodedState)
+            let restartedStore = createStore()
+            _ = Context(restartedStore)
+            await MainActor.run {
+                restartedStore.dispatch(InitializeRowndState(payload: restartedState))
+            }
+            let stableIdentity = try #require(
+                SuperTokensSessionBridge.stableSessionIdentity(from: replacementAccessToken)
+            )
+            await MainActor.run {
+                #expect(
+                    restartedStore.state.auth.replacementProfilePendingSessionIdentity
+                        == stableIdentity
+                )
+                #expect(restartedStore.state.user.data.isEmpty)
+            }
+
+            let unavailableOutcome = await UserData.fetchForegroundUserData(
+                restartedStore.state,
+                fetchUserData: { _ in .notFound },
+                persistState: { _ in true }
+            )
+            #expect(unavailableOutcome == .replacementProfileStillPending)
+            #expect(await SuperTokensSessionBridge.getAccessToken() == replacementAccessToken)
+            await MainActor.run {
+                #expect(restartedStore.state.auth.isAuthenticated)
+                #expect(
+                    restartedStore.state.auth.replacementProfilePendingSessionIdentity
+                        == stableIdentity
+                )
+            }
+
+            let hydratedOutcome = await UserData.fetchForegroundUserData(
+                restartedStore.state,
+                fetchUserData: { state in
+                    #expect(state.auth.accessToken == replacementAccessToken)
+                    return .profile(UserStateResponse(data: [
+                        "email": AnyCodable("canonical@example.com")
+                    ]))
+                },
+                persistState: { _ in true }
+            )
+            #expect(hydratedOutcome == .profileSynchronized)
+            await MainActor.run {
+                #expect(restartedStore.state.auth.accessToken == replacementAccessToken)
+                #expect(
+                    restartedStore.state.auth.replacementProfilePendingSessionIdentity == nil
+                )
+                #expect(
+                    restartedStore.state.user.data["email"]?.value as? String
+                        == "canonical@example.com"
+                )
+            }
+        }
+    }
+
+    @Test func foregroundFetchSynchronizesSameSessionTokenRotationBeforeFetchAndCommit() async throws {
+        try await withMockedSuperTokensSession {
+            let originalContext = Context.currentContext
+            let isolatedStore = createStore()
+            _ = Context(isolatedStore)
+            defer { Context.currentContext = originalContext }
+
+            let originalAccessToken = generateJwt(
+                expires: Date(timeIntervalSinceNow: 1800).timeIntervalSince1970,
+                sessionHandle: "foreground-rotation-session"
+            )
+            let rotatedAccessToken = generateJwt(
+                expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+                sessionHandle: "foreground-rotation-session"
+            )
+            #expect(await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: originalAccessToken,
+                    refreshToken: makeSuperTokensTestJWT(expiresIn: 5400)
+                )
+            }.value)
+            await MainActor.run {
+                isolatedStore.dispatch(SetAuthState(payload: AuthState(
+                    accessToken: originalAccessToken
+                )))
+            }
+            let staleState = try #require(isolatedStore.state)
+            #expect(await SuperTokensSessionBridge.attemptRefresh {
+                SDKStorage.set("st-storage-item-st-access-token", value: rotatedAccessToken)
+                    && FrontToken.setItem(frontToken: SuperTokensSessionBridge.buildFrontToken(
+                        from: rotatedAccessToken
+                    ))
+            })
+
+            let persistedStates = StatePersistenceRecorder()
+            let outcome = await UserData.fetchForegroundUserData(
+                staleState,
+                fetchUserData: { state in
+                    #expect(state.auth.accessToken == rotatedAccessToken)
+                    return .profile(UserStateResponse(data: [
+                        "email": AnyCodable("rotated@example.com")
+                    ]))
+                },
+                persistState: persistedStates.persist
+            )
+
+            #expect(outcome == .profileSynchronized)
+            let snapshots = persistedStates.snapshots
+            try #require(snapshots.count == 1)
+            #expect(snapshots[0].auth.accessToken == rotatedAccessToken)
+            await MainActor.run {
+                #expect(isolatedStore.state.auth.accessToken == rotatedAccessToken)
+                #expect(
+                    isolatedStore.state.user.data["email"]?.value as? String
+                        == "rotated@example.com"
+                )
+            }
+        }
+    }
+
+    @Test func foregroundFetchRejectsDifferentLiveSessionBeforeProfileRequest() async throws {
+        try await withMockedSuperTokensSession {
+            let originalContext = Context.currentContext
+            let isolatedStore = createStore()
+            _ = Context(isolatedStore)
+            defer { Context.currentContext = originalContext }
+
+            let rowndAccessToken = generateJwt(
+                expires: Date(timeIntervalSinceNow: 1800).timeIntervalSince1970,
+                sessionHandle: "rownd-session"
+            )
+            let liveAccessToken = generateJwt(
+                expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+                sessionHandle: "different-live-session"
+            )
+            #expect(await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: liveAccessToken,
+                    refreshToken: makeSuperTokensTestJWT(expiresIn: 5400)
+                )
+            }.value)
+            await MainActor.run {
+                isolatedStore.dispatch(SetAuthState(payload: AuthState(
+                    accessToken: rowndAccessToken
+                )))
+            }
+
+            let outcome = await UserData.fetchForegroundUserData(
+                isolatedStore.state,
+                fetchUserData: { _ in
+                    Issue.record("A different live session must prevent profile fetch")
+                    return .profile(UserStateResponse())
+                }
+            )
+
+            #expect(outcome == .ignored)
+            await MainActor.run {
+                #expect(isolatedStore.state.auth.accessToken == rowndAccessToken)
+            }
+        }
+    }
+
+    @Test func replacementProfileFetchPersistsRotatedTokenBeforeProfile() async throws {
+        try await withMockedSuperTokensSession {
+            let originalContext = Context.currentContext
+            let isolatedStore = createStore()
+            _ = Context(isolatedStore)
+            defer { Context.currentContext = originalContext }
+
+            let replacementAccessToken = generateJwt(
+                expires: Date(timeIntervalSinceNow: 1800).timeIntervalSince1970,
+                sessionHandle: "replacement-session"
+            )
+            let rotatedAccessToken = generateJwt(
+                expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+                sessionHandle: "replacement-session"
+            )
+            await MainActor.run {
+                isolatedStore.dispatch(SetAuthState(payload: AuthState(accessToken: "old-access-token")))
+            }
+            #expect(await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: replacementAccessToken,
+                    refreshToken: makeSuperTokensTestJWT(expiresIn: 5400)
+                )
+            }.value)
+
+            let persistedStates = StatePersistenceRecorder()
+            let outcome = try await SuperTokensSessionBridge.syncReplacementRowndStateFromSuperTokens(
+                expectedAccessToken: replacementAccessToken,
+                expectedPreviousRowndAccessToken: "old-access-token",
+                fetchUserData: { _ in
+                    let refreshed = await SuperTokensSessionBridge.attemptRefresh {
+                        SDKStorage.set("st-storage-item-st-access-token", value: rotatedAccessToken)
+                            && FrontToken.setItem(frontToken: SuperTokensSessionBridge.buildFrontToken(
+                                from: rotatedAccessToken
+                            ))
+                    }
+                    #expect(refreshed)
+                    return UserStateResponse(data: [
+                        "email": AnyCodable("verified@example.com")
+                    ])
+                },
+                persistState: persistedStates.persist
+            )
+
+            #expect(outcome == .profileSynchronized)
+            let snapshots = persistedStates.snapshots
+            try #require(snapshots.count == 3)
+            #expect(snapshots[0].auth.accessToken == replacementAccessToken)
+            #expect(snapshots[0].user.data.isEmpty)
+            #expect(snapshots[1].auth.accessToken == rotatedAccessToken)
+            #expect(snapshots[1].user.data.isEmpty)
+            #expect(snapshots[2].auth.accessToken == rotatedAccessToken)
+            #expect(snapshots[2].user.data["email"]?.value as? String == "verified@example.com")
+        }
+    }
+
+    @Test func replacementSyncAcceptsRotationBeforeInitialAuthSync() async throws {
+        try await withMockedSuperTokensSession {
+            let originalContext = Context.currentContext
+            let isolatedStore = createStore()
+            _ = Context(isolatedStore)
+            defer { Context.currentContext = originalContext }
+
+            let responseAccessToken = generateJwt(
+                expires: Date(timeIntervalSinceNow: 1800).timeIntervalSince1970,
+                sessionHandle: "replacement-session"
+            )
+            let rotatedAccessToken = generateJwt(
+                expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+                sessionHandle: "replacement-session"
+            )
+            await MainActor.run {
+                isolatedStore.dispatch(SetAuthState(payload: AuthState(accessToken: "old-access-token")))
+            }
+            #expect(await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: responseAccessToken,
+                    refreshToken: makeSuperTokensTestJWT(expiresIn: 5400)
+                )
+            }.value)
+
+            let persistedStates = StatePersistenceRecorder()
+            let outcome = try await SuperTokensSessionBridge.syncReplacementRowndStateFromSuperTokens(
+                expectedAccessToken: responseAccessToken,
+                expectedPreviousRowndAccessToken: "old-access-token",
+                fetchUserData: { state in
+                    #expect(state.auth.accessToken == rotatedAccessToken)
+                    return UserStateResponse(data: ["email": AnyCodable("verified@example.com")])
+                },
+                persistState: persistedStates.persist,
+                beforeInitialAuthSync: {
+                    #expect(await SuperTokensSessionBridge.attemptRefresh {
+                        SDKStorage.set("st-storage-item-st-access-token", value: rotatedAccessToken)
+                            && FrontToken.setItem(frontToken: SuperTokensSessionBridge.buildFrontToken(
+                                from: rotatedAccessToken
+                            ))
+                    })
+                }
+            )
+
+            #expect(outcome == .profileSynchronized)
+            let snapshots = persistedStates.snapshots
+            try #require(snapshots.count == 2)
+            #expect(snapshots[0].auth.accessToken == rotatedAccessToken)
+            #expect(snapshots[0].user.data.isEmpty)
+            #expect(snapshots[1].auth.accessToken == rotatedAccessToken)
+            #expect(snapshots[1].user.data["email"]?.value as? String == "verified@example.com")
+        }
+    }
+
+    @Test func replacementSyncAcceptsRotationDuringInitialAuthDispatch() async throws {
+        try await withMockedSuperTokensSession {
+            let originalContext = Context.currentContext
+            let isolatedStore = createStore()
+            _ = Context(isolatedStore)
+            defer { Context.currentContext = originalContext }
+
+            let responseAccessToken = generateJwt(
+                expires: Date(timeIntervalSinceNow: 1800).timeIntervalSince1970,
+                sessionHandle: "replacement-session"
+            )
+            let rotatedAccessToken = generateJwt(
+                expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+                sessionHandle: "replacement-session"
+            )
+            await MainActor.run {
+                isolatedStore.dispatch(SetAuthState(payload: AuthState(accessToken: "old-access-token")))
+            }
+            #expect(await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: responseAccessToken,
+                    refreshToken: makeSuperTokensTestJWT(expiresIn: 5400)
+                )
+            }.value)
+
+            let persistedStates = StatePersistenceRecorder()
+            let outcome = try await SuperTokensSessionBridge.syncReplacementRowndStateFromSuperTokens(
+                expectedAccessToken: responseAccessToken,
+                expectedPreviousRowndAccessToken: "old-access-token",
+                fetchUserData: { state in
+                    #expect(state.auth.accessToken == rotatedAccessToken)
+                    return UserStateResponse(data: ["email": AnyCodable("verified@example.com")])
+                },
+                persistState: persistedStates.persist,
+                afterInitialAuthDispatch: { attempt in
+                    guard attempt == 0 else { return }
+                    #expect(await SuperTokensSessionBridge.attemptRefresh {
+                        SDKStorage.set("st-storage-item-st-access-token", value: rotatedAccessToken)
+                            && FrontToken.setItem(frontToken: SuperTokensSessionBridge.buildFrontToken(
+                                from: rotatedAccessToken
+                            ))
+                    })
+                }
+            )
+
+            #expect(outcome == .profileSynchronized)
+            let snapshots = persistedStates.snapshots
+            try #require(snapshots.count == 3)
+            #expect(snapshots[0].auth.accessToken == responseAccessToken)
+            #expect(snapshots[0].user.data.isEmpty)
+            #expect(snapshots[1].auth.accessToken == rotatedAccessToken)
+            #expect(snapshots[1].user.data.isEmpty)
+            #expect(snapshots[2].auth.accessToken == rotatedAccessToken)
+            #expect(snapshots[2].user.data["email"]?.value as? String == "verified@example.com")
+        }
+    }
+
+    @Test func replacementSyncRejectsRotationWithDifferentUserOrTenant() async throws {
+        try await withMockedSuperTokensSession {
+            for changedToken in [
+                generateJwt(
+                    expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+                    sessionHandle: "replacement-session",
+                    userId: "different-user",
+                    tenantId: "tenant-a"
+                ),
+                generateJwt(
+                    expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+                    sessionHandle: "replacement-session",
+                    tenantId: "tenant-b"
+                )
+            ] {
+                let originalContext = Context.currentContext
+                let isolatedStore = createStore()
+                _ = Context(isolatedStore)
+                let responseAccessToken = generateJwt(
+                    expires: Date(timeIntervalSinceNow: 1800).timeIntervalSince1970,
+                    sessionHandle: "replacement-session",
+                    tenantId: "tenant-a"
+                )
+                await MainActor.run {
+                    isolatedStore.dispatch(SetAuthState(payload: AuthState(accessToken: "old-access-token")))
+                }
+                #expect(await Task.detached {
+                    SuperTokensSessionBridge.bootstrapSession(
+                        accessToken: responseAccessToken,
+                        refreshToken: makeSuperTokensTestJWT(expiresIn: 5400)
+                    )
+                }.value)
+
+                await #expect(throws: (any Error).self) {
+                    try await SuperTokensSessionBridge.syncReplacementRowndStateFromSuperTokens(
+                        expectedAccessToken: responseAccessToken,
+                        expectedPreviousRowndAccessToken: "old-access-token",
+                        fetchUserData: { _ in
+                            Issue.record("A changed user or tenant must prevent profile fetch")
+                            return UserStateResponse()
+                        },
+                        beforeInitialAuthSync: {
+                            _ = await SuperTokensSessionBridge.attemptRefresh {
+                                SDKStorage.set("st-storage-item-st-access-token", value: changedToken)
+                                    && FrontToken.setItem(frontToken: SuperTokensSessionBridge.buildFrontToken(
+                                        from: changedToken
+                                    ))
+                            }
+                        }
+                    )
+                }
+                await SuperTokensSessionBridge.signOut()
+                Context.currentContext = originalContext
+            }
+        }
+    }
+
+    @Test func replacementProfileFetchRejectsTokenFromDifferentSession() async throws {
+        try await withMockedSuperTokensSession {
+            let originalContext = Context.currentContext
+            let isolatedStore = createStore()
+            _ = Context(isolatedStore)
+            defer { Context.currentContext = originalContext }
+
+            let replacementAccessToken = generateJwt(
+                expires: Date(timeIntervalSinceNow: 1800).timeIntervalSince1970,
+                sessionHandle: "replacement-session"
+            )
+            let differentSessionAccessToken = generateJwt(
+                expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+                sessionHandle: "different-session"
+            )
+            await MainActor.run {
+                isolatedStore.dispatch(SetAuthState(payload: AuthState(accessToken: "old-access-token")))
+            }
+            #expect(await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: replacementAccessToken,
+                    refreshToken: makeSuperTokensTestJWT(expiresIn: 5400)
+                )
+            }.value)
+
+            let persistedStates = StatePersistenceRecorder()
+            await #expect(throws: (any Error).self) {
+                try await SuperTokensSessionBridge.syncReplacementRowndStateFromSuperTokens(
+                    expectedAccessToken: replacementAccessToken,
+                    expectedPreviousRowndAccessToken: "old-access-token",
+                    fetchUserData: { _ in
+                        let refreshed = await SuperTokensSessionBridge.attemptRefresh {
+                            SDKStorage.set(
+                                "st-storage-item-st-access-token",
+                                value: differentSessionAccessToken
+                            ) && FrontToken.setItem(frontToken: SuperTokensSessionBridge.buildFrontToken(
+                                from: differentSessionAccessToken
+                            ))
+                        }
+                        #expect(refreshed)
+                        return UserStateResponse(data: [
+                            "email": AnyCodable("wrong@example.com")
+                        ])
+                    },
+                    persistState: persistedStates.persist
+                )
+            }
+
+            let snapshots = persistedStates.snapshots
+            try #require(snapshots.count == 1)
+            #expect(snapshots[0].auth.accessToken == replacementAccessToken)
+            #expect(snapshots[0].user.data.isEmpty)
+            await MainActor.run {
+                #expect(isolatedStore.state.user.data.isEmpty)
+            }
         }
     }
 
@@ -682,6 +1705,7 @@ import Network
                 }.value
             }
 
+            let terminalState = StatePersistenceRecorder()
             let synced = await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens(
                 afterTokenRead: {},
                 afterAuthDispatch: {
@@ -689,6 +1713,11 @@ import Network
                 },
                 afterReconciliationDispatch: { attempt in
                     #expect(await replaceSession(at: attempt + 1))
+                },
+                afterTerminalReconciliationDispatch: {
+                    await MainActor.run {
+                        _ = terminalState.persist(isolatedStore.state)
+                    }
                 }
             )
 
@@ -698,6 +1727,9 @@ import Network
                 #expect(isolatedStore.state.auth.accessToken == nil)
                 #expect(!isolatedStore.state.auth.isAuthenticated)
             }
+            let terminalSnapshots = terminalState.snapshots
+            try #require(terminalSnapshots.count == 1)
+            #expect(!terminalSnapshots[0].auth.isAuthenticated)
         }
     }
 
@@ -854,6 +1886,239 @@ import Network
         }
     }
 
+    @Test func delayedForegroundProfile404CannotSignOutNewAccount() async throws {
+        try await withMockedSuperTokensSession {
+            let originalContext = Context.currentContext
+            let isolatedStore = createStore()
+            _ = Context(isolatedStore)
+            let originalRequestSession = UserData.testingRequestSession
+            let controller = DelayedProfile404Controller()
+            DelayedProfile404URLProtocol.controller = controller
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.protocolClasses = [DelayedProfile404URLProtocol.self]
+            UserData.testingRequestSession = URLSession(configuration: configuration)
+            defer {
+                UserData.testingRequestSession = originalRequestSession
+                DelayedProfile404URLProtocol.controller = nil
+                Context.currentContext = originalContext
+            }
+
+            let oldAccessToken = generateJwt(
+                expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+                sessionHandle: "old-session"
+            )
+            let newAccessToken = generateJwt(
+                expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+                sessionHandle: "new-session"
+            )
+            #expect(await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: oldAccessToken,
+                    refreshToken: makeSuperTokensTestJWT(expiresIn: 5400)
+                )
+            }.value)
+            await MainActor.run {
+                isolatedStore.dispatch(SetAuthState(payload: AuthState(accessToken: oldAccessToken)))
+                isolatedStore.dispatch(UserData.fetch())
+            }
+            await controller.waitUntilStarted()
+            #expect(await waitUntil {
+                await MainActor.run { isolatedStore.state.user.isLoading }
+            })
+
+            #expect(await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: newAccessToken,
+                    refreshToken: makeSuperTokensTestJWT(expiresIn: 5400),
+                    refreshSession: {
+                        SDKStorage.set("st-storage-item-st-access-token", value: newAccessToken)
+                            && FrontToken.setItem(frontToken: SuperTokensSessionBridge.buildFrontToken(
+                                from: newAccessToken
+                            ))
+                    }
+                )
+            }.value)
+            await MainActor.run {
+                isolatedStore.dispatch(SetAuthState(payload: AuthState(accessToken: newAccessToken)))
+                isolatedStore.dispatch(SetUserState(payload: UserState(data: [
+                    "email": AnyCodable("new-account@example.com")
+                ])))
+            }
+
+            await controller.releaseResponse()
+            await controller.waitUntilDelivered()
+            #expect(await waitUntil {
+                await MainActor.run { !isolatedStore.state.user.isLoading }
+            })
+
+            #expect(await SuperTokensSessionBridge.getAccessToken() == newAccessToken)
+            await MainActor.run {
+                #expect(isolatedStore.state.auth.accessToken == newAccessToken)
+                #expect(isolatedStore.state.user.data["email"]?.value as? String == "new-account@example.com")
+            }
+        }
+    }
+
+    @Test func appleEnrichmentRequestAndCommitRemainBoundToCapturedSession() async throws {
+        try await withMockedSuperTokensSession {
+            let originalContext = Context.currentContext
+            let isolatedStore = createStore()
+            _ = Context(isolatedStore)
+            let originalRequestSession = UserData.testingExpectedSessionRequestSession
+            let controller = DelayedExpectedSessionSaveController()
+            DelayedExpectedSessionSaveURLProtocol.controller = controller
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.protocolClasses = [DelayedExpectedSessionSaveURLProtocol.self]
+            UserData.testingExpectedSessionRequestSession = URLSession(configuration: configuration)
+            defer {
+                UserData.testingExpectedSessionRequestSession = originalRequestSession
+                DelayedExpectedSessionSaveURLProtocol.controller = nil
+                Context.currentContext = originalContext
+            }
+
+            let appleAccessToken = generateJwt(
+                expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+                sessionHandle: "apple-session"
+            )
+            let replacementAccessToken = generateJwt(
+                expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+                sessionHandle: "replacement-session",
+                userId: "replacement-user"
+            )
+            let installedAppleSession = await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: appleAccessToken,
+                    refreshToken: makeSuperTokensTestJWT(expiresIn: 5400)
+                )
+            }.value
+            #expect(installedAppleSession)
+            await MainActor.run {
+                isolatedStore.dispatch(SetAuthState(payload: AuthState(accessToken: appleAccessToken)))
+                isolatedStore.dispatch(SetUserState(payload: UserState(data: [
+                    "email": AnyCodable("apple-before@example.com")
+                ])))
+            }
+            let appleIdentity = try #require(
+                await SuperTokensSessionBridge.currentSessionIdentity(matching: appleAccessToken)
+            )
+            let ticket = try #require(UserData.fetchCoordinator.begin(
+                accessToken: appleAccessToken,
+                purpose: .foreground
+            ))
+            defer { UserData.fetchCoordinator.finish(ticket) }
+
+            let saveTask = Task<Bool, Never> {
+                await UserData.saveExpectedSession(
+                    ["email": AnyCodable("apple-captured@example.com")],
+                    expectedData: ["email": AnyCodable("apple-before@example.com")],
+                    expectedSessionIdentity: appleIdentity,
+                    ticket: ticket
+                )
+            }
+            await controller.waitUntilStarted()
+
+            let installedReplacementSession = await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: replacementAccessToken,
+                    refreshToken: makeSuperTokensTestJWT(expiresIn: 5400),
+                    refreshSession: {
+                        SDKStorage.set("st-storage-item-st-access-token", value: replacementAccessToken)
+                            && FrontToken.setItem(frontToken: SuperTokensSessionBridge.buildFrontToken(
+                                from: replacementAccessToken
+                            ))
+                    }
+                )
+            }.value
+            #expect(installedReplacementSession)
+            await MainActor.run {
+                isolatedStore.dispatch(SetAuthState(payload: AuthState(
+                    accessToken: replacementAccessToken
+                )))
+                isolatedStore.dispatch(SetUserState(payload: UserState(data: [
+                    "email": AnyCodable("replacement@example.com")
+                ])))
+            }
+            await controller.releaseResponse()
+
+            #expect(await saveTask.value == false)
+            #expect(await controller.authorization == "Bearer \(appleAccessToken)")
+            #expect(await SuperTokensSessionBridge.getAccessToken() == replacementAccessToken)
+            await MainActor.run {
+                #expect(isolatedStore.state.auth.accessToken == replacementAccessToken)
+                #expect(isolatedStore.state.user.data["email"]?.value as? String == "replacement@example.com")
+            }
+        }
+    }
+
+    @Test func appleEnrichmentSupersedesActiveSameSessionForegroundFetchAndSaves() async throws {
+        try await withMockedSuperTokensSession {
+            let originalContext = Context.currentContext
+            let isolatedStore = createStore()
+            _ = Context(isolatedStore)
+            let originalRequestSession = UserData.testingExpectedSessionRequestSession
+            let controller = DelayedExpectedSessionSaveController()
+            DelayedExpectedSessionSaveURLProtocol.controller = controller
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.protocolClasses = [DelayedExpectedSessionSaveURLProtocol.self]
+            UserData.testingExpectedSessionRequestSession = URLSession(configuration: configuration)
+            UserDefaults.standard.removeObject(forKey: "userAppleSignInData")
+            defer {
+                UserData.testingExpectedSessionRequestSession = originalRequestSession
+                DelayedExpectedSessionSaveURLProtocol.controller = nil
+                UserDefaults.standard.removeObject(forKey: "userAppleSignInData")
+                Context.currentContext = originalContext
+            }
+
+            let accessToken = generateJwt(
+                expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+                sessionHandle: "apple-enrichment-session"
+            )
+            #expect(await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: accessToken,
+                    refreshToken: makeSuperTokensTestJWT(expiresIn: 5400)
+                )
+            }.value)
+            await MainActor.run {
+                isolatedStore.dispatch(SetAuthState(payload: AuthState(accessToken: accessToken)))
+                isolatedStore.dispatch(SetUserState(payload: UserState(data: [
+                    "email": AnyCodable("before-apple@example.com")
+                ])))
+            }
+            let foregroundTicket = try #require(UserData.fetchCoordinator.begin(
+                accessToken: accessToken,
+                purpose: .foreground
+            ))
+            let coordinator = AppleSignUpCoordinator(Rownd.getInstance())
+            let enrichmentTask = Task {
+                await coordinator.enrichUserDataWithAppleData(
+                    fullName: nil,
+                    email: "apple-captured@example.com",
+                    state: isolatedStore.state,
+                    fetchUserData: { state in
+                        #expect(state.auth.accessToken == accessToken)
+                        return .profile(UserStateResponse())
+                    }
+                )
+            }
+
+            await controller.waitUntilStarted()
+            #expect(!UserData.fetchCoordinator.isCurrent(foregroundTicket))
+            #expect(await controller.authorization == "Bearer \(accessToken)")
+            await controller.releaseResponse()
+
+            #expect(await enrichmentTask.value)
+            await MainActor.run {
+                #expect(isolatedStore.state.auth.accessToken == accessToken)
+                #expect(
+                    isolatedStore.state.user.data["email"]?.value as? String
+                        == "apple-captured@example.com"
+                )
+                #expect(!isolatedStore.state.user.isLoading)
+            }
+        }
+    }
+
     private func withMockedSuperTokensSession(
         _ operation: @escaping () async throws -> Void
     ) async throws {
@@ -976,6 +2241,19 @@ import Network
             #expect(completed)
         }
     }
+
+    private func waitUntil(
+        attempts: Int = 200,
+        condition: @escaping () async -> Bool
+    ) async -> Bool {
+        for _ in 0..<attempts {
+            if await condition() {
+                return true
+            }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        return false
+    }
 }
 
 @MainActor
@@ -1002,6 +2280,184 @@ private actor SessionSyncGate {
         for waiter in pendingWaiters {
             waiter.resume()
         }
+    }
+}
+
+private enum ReplacementProfileTestError: Error {
+    case unavailable
+}
+
+private actor DelayedProfile404Controller {
+    private var hasStarted = false
+    private var canRespond = false
+    private var hasDelivered = false
+    private var startedWaiters: [CheckedContinuation<Void, Never>] = []
+    private var responseWaiters: [CheckedContinuation<Void, Never>] = []
+    private var deliveredWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func markStarted() {
+        hasStarted = true
+        let waiters = startedWaiters
+        startedWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+    }
+
+    func waitUntilStarted() async {
+        guard !hasStarted else { return }
+        await withCheckedContinuation { startedWaiters.append($0) }
+    }
+
+    func waitForRelease() async {
+        guard !canRespond else { return }
+        await withCheckedContinuation { responseWaiters.append($0) }
+    }
+
+    func releaseResponse() {
+        canRespond = true
+        let waiters = responseWaiters
+        responseWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+    }
+
+    func markDelivered() {
+        hasDelivered = true
+        let waiters = deliveredWaiters
+        deliveredWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+    }
+
+    func waitUntilDelivered() async {
+        guard !hasDelivered else { return }
+        await withCheckedContinuation { deliveredWaiters.append($0) }
+    }
+}
+
+private final class DelayedProfile404URLProtocol: URLProtocol {
+    nonisolated(unsafe) static var controller: DelayedProfile404Controller?
+    private var responseTask: Task<Void, Never>?
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.path == "/auth/plugin/rownd/user"
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        guard let controller = Self.controller else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+        responseTask = Task { [weak self] in
+            await controller.markStarted()
+            await controller.waitForRelease()
+            guard let self, !Task.isCancelled else { return }
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 404,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data(#"{"status":"NOT_FOUND"}"#.utf8))
+            client?.urlProtocolDidFinishLoading(self)
+            await controller.markDelivered()
+        }
+    }
+
+    override func stopLoading() {
+        responseTask?.cancel()
+    }
+}
+
+private actor DelayedExpectedSessionSaveController {
+    private var hasStarted = false
+    private var canRespond = false
+    private var startedWaiters: [CheckedContinuation<Void, Never>] = []
+    private var responseWaiters: [CheckedContinuation<Void, Never>] = []
+    private(set) var authorization: String?
+
+    func markStarted(authorization: String?) {
+        self.authorization = authorization
+        hasStarted = true
+        let waiters = startedWaiters
+        startedWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+    }
+
+    func waitUntilStarted() async {
+        guard !hasStarted else { return }
+        await withCheckedContinuation { startedWaiters.append($0) }
+    }
+
+    func waitForRelease() async {
+        guard !canRespond else { return }
+        await withCheckedContinuation { responseWaiters.append($0) }
+    }
+
+    func releaseResponse() {
+        canRespond = true
+        let waiters = responseWaiters
+        responseWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+    }
+}
+
+private final class DelayedExpectedSessionSaveURLProtocol: URLProtocol {
+    nonisolated(unsafe) static var controller: DelayedExpectedSessionSaveController?
+    private var responseTask: Task<Void, Never>?
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.path == "/auth/plugin/rownd/user" && request.httpMethod == "PUT"
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        guard let controller = Self.controller else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+        responseTask = Task { [weak self] in
+            guard let self else { return }
+            await controller.markStarted(
+                authorization: request.value(forHTTPHeaderField: "Authorization")
+            )
+            await controller.waitForRelease()
+            guard !Task.isCancelled else { return }
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data(#"{"data":{"email":"apple-captured@example.com"},"meta":{},"state":"enabled","auth_level":"verified"}"#.utf8))
+            client?.urlProtocolDidFinishLoading(self)
+        }
+    }
+
+    override func stopLoading() {
+        responseTask?.cancel()
+    }
+}
+
+private final class StatePersistenceRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recordedSnapshots: [RowndState] = []
+
+    var snapshots: [RowndState] {
+        lock.lock(); defer { lock.unlock() }
+        return recordedSnapshots
+    }
+
+    @MainActor func persist(_ state: RowndState) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        recordedSnapshots.append(state)
+        return true
     }
 }
 

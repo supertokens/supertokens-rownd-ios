@@ -486,56 +486,138 @@ class AppleSignUpCoordinator: NSObject {
     }
 
     @MainActor func updateUserDataWithAppleData(fullName: PersonNameComponents?, email: String?) {
-        Context.currentContext.store.dispatch(Thunk<RowndState> { dispatch, getState in
+        Context.currentContext.store.dispatch(Thunk<RowndState> { _, getState in
             guard let state = getState() else { return }
             Task {
-                do {
-                    if let userStateResponse = try await UserData.fetchUserData(state) {
-                        var userData = state.user.data
-                        userData.merge(userStateResponse.data) { (current, _) in current }
-                        var appleUserData: [String: AnyCodable] = [:]
-
-                        let defaults = UserDefaults.standard
-                        // use UserDefault values for Email and fullName if available
-                        if let userAppleSignInData = defaults.object(forKey: appleSignInDataKey) as? Data {
-                            let decoder = JSONDecoder()
-                            if let loadedAppleSignInData = try? decoder.decode(AppleSignInData.self, from: userAppleSignInData) {
-                                appleUserData = loadedAppleSignInData.toDictionary()
-                            }
-                            
-                            // Remove the data since we no longer need it for subsequent signins.
-                            defaults.removeObject(forKey: appleSignInDataKey)
-                        } else {
-                            if let email = email {
-                                let name = [fullName?.givenName, fullName?.familyName]
-                                    .compactMap { $0 }
-                                    .joined(separator: " ")
-                                appleUserData = AppleSignInData(
-                                    email: email,
-                                    firstName: fullName?.givenName,
-                                    lastName: fullName?.familyName,
-                                    fullName: name.isEmpty ? nil : name
-                                ).toDictionary()
-                            }
-                        }
-
-                        if !appleUserData.isEmpty {
-                            userData.merge(appleUserData) { (_, updated) in updated }
-                            await MainActor.run {
-                                dispatch(UserData.save(appleUserData, optimisticData: userData))
-                            }
-                            logger.debug("UserData to save after signin: \(String(describing: appleUserData))")
-                        }
-                    } else {
-                        // Handle the case where userStateResponse is nil
-                        logger.error("Failed to fetch user state response")
-                    }
-                } catch {
-                    // Handle any errors that occurred during fetch
-                    logger.error("Error fetching user data: \(error)")
-                }
+                _ = await self.enrichUserDataWithAppleData(
+                    fullName: fullName,
+                    email: email,
+                    state: state
+                )
             }
         })
+    }
+
+    @discardableResult
+    internal func enrichUserDataWithAppleData(
+        fullName: PersonNameComponents?,
+        email: String?,
+        state: RowndState,
+        fetchUserData: @escaping (RowndState) async throws -> UserData.FetchResult = UserData.fetchUserData
+    ) async -> Bool {
+        guard let accessToken = state.auth.accessToken,
+              let sessionIdentity = await SuperTokensSessionBridge.currentSessionIdentity(),
+              SuperTokensSessionBridge.tokensBelongToSameSession(
+                accessToken,
+                sessionIdentity.accessToken
+              ),
+              let ticket = UserData.fetchCoordinator.begin(
+                accessToken: sessionIdentity.accessToken,
+                purpose: .enrichment
+              ) else {
+            return false
+        }
+
+        await MainActor.run {
+            Context.currentContext.store.dispatch(SetUserFetchLoading(
+                operationId: ticket.id,
+                isLoading: true
+            ))
+        }
+        let didEnrich = await performAppleUserDataEnrichment(
+            fullName: fullName,
+            email: email,
+            state: state,
+            sessionIdentity: sessionIdentity,
+            ticket: ticket,
+            fetchUserData: fetchUserData
+        )
+        UserData.fetchCoordinator.finish(ticket)
+        await MainActor.run {
+            Context.currentContext.store.dispatch(SetUserFetchLoading(
+                operationId: ticket.id,
+                isLoading: false
+            ))
+        }
+        return didEnrich
+    }
+
+    private func performAppleUserDataEnrichment(
+        fullName: PersonNameComponents?,
+        email: String?,
+        state: RowndState,
+        sessionIdentity: SuperTokensSessionBridge.SessionIdentity,
+        ticket: UserProfileFetchCoordinator.Ticket,
+        fetchUserData: @escaping (RowndState) async throws -> UserData.FetchResult
+    ) async -> Bool {
+        do {
+            var fetchState = state
+            fetchState.auth.accessToken = sessionIdentity.accessToken
+            switch try await fetchUserData(fetchState) {
+            case .profile:
+                guard await SuperTokensSessionBridge.isCurrentSession(sessionIdentity),
+                      UserData.fetchCoordinator.isCurrent(ticket),
+                      await MainActor.run(body: {
+                        UserData.fetchCoordinator.isCurrent(ticket)
+                            && SuperTokensSessionBridge.tokensBelongToSameSession(
+                                Context.currentContext.store.state.auth.accessToken,
+                                sessionIdentity.accessToken
+                            )
+                      }) else {
+                    return false
+                }
+
+                var appleUserData: [String: AnyCodable] = [:]
+                var usedStoredAppleData = false
+                let defaults = UserDefaults.standard
+                if let storedAppleData = defaults.object(forKey: appleSignInDataKey) as? Data,
+                   let loadedAppleSignInData = try? JSONDecoder().decode(
+                    AppleSignInData.self,
+                    from: storedAppleData
+                   ) {
+                    appleUserData = loadedAppleSignInData.toDictionary()
+                    usedStoredAppleData = true
+                } else if let email {
+                    let name = [fullName?.givenName, fullName?.familyName]
+                        .compactMap { $0 }
+                        .joined(separator: " ")
+                    appleUserData = AppleSignInData(
+                        email: email,
+                        firstName: fullName?.givenName,
+                        lastName: fullName?.familyName,
+                        fullName: name.isEmpty ? nil : name
+                    ).toDictionary()
+                }
+
+                guard !appleUserData.isEmpty else { return true }
+                let didSave = await UserData.saveExpectedSession(
+                    appleUserData,
+                    expectedData: state.user.data,
+                    expectedSessionIdentity: sessionIdentity,
+                    ticket: ticket
+                )
+                if didSave, usedStoredAppleData {
+                    defaults.removeObject(forKey: appleSignInDataKey)
+                }
+                if didSave {
+                    logger.debug("UserData saved after Apple sign-in: \(String(describing: appleUserData))")
+                }
+                return didSave
+            case .notFound:
+                let didSignOut = await SuperTokensSessionBridge.signOutIfCurrentSession(
+                    sessionIdentity,
+                    expectedRowndAccessToken: sessionIdentity.accessToken,
+                    condition: { UserData.fetchCoordinator.isCurrent(ticket) }
+                )
+                if didSignOut {
+                    logger.warning("The Apple sign-in profile was not found, so the current session was signed out.")
+                }
+                return false
+            }
+        } catch {
+            logger.error("Error fetching user data: \(error)")
+            return false
+        }
     }
 
     @MainActor fileprivate func completeAuthorization(

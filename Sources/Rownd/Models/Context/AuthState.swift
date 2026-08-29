@@ -22,6 +22,7 @@ public struct AuthState: Hashable, CustomStringConvertible {
     public var userId: String?
     public var challengeId: String?
     public var userIdentifier: String?
+    internal var replacementProfilePendingSessionIdentity: SuperTokensSessionBridge.StableSessionIdentity? = nil
 
     public var description: String {
         return "AuthState(isLoading: \(isLoading), isAuthenticated: \(isAuthenticated), accessToken: \(isAuthenticated ? "[REDACTED]" : "nil"), refreshToken: \(isAuthenticated ? "[REDACTED]" : "nil"), userId: \(userId ?? "nil"), challengeId: \(challengeId ?? "nil"), userIdentifier: \(userIdentifier ?? "nil"))"
@@ -90,6 +91,7 @@ extension AuthState: Codable {
         case hasPreviouslySignedIn = "has_previously_signed_in"
         case challengeId = "challenge_id"
         case userIdentifier = "user_identifier"
+        case replacementProfilePendingSessionIdentity = "replacement_profile_pending_session_identity"
     }
 
     func toRphInitHash() -> String? {
@@ -99,9 +101,17 @@ extension AuthState: Codable {
         }
 
         let jwt = try? decode(jwt: accessToken)
-        let userId: String? = Context.currentContext.store.state.user.get(field: "user_id") as? String
-            ?? jwt?.claim(name: "https://auth.rownd.io/app_user_id").string
-            ?? jwt?.claim(name: "app_user_id").string
+        let signedAppUserId = [
+            jwt?.claim(name: "https://auth.rownd.io/app_user_id").string,
+            jwt?.claim(name: "app_user_id").string
+        ].compactMap { $0 }.first { !$0.isEmpty }
+        let cachedUserId = Context.currentContext.store.state.user.get(field: "user_id") as String?
+        let signedSubject = jwt?.subject ?? jwt?.claim(name: "userId").string
+        let cachedUserIdMatchesSubject = signedSubject?.isEmpty == false
+            && cachedUserId?.isEmpty == false
+            && signedSubject == cachedUserId
+        let userId = signedAppUserId
+            ?? (cachedUserIdMatchesSubject ? cachedUserId : nil)
 
         let rphInit = RphInit(
             accessToken: accessToken,

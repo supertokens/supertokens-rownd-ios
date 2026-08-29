@@ -290,17 +290,21 @@ struct Payload: Encodable {
     var exp = Int(Date.init().timeIntervalSince1970)
     var sessionHandle: String?
     var appUserId: String?
+    var tenantId: String?
 
     enum CodingKeys: String, CodingKey {
         case sub, name, iat, exp, sessionHandle
         case appUserId = "app_user_id"
+        case tenantId = "tId"
     }
 }
 
 internal func generateJwt(
     expires: TimeInterval,
     sessionHandle: String? = nil,
-    appUserId: String? = nil
+    appUserId: String? = nil,
+    userId: String = "1234567890",
+    tenantId: String? = nil
 ) -> String {
     let secret = "your-256-bit-secret"
     let privateKey = SymmetricKey(data: Data(secret.utf8))
@@ -309,9 +313,11 @@ internal func generateJwt(
     let headerBase64String = headerJSONData.urlSafeBase64EncodedString()
     
     var payload = Payload()
+    payload.sub = userId
     payload.exp = Int(expires)
     payload.sessionHandle = sessionHandle
     payload.appUserId = appUserId
+    payload.tenantId = tenantId
     let payloadJSONData = try! JSONEncoder().encode(payload)
     let payloadBase64String = payloadJSONData.urlSafeBase64EncodedString()
     
