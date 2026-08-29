@@ -109,6 +109,23 @@ let latestVerificationEmail: CapturedVerificationEmail | undefined;
 let latestPasswordlessEmail: CapturedPasswordlessEmail | undefined;
 const passwordlessConsumeStatuses: number[] = [];
 let migrationMode: MigrationMode = 'normal';
+let holdNextUserGet = false;
+const heldUserGetRequests = new Set<() => void>();
+
+function userGetBehaviorState() {
+  return {
+    behavior: holdNextUserGet ? 'hold-next' : heldUserGetRequests.size > 0 ? 'holding' : 'normal',
+    heldRequestCount: heldUserGetRequests.size,
+  };
+}
+
+function restoreUserGetBehavior() {
+  holdNextUserGet = false;
+  for (const release of heldUserGetRequests) {
+    release();
+  }
+  heldUserGetRequests.clear();
+}
 
 function captureRequest(name: string, req: express.Request) {
   const capturedRequest: CapturedRequest = {
@@ -130,6 +147,9 @@ function capturePluginRequest(name: string, req: express.Request, res: express.R
   };
   capturedRequests[name] = capturedRequest;
   res.on('finish', () => {
+    if (capturedRequests[name] !== capturedRequest) {
+      return;
+    }
     capturedRequests[name] = {
       ...capturedRequest,
       responseSessionHeaders: {
@@ -168,6 +188,7 @@ function resetCounters() {
   latestPasswordlessEmail = undefined;
   passwordlessConsumeStatuses.length = 0;
   migrationMode = 'normal';
+  restoreUserGetBehavior();
 }
 
 function createLegacyAccessToken(userId: string) {
@@ -429,6 +450,19 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
     if (req.method === 'GET' && req.path === '/auth/plugin/rownd/user') {
       counters.userGet += 1;
       capturePluginRequest('userGet', req, res);
+      if (holdNextUserGet) {
+        holdNextUserGet = false;
+        let releaseRequest!: () => void;
+        const releasePromise = new Promise<void>((resolve) => {
+          releaseRequest = resolve;
+        });
+        heldUserGetRequests.add(releaseRequest);
+        void releasePromise.then(() => {
+          heldUserGetRequests.delete(releaseRequest);
+          next();
+        });
+        return;
+      }
     }
     if (req.method === 'PUT' && req.path === '/auth/plugin/rownd/user') {
       counters.userUpdate += 1;
@@ -458,6 +492,28 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
 
     migrationMode = mode;
     res.json({ status: 'OK', mode: migrationMode });
+  });
+
+  app.get('/test/user-get-behavior', (_req, res) => {
+    res.json({ status: 'OK', ...userGetBehaviorState() });
+  });
+
+  app.post('/test/user-get-behavior', (req, res) => {
+    const behavior = req.body?.behavior;
+    if (behavior === 'hold-next') {
+      if (holdNextUserGet || heldUserGetRequests.size > 0) {
+        res.status(409).json({ status: 'ERROR', message: 'A user GET is already armed or held' });
+        return;
+      }
+      holdNextUserGet = true;
+    } else if (behavior === 'normal') {
+      restoreUserGetBehavior();
+    } else {
+      res.status(400).json({ status: 'ERROR', message: 'Invalid user GET behavior' });
+      return;
+    }
+
+    res.json({ status: 'OK', ...userGetBehaviorState() });
   });
 
   app.post('/auth/plugin/rownd/migrate', (req, res, next) => {

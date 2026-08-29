@@ -368,6 +368,8 @@ struct E2EStatusView: View {
                     .accessibilityIdentifier("e2e-access-token-validity")
                 Text(E2ESupport.sessionHandle(from: state.current.auth.accessToken) ?? "no-session")
                     .accessibilityIdentifier("e2e-session-handle")
+                Text(cachedUserEmail)
+                    .accessibilityIdentifier("e2e-cached-user-email")
                 Text((state.current.user.data["user_id"]?.value as? String) ?? "no-user")
                     .accessibilityIdentifier("e2e-user-id")
                 Text(state.current.auth.challengeId == nil ? "clear" : "active")
@@ -384,6 +386,11 @@ struct E2EStatusView: View {
                     .accessibilityIdentifier("e2e-modal-at-onboarding-start")
             }
         }
+    }
+
+    private var cachedUserEmail: String {
+        let email: String? = Rownd.user.get(field: "email")
+        return email ?? "no-email"
     }
 }
 

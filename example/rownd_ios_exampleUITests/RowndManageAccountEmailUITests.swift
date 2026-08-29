@@ -125,7 +125,11 @@ final class RowndManageAccountEmailUITests: XCTestCase {
         XCTAssertEqual(responseSessionHeaders["accessToken"], true)
         XCTAssertEqual(responseSessionHeaders["refreshToken"], true)
         XCTAssertEqual(responseSessionHeaders["frontToken"], true)
-        try waitForLabel(app.staticTexts["e2e-session-handle"], toDifferFrom: initiatingSessionHandle)
+        let sessionHandleLabel = app.staticTexts["e2e-session-handle"]
+        try waitForLabel(sessionHandleLabel, toDifferFrom: initiatingSessionHandle)
+        let replacementSessionHandle = sessionHandleLabel.label
+        XCTAssertNotEqual(replacementSessionHandle, "no-session")
+        try waitForLabel(app.staticTexts["e2e-cached-user-email"], toEqual: editedEmail)
 
         let closeButton = app.webViews.firstMatch.buttons["Close"]
         XCTAssertTrue(closeButton.waitForExistence(timeout: 10))
@@ -134,10 +138,21 @@ final class RowndManageAccountEmailUITests: XCTestCase {
 
         app.terminate()
         app.launchEnvironment.removeValue(forKey: "ROWND_E2E_DEEP_LINK")
+        try await setUserProfileGetBehavior(.holdNext)
         app.launch()
 
-        try waitForLabel(app.staticTexts["e2e-sdk-state"], toEqual: "ready")
-        try waitForLabel(app.staticTexts["e2e-auth-state"], toEqual: "authenticated")
+        do {
+            try await waitForHeldUserProfileGet()
+            try waitForLabel(app.staticTexts["e2e-sdk-state"], toEqual: "ready")
+            try waitForLabel(app.staticTexts["e2e-auth-state"], toEqual: "authenticated")
+            try waitForLabel(sessionHandleLabel, toEqual: replacementSessionHandle)
+            try waitForLabel(app.staticTexts["e2e-cached-user-email"], toEqual: editedEmail)
+        } catch {
+            try? await setUserProfileGetBehavior(.normal)
+            throw error
+        }
+
+        try await setUserProfileGetBehavior(.normal)
         try openProfile(in: app)
         let verifiedEmailField = app.webViews.firstMatch.textFields.firstMatch
         XCTAssertTrue(verifiedEmailField.waitForExistence(timeout: 10))
@@ -329,6 +344,31 @@ final class RowndManageAccountEmailUITests: XCTestCase {
         throw UITestError.verificationEmailNotCaptured
     }
 
+    private func setUserProfileGetBehavior(_ behavior: UserProfileGetBehavior) async throws {
+        let response = try await request(
+            "POST",
+            path: "test/user-get-behavior",
+            body: ["behavior": behavior.rawValue]
+        )
+        guard response["behavior"] as? String == behavior.rawValue else {
+            throw UITestError.unexpectedResponse
+        }
+    }
+
+    private func waitForHeldUserProfileGet(timeout: TimeInterval = 10) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let response = try await request("GET", path: "test/user-get-behavior")
+            if response["behavior"] as? String == "holding",
+               response["heldRequestCount"] as? Int == 1 {
+                return
+            }
+            try await Task.sleep(nanoseconds: 250_000_000)
+        }
+
+        throw UITestError.userProfileGetNotHeld
+    }
+
     private func request(
         _ method: String,
         path: String,
@@ -356,6 +396,11 @@ private enum VerificationLinkDelivery {
     case systemDispatch
 }
 
+private enum UserProfileGetBehavior: String {
+    case holdNext = "hold-next"
+    case normal
+}
+
 private enum UITestError: Error {
     case appDidNotEnterBackground
     case emailVerificationNotCaptured
@@ -365,5 +410,6 @@ private enum UITestError: Error {
     case timedOutWaitingForElement
     case unexpectedResponse
     case userUpdateNotCaptured
+    case userProfileGetNotHeld
     case verificationEmailNotCaptured
 }
