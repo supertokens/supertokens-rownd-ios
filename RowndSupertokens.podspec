@@ -1,7 +1,7 @@
 Pod::Spec.new do |s|
   s.name             = "RowndSupertokens"
   s.module_name      = "Rownd"
-  s.version          = "0.1.14"
+  s.version          = "0.1.15"
   s.summary          = "SuperTokens Rownd bindings for iOS"
   s.description      = <<-DESC
                         Rownd is a user management platform designed to make authentication

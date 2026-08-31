@@ -1,5 +1,9 @@
 # Changelog
 
+## <small>0.1.15 (2026-08-31)</small>
+
+* fix: preserve session after email verification handoff ([de1bf58](https://github.com/supertokens/supertokens-rownd-ios/commit/de1bf58))
+
 ## <small>0.1.14 (2026-08-31)</small>
 
 * fix: harden session adoption and profile hydration ([e8843ae](https://github.com/supertokens/supertokens-rownd-ios/commit/e8843ae))
