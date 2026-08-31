@@ -227,24 +227,67 @@ final class RowndRealHubAuthenticationUITests: XCTestCase {
         try waitForLabel(app.staticTexts["e2e-session-handle"], equalTo: "no-session")
     }
 
-    func testClearSessionOnNewInstallationPreservesLegacyStateMigration() async throws {
+    func testNewInstallationCleanupRunsBeforeLegacyMigrationAndPreservesMigratedSession() async throws {
         let app = try await launchIsolatedApp(resetSession: true)
+        let createSessionButton = app.buttons["e2e-create-session-button"]
+        try scrollToElement(createSessionButton, in: app)
+        createSessionButton.tap()
+        try waitForLabel(app.staticTexts["e2e-auth-state"], equalTo: "authenticated")
+        try waitForLabel(app.staticTexts["e2e-access-token-validity"], equalTo: "valid")
+        let retainedSessionHandle = app.staticTexts["e2e-session-handle"].label
+        XCTAssertNotEqual(retainedSessionHandle, "no-session")
 
         app.terminate()
-        _ = try await request("POST", path: "reset")
-        let fixture = try await request("POST", path: "test/legacy-session")
-        app.launchEnvironment["ROWND_E2E_LEGACY_ACCESS_TOKEN"] = try XCTUnwrap(fixture["accessToken"] as? String)
-        app.launchEnvironment["ROWND_E2E_LEGACY_REFRESH_TOKEN"] = try XCTUnwrap(fixture["refreshToken"] as? String)
+        let fixture = try await request("POST", path: "test/unmigrated-legacy-session")
+        let userId = try XCTUnwrap(fixture["userId"] as? String)
+        let legacyAccessToken = try XCTUnwrap(fixture["accessToken"] as? String)
+        let legacyRefreshToken = try XCTUnwrap(fixture["refreshToken"] as? String)
+        XCTAssertEqual(fixture["sessionHandleCount"] as? Int, 0)
+
+        app.launchEnvironment["ROWND_E2E_LEGACY_ACCESS_TOKEN"] = legacyAccessToken
+        app.launchEnvironment["ROWND_E2E_LEGACY_REFRESH_TOKEN"] = legacyRefreshToken
         app.launchEnvironment["ROWND_E2E_CLEAR_SESSION_ON_NEW_INSTALLATION"] = "1"
         app.launchEnvironment["ROWND_E2E_SIMULATE_NEW_INSTALLATION"] = "1"
         app.launch()
         removeLegacySeedEnvironment(from: app)
-        removeNewInstallationEnvironment(from: app)
+        app.launchEnvironment.removeValue(forKey: "ROWND_E2E_SIMULATE_NEW_INSTALLATION")
 
         try waitForLabel(app.staticTexts["e2e-sdk-state"], equalTo: "ready")
         let counters = try await waitForCounters { ($0["migrate"] as? Int) == 1 }
         try waitForLabel(app.staticTexts["e2e-auth-state"], equalTo: "authenticated")
+        XCTAssertEqual(counters["migrate"] as? Int, 1)
         XCTAssertEqual(counters["legacyRefresh"] as? Int, 0)
+        XCTAssertEqual(counters["createSession"] as? Int, 1)
+
+        let protectedButton = app.buttons["e2e-protected-button"]
+        try scrollToElement(protectedButton, in: app)
+        protectedButton.tap()
+        try waitForLabel(app.staticTexts["e2e-scenario-state"], equalTo: "protected_loaded")
+        let migratedProtected = try protectedResponse(in: app)
+        XCTAssertEqual(migratedProtected["userId"] as? String, userId)
+        let migratedPayload = try XCTUnwrap(migratedProtected["accessTokenPayload"] as? [String: Any])
+        let migratedSessionHandle = try XCTUnwrap(migratedPayload["sessionHandle"] as? String)
+        XCTAssertNotEqual(migratedSessionHandle, retainedSessionHandle)
+
+        app.terminate()
+        app.launch()
+        removeNewInstallationEnvironment(from: app)
+
+        try waitForLabel(app.staticTexts["e2e-sdk-state"], equalTo: "ready")
+        try waitForLabel(app.staticTexts["e2e-auth-state"], equalTo: "authenticated")
+
+        let preservedProtectedButton = app.buttons["e2e-protected-button"]
+        try scrollToElement(preservedProtectedButton, in: app)
+        preservedProtectedButton.tap()
+        try waitForLabel(app.staticTexts["e2e-scenario-state"], equalTo: "protected_loaded")
+        let preservedProtected = try protectedResponse(in: app)
+        XCTAssertEqual(preservedProtected["userId"] as? String, userId)
+        let preservedPayload = try XCTUnwrap(preservedProtected["accessTokenPayload"] as? [String: Any])
+        XCTAssertEqual(preservedPayload["sessionHandle"] as? String, migratedSessionHandle)
+
+        let finalCounters = try await request("GET", path: "counters")
+        XCTAssertEqual(finalCounters["migrate"] as? Int, 1)
+        XCTAssertEqual(finalCounters["createSession"] as? Int, 1)
     }
 
     func testInstallationCleanupPreventsRetainedHubSessionResurrection() async throws {
@@ -467,6 +510,16 @@ final class RowndRealHubAuthenticationUITests: XCTestCase {
         guard XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed else {
             throw RealHubUITestError.timedOut
         }
+    }
+
+    private func protectedResponse(in app: XCUIApplication) throws -> [String: Any] {
+        let label = app.staticTexts["e2e-protected-result"].label
+        guard let body = label.split(separator: "\n", maxSplits: 1).last,
+              let data = String(body).data(using: .utf8),
+              let response = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw RealHubUITestError.unexpectedResponse
+        }
+        return response
     }
 
     private func waitForDisappearance(_ element: XCUIElement, timeout: TimeInterval = 10) throws {

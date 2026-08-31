@@ -739,6 +739,20 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
     });
   });
 
+  app.post('/test/unmigrated-legacy-session', async (_req, res) => {
+    const userId = 'ios-test-user';
+    await Session.revokeAllSessionsForUser(userId, true);
+    const sessionHandles = await Session.getAllSessionHandlesForUser(userId, true);
+
+    res.json({
+      status: 'OK',
+      userId,
+      accessToken: createLegacyAccessToken(userId),
+      refreshToken: `legacy-refresh-${randomUUID()}`,
+      sessionHandleCount: sessionHandles.length,
+    });
+  });
+
   app.post('/test/profile-session', async (req: any, res: any) => {
     counters.createSession += 1;
     const email = req.body?.email;
