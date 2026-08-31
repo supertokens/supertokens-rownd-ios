@@ -71,6 +71,7 @@
 ## Unreleased
 
 * fix: publish Apple authenticated state only after the authentication Hub is dismissed
+* fix: reconcile native sessions and retry profile hydration without exposing stale account data
 * security: optionally clear retained SuperTokens sessions on markerless launches without removing legacy Rownd migration state
 * breaking: require SuperTokens configuration and remove unsupported legacy auth paths
 * breaking: remove native passkey APIs/routes and Firebase connection-action APIs/routes from the SuperTokens-backed SDK

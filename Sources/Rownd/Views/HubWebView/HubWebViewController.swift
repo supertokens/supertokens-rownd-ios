@@ -441,6 +441,9 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
                 expectedAccessToken: $0,
                 expectedPreviousRowndAccessToken: $1
             )
+        },
+        scheduleProfileRetry: (SuperTokensSessionBridge.StableSessionIdentity) async -> Void = {
+            await UserData.scheduleProfileHydrationRetry(for: $0)
         }
     ) async throws -> (Data, HTTPURLResponse) {
         let previousAccessToken = await getAccessToken()
@@ -487,7 +490,13 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
               !frontToken.isEmpty else {
             throw RowndError("Email verification did not establish a replacement session")
         }
-        _ = try await syncReplacementState(replacementAccessToken, previousAccessToken)
+        let syncResult = try await syncReplacementState(
+            replacementAccessToken,
+            previousAccessToken
+        )
+        if syncResult == .profileUnavailable {
+            await scheduleProfileRetry(replacementStableIdentity)
+        }
         return (result.0, response)
     }
 

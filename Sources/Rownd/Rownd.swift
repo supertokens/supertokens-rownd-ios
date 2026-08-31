@@ -58,6 +58,7 @@ public class Rownd: NSObject {
         appVariantId: String? = nil,
         supertokens: RowndSuperTokensConfig
     ) async -> RowndState {
+        UserDefaults.standard.removeObject(forKey: "userAppleSignInData")
         smartLinkStateLock.lock()
         isConfigurationComplete = false
         smartLinkStateLock.unlock()
@@ -111,10 +112,11 @@ public class Rownd: NSObject {
             fatalError("Failed to initialize SuperTokens: \(error)")
         }
         await LegacySessionMigrator.migrateIfNeeded(authState: state.auth)
+        _ = await reconcileStartupSession()
 
         // Skip the rest within app extensions
         if Bundle.main.bundlePath.hasSuffix(".appex") {
-            return state
+            return Context.currentContext.store.state
         }
 
         await inst.loadAppConfig()
@@ -171,13 +173,11 @@ public class Rownd: NSObject {
 
         }
 
-        // Fetch user if authenticated and app is in foreground
-        await MainActor.run {
-            if store.state.auth.isAuthenticated && UIApplication.shared.applicationState == .active
-            {
-                store.dispatch(UserData.fetch())
-            }
+        Task {
+            await fetchInitialForegroundProfileIfNeeded()
+        }
 
+        await MainActor.run {
             instantUsers = InstantUsers(context: Context.currentContext)
             instantUsers?.tmpForceInstantUserConversionIfRequested()
         }
@@ -296,9 +296,11 @@ public class Rownd: NSObject {
     }
 
     public static func signOut(scope: RowndSignoutScope) throws {
+        SuperTokensSessionBridge.invalidateAuthOperationPermits()
         Task {
             do {
-                try await signOut(scope: scope)
+                await prepareForSignOut()
+                try await performSignOut(scope: scope)
             } catch {
                 logger.error(
                     "Failed to sign out user from all sessions: \(String(describing: error))")
@@ -307,6 +309,12 @@ public class Rownd: NSObject {
     }
 
     public static func signOut(scope: RowndSignoutScope) async throws {
+        SuperTokensSessionBridge.invalidateAuthOperationPermits()
+        await prepareForSignOut()
+        try await performSignOut(scope: scope)
+    }
+
+    private static func performSignOut(scope: RowndSignoutScope) async throws {
         switch scope {
         case .all:
             try await Auth.signOutUser()
@@ -315,27 +323,43 @@ public class Rownd: NSObject {
     }
 
     public static func signOut() {
+        SuperTokensSessionBridge.invalidateAuthOperationPermits()
         Task {
+            await prepareForSignOut()
             await performLocalSignOut()
         }
     }
 
     public static func signOut() async {
+        SuperTokensSessionBridge.invalidateAuthOperationPermits()
+        await prepareForSignOut()
         await performLocalSignOut()
     }
 
     public static func signOut(completion: @escaping (Error?) -> Void) {
+        SuperTokensSessionBridge.invalidateAuthOperationPermits()
         Task {
+            await prepareForSignOut()
             await performLocalSignOut()
             completion(nil)
         }
     }
 
     internal static func signOutForMigrationFailure() async {
+        SuperTokensSessionBridge.invalidateAuthOperationPermits()
+        await prepareForSignOut()
         await performLocalSignOut()
     }
 
+    private static func prepareForSignOut() async {
+        await MainActor.run {
+            appleSignUpCoordinator.cancelCurrentOperation()
+        }
+    }
+
     private static func performLocalSignOut() async {
+        UserDefaults.standard.removeObject(forKey: "userAppleSignInData")
+        await UserData.profileHydrationRetryCoordinator.cancel()
         if isSuperTokensInitialized {
             // Keep the compatibility session from resurrecting Rownd auth on later syncs.
             await SuperTokensSessionBridge.signOut()
@@ -444,6 +468,70 @@ public class Rownd: NSObject {
         guard preparedAuthState != store.state.auth else { return nil }
         store.dispatch(SetAuthState(payload: preparedAuthState))
         return store.state
+    }
+
+    @discardableResult
+    internal static func reconcileStartupSession(
+        persistState: @escaping @MainActor (RowndState) -> Bool = { $0.saveImmediately() }
+    ) async -> Bool {
+        for _ in 0..<3 {
+            if let identity = await SuperTokensSessionBridge.currentSessionIdentity() {
+                if await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens(
+                    afterTokenRead: {},
+                    expectedSessionIdentity: identity,
+                    persistState: persistState
+                ) {
+                    return true
+                }
+                continue
+            }
+
+            let clearedPersistedSession = await MainActor.run {
+                let store = Context.currentContext.store
+                guard let state = store.state,
+                      AuthState.isSuperTokensAccessToken(state.auth.accessToken) else {
+                    return false
+                }
+
+                let hasPreviouslySignedIn = state.auth.hasPreviouslySignedIn
+                let auth = AuthState(
+                    hasPreviouslySignedIn: hasPreviouslySignedIn
+                )
+                let user = UserState()
+                var candidate = state
+                candidate.auth = auth
+                candidate.user = user
+                guard persistState(candidate) else { return false }
+                store.dispatch(SetAuthState(payload: auth))
+                store.dispatch(SetUserState(payload: user))
+                return true
+            }
+            guard await SuperTokensSessionBridge.currentSessionIdentity() != nil else {
+                return clearedPersistedSession
+            }
+        }
+        return false
+    }
+
+    internal static func fetchInitialForegroundProfileIfNeeded(
+        appIsActive: @escaping @MainActor () -> Bool = {
+            UIApplication.shared.applicationState == .active
+        },
+        fetchUserData: @escaping (RowndState) async -> UserData.ForegroundFetchOutcome = {
+            await UserData.fetchForegroundUserData($0)
+        },
+        scheduleRetry: @escaping (UserData.ForegroundFetchOutcome) async -> Void = {
+            await UserData.scheduleProfileHydrationRetryIfPending($0)
+        }
+        ) async {
+        guard let state = await MainActor.run(body: { () -> RowndState? in
+            guard let state = Context.currentContext.store.state else { return nil }
+            return state.auth.isAuthenticated && appIsActive() ? state : nil
+        }) else {
+            return
+        }
+        let outcome = await fetchUserData(state)
+        await scheduleRetry(outcome)
     }
 
     @discardableResult

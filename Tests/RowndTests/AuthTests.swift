@@ -60,6 +60,44 @@ import Testing
         #expect(Context.currentContext.store.state.auth.accessToken == superTokensAccessToken)
     }
 
+    @Test func testGetValidTokenThrowsWhenCompatibilityStatePersistenceFails() async throws {
+        let originalContext = Context.currentContext
+        let originalSubscriptionState = AuthenticatorSubscription.currentAuthState
+        let store = createStore()
+        _ = Context(store)
+        defer {
+            Context.currentContext = originalContext
+            AuthenticatorSubscription.currentAuthState = originalSubscriptionState
+        }
+
+        let previousAccessToken = generateJwt(
+            expires: Date(timeIntervalSinceNow: 1000).timeIntervalSince1970,
+            sessionHandle: "previous-persisted-session"
+        )
+        let superTokensAccessToken = generateJwt(
+            expires: Date(timeIntervalSinceNow: 1000).timeIntervalSince1970,
+            sessionHandle: "unpersisted-live-session"
+        )
+        let previousAuthState = AuthState(accessToken: previousAccessToken)
+        await MainActor.run {
+            store.dispatch(SetAuthState(payload: previousAuthState))
+        }
+        AuthenticatorSubscription.currentAuthState = previousAuthState
+        let bridge = TestSessionBridge(accessToken: superTokensAccessToken)
+        let authenticator = Authenticator(
+            sessionBridge: bridge.client,
+            persistState: { _ in false }
+        )
+
+        await #expect(throws: AuthenticationError.serverError(
+            details: "Failed to persist compatibility state for the current SuperTokens session"
+        )) {
+            try await authenticator.getValidToken()
+        }
+        #expect(store.state.auth.accessToken == previousAccessToken)
+        #expect(AuthenticatorSubscription.currentAuthState?.accessToken == previousAccessToken)
+    }
+
     @Test func testGetValidTokenDoesNotDependOnRowndRefreshToken() async throws {
         let superTokensAccessToken = generateJwt(expires: Date(timeIntervalSinceNow: 1000).timeIntervalSince1970)
         let legacyAuthState = AuthState(
@@ -119,6 +157,51 @@ import Testing
         #expect(authState.refreshToken == nil)
         #expect(await bridge.attemptRefreshCalls == 1)
         #expect(Context.currentContext.store.state.auth.accessToken == superTokensAccessToken)
+    }
+
+    @Test func testSameSessionRefreshThrowsWhenCompatibilityStatePersistenceFails() async throws {
+        let originalContext = Context.currentContext
+        let originalSubscriptionState = AuthenticatorSubscription.currentAuthState
+        let store = createStore()
+        _ = Context(store)
+        defer {
+            Context.currentContext = originalContext
+            AuthenticatorSubscription.currentAuthState = originalSubscriptionState
+        }
+
+        let expiredAccessToken = generateJwt(
+            expires: Date(timeIntervalSinceNow: -1000).timeIntervalSince1970,
+            sessionHandle: "refresh-persistence-session"
+        )
+        let refreshedAccessToken = generateJwt(
+            expires: Date(timeIntervalSinceNow: 1000).timeIntervalSince1970,
+            sessionHandle: "refresh-persistence-session"
+        )
+        let previousAuthState = AuthState(accessToken: expiredAccessToken)
+        await MainActor.run {
+            store.dispatch(SetAuthState(payload: previousAuthState))
+        }
+        AuthenticatorSubscription.currentAuthState = previousAuthState
+        let bridge = TestSessionBridge(
+            accessToken: expiredAccessToken,
+            sessionExists: true,
+            refreshSucceeds: true,
+            refreshedAccessToken: refreshedAccessToken
+        )
+        let authenticator = Authenticator(
+            sessionBridge: bridge.client,
+            persistState: { _ in false }
+        )
+
+        await #expect(throws: AuthenticationError.serverError(
+            details: "Failed to persist compatibility state for the current SuperTokens session"
+        )) {
+            try await authenticator.refreshToken()
+        }
+        #expect(await bridge.getAccessTokenCalls == 1)
+        #expect(await bridge.attemptRefreshCalls == 1)
+        #expect(store.state.auth.accessToken == expiredAccessToken)
+        #expect(AuthenticatorSubscription.currentAuthState?.accessToken == expiredAccessToken)
     }
 
     @Test func testConcurrentRefreshTokenCallsShareRefreshTask() async throws {

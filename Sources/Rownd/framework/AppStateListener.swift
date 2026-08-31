@@ -18,14 +18,15 @@ class AppStateListener {
     }
 
     @objc func appMovedToBackground() {
-        // Future use
+        UserData.fetchCoordinator.cancelCurrent()
+        Task {
+            await UserData.profileHydrationRetryCoordinator.cancel()
+        }
     }
 
     @objc func appBecameActive() {
-        Task { @MainActor in
-            let store = Context.currentContext.store
-            guard store.state.auth.isAuthenticated else { return }
-            store.dispatch(UserData.fetch())
+        Task {
+            await Rownd.fetchInitialForegroundProfileIfNeeded()
         }
     }
 }

@@ -128,10 +128,15 @@ class AuthenticatorSubscription: NSObject {
 
 actor Authenticator: AuthenticatorProtocol {
     private let sessionBridge: SuperTokensSessionBridgeClient
+    private let persistState: @MainActor (RowndState) -> Bool
     private var refreshTask: Task<AuthState, Error>?
 
-    init(sessionBridge: SuperTokensSessionBridgeClient = .live) {
+    init(
+        sessionBridge: SuperTokensSessionBridgeClient = .live,
+        persistState: @escaping @MainActor (RowndState) -> Bool = { $0.saveImmediately() }
+    ) {
         self.sessionBridge = sessionBridge
+        self.persistState = persistState
     }
 
     func getValidToken() async throws -> AuthState {
@@ -147,7 +152,7 @@ actor Authenticator: AuthenticatorProtocol {
             return try await refreshToken()
         }
 
-        return await syncCompatibilityAuthState(accessToken: accessToken)
+        return try await syncCompatibilityAuthState(accessToken: accessToken)
     }
 
     func refreshToken() async throws -> AuthState {
@@ -172,7 +177,7 @@ actor Authenticator: AuthenticatorProtocol {
             }
 
             log.debug("Successfully refreshed SuperTokens session.")
-            return await syncCompatibilityAuthState(accessToken: accessToken)
+            return try await syncCompatibilityAuthState(accessToken: accessToken)
         }
 
         self.refreshTask = task
@@ -180,7 +185,7 @@ actor Authenticator: AuthenticatorProtocol {
         return try await task.value
     }
 
-    private func syncCompatibilityAuthState(accessToken: String) async -> AuthState {
+    private func syncCompatibilityAuthState(accessToken: String) async throws -> AuthState {
         let currentAuthState = AuthenticatorSubscription.currentAuthState
             ?? Context.currentContext.store.state.auth
         let isSameSession = SuperTokensSessionBridge.tokensBelongToSameSession(
@@ -193,18 +198,37 @@ actor Authenticator: AuthenticatorProtocol {
         newAuthState.accessToken = accessToken
         newAuthState.refreshToken = nil
         let stableIdentity = SuperTokensSessionBridge.stableSessionIdentity(from: accessToken)
-        if newAuthState.replacementProfilePendingSessionIdentity != stableIdentity {
-            newAuthState.replacementProfilePendingSessionIdentity = nil
+        if !isSameSession {
+            newAuthState.profileHydrationPendingSessionIdentity = stableIdentity
+        } else if newAuthState.profileHydrationPendingSessionIdentity != stableIdentity {
+            newAuthState.profileHydrationPendingSessionIdentity = nil
         }
+        newAuthState.hasPreviouslySignedIn = newAuthState.hasPreviouslySignedIn == true
+            || newAuthState.isAuthenticated
 
-        AuthenticatorSubscription.currentAuthState = newAuthState
-
-        await MainActor.run {
+        let authStateToCommit = newAuthState
+        let didCommit = await MainActor.run {
+            let store = Context.currentContext.store
+            guard var candidate = store.state else { return false }
+            candidate.auth = authStateToCommit
+            if !isSameSession {
+                candidate.user = UserState()
+            }
+            guard persistState(candidate) else { return false }
             // Keep Rownd's compatibility auth state in sync with the SuperTokens session.
-            Context.currentContext.store.dispatch(SetAuthState(payload: newAuthState))
+            store.dispatch(SetAuthState(payload: authStateToCommit))
+            if !isSameSession {
+                store.dispatch(SetUserState(payload: UserState()))
+            }
+            return true
         }
-
-        return newAuthState
+        guard didCommit else {
+            throw AuthenticationError.serverError(
+                details: "Failed to persist compatibility state for the current SuperTokens session"
+            )
+        }
+        AuthenticatorSubscription.currentAuthState = authStateToCommit
+        return authStateToCommit
     }
 
     private func isAccessTokenValid(_ accessToken: String) -> Bool {

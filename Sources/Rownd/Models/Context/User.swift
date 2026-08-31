@@ -250,13 +250,14 @@ class UserData {
 
     internal enum ForegroundFetchOutcome: Equatable {
         case profileSynchronized
-        case replacementProfileStillPending
+        case profileHydrationStillPending
         case signedOut
         case ignored
         case failed
     }
 
     internal static let fetchCoordinator = UserProfileFetchCoordinator()
+    internal static let profileHydrationRetryCoordinator = ProfileHydrationRetryCoordinator()
     internal static var testingRequestSession: URLSession?
     internal static var testingExpectedSessionRequestSession: URLSession?
 
@@ -339,6 +340,11 @@ class UserData {
         }.value
     }
 
+    internal static func fetchUserDataOnce(_ state: RowndState) async throws -> FetchResult {
+        try Task.checkCancellation()
+        return try await retrieveUserData(state)
+    }
+
     internal static func fetchReplacementUserData(_ state: RowndState) async throws -> UserStateResponse? {
         switch try await fetchUserData(state) {
         case .profile(let profile): return profile
@@ -376,7 +382,8 @@ class UserData {
             guard let state = getState() else { return }
 
             Task {
-                _ = await fetchForegroundUserData(state)
+                let outcome = await fetchForegroundUserData(state)
+                await scheduleProfileHydrationRetryIfPending(outcome)
             }
         }
     }
@@ -385,7 +392,8 @@ class UserData {
     internal static func fetchForegroundUserData(
         _ state: RowndState,
         fetchUserData: @escaping (RowndState) async throws -> FetchResult = UserData.fetchUserData,
-        persistState: @escaping @MainActor (RowndState) -> Bool = { $0.saveImmediately() }
+        persistState: @escaping @MainActor (RowndState) -> Bool = { $0.saveImmediately() },
+        commitIf: @escaping @MainActor () -> Bool = { !Task.isCancelled }
     ) async -> ForegroundFetchOutcome {
         guard state.auth.isAuthenticated,
               let rowndAccessToken = state.auth.accessToken,
@@ -408,12 +416,17 @@ class UserData {
             ))
         }
 
-        let outcome = await performForegroundFetch(
-            sessionIdentity: sessionIdentity,
-            ticket: ticket,
-            fetchUserData: fetchUserData,
-            persistState: persistState
-        )
+        let outcome = await withTaskCancellationHandler {
+            await performForegroundFetch(
+                sessionIdentity: sessionIdentity,
+                ticket: ticket,
+                fetchUserData: fetchUserData,
+                persistState: persistState,
+                commitIf: commitIf
+            )
+        } onCancel: {
+            fetchCoordinator.cancel(ticket)
+        }
 
         fetchCoordinator.finish(ticket)
         await MainActor.run {
@@ -425,23 +438,105 @@ class UserData {
         return outcome
     }
 
+    internal static func scheduleProfileHydrationRetry(
+        for identity: SuperTokensSessionBridge.StableSessionIdentity,
+        coordinator: ProfileHydrationRetryCoordinator = profileHydrationRetryCoordinator,
+        appIsActive: @escaping @MainActor () -> Bool = {
+            UIApplication.shared.applicationState == .active
+        },
+        fetchUserData: @escaping (RowndState) async throws -> FetchResult = UserData.fetchUserDataOnce,
+        persistState: @escaping @MainActor (RowndState) -> Bool = { $0.saveImmediately() }
+    ) async {
+        await coordinator.schedule(for: identity) { identity in
+            guard let state = await MainActor.run(body: { () -> RowndState? in
+                let store = Context.currentContext.store
+                guard appIsActive(),
+                      store.state.auth.profileHydrationPendingSessionIdentity == identity,
+                      store.state.auth.accessToken.flatMap(
+                        SuperTokensSessionBridge.stableSessionIdentity
+                      ) == identity else {
+                    return nil
+                }
+                return store.state
+            }),
+            let currentSession = await SuperTokensSessionBridge.currentSessionIdentity(),
+            currentSession.stable == identity else {
+                return .stop
+            }
+
+            switch await fetchForegroundUserData(
+                state,
+                fetchUserData: fetchUserData,
+                persistState: persistState,
+                commitIf: {
+                    !Task.isCancelled
+                        && appIsActive()
+                        && Context.currentContext.store.state.auth
+                            .profileHydrationPendingSessionIdentity == identity
+                }
+            ) {
+            case .profileSynchronized, .signedOut:
+                return .stop
+            case .profileHydrationStillPending, .ignored, .failed:
+                return .retry
+            }
+        }
+    }
+
+    internal static func scheduleProfileHydrationRetryIfPending(
+        _ outcome: ForegroundFetchOutcome,
+        coordinator: ProfileHydrationRetryCoordinator = profileHydrationRetryCoordinator,
+        appIsActive: @escaping @MainActor () -> Bool = {
+            UIApplication.shared.applicationState == .active
+        },
+        fetchUserData: @escaping (RowndState) async throws -> FetchResult = UserData.fetchUserDataOnce,
+        persistState: @escaping @MainActor (RowndState) -> Bool = { $0.saveImmediately() }
+    ) async {
+        guard outcome == .profileHydrationStillPending || outcome == .failed,
+              let identity = await MainActor.run(body: { () -> SuperTokensSessionBridge.StableSessionIdentity? in
+                let auth = Context.currentContext.store.state.auth
+                guard let identity = auth.profileHydrationPendingSessionIdentity,
+                      auth.accessToken.flatMap(SuperTokensSessionBridge.stableSessionIdentity)
+                        == identity else {
+                    return nil
+                }
+                return identity
+              }),
+              await SuperTokensSessionBridge.currentSessionIdentity()?.stable == identity else {
+            return
+        }
+        await scheduleProfileHydrationRetry(
+            for: identity,
+            coordinator: coordinator,
+            appIsActive: appIsActive,
+            fetchUserData: fetchUserData,
+            persistState: persistState
+        )
+    }
+
     private static func performForegroundFetch(
         sessionIdentity: SuperTokensSessionBridge.SessionIdentity,
         ticket: UserProfileFetchCoordinator.Ticket,
         fetchUserData: @escaping (RowndState) async throws -> FetchResult,
-        persistState: @escaping @MainActor (RowndState) -> Bool
+        persistState: @escaping @MainActor (RowndState) -> Bool,
+        commitIf: @escaping @MainActor () -> Bool
     ) async -> ForegroundFetchOutcome {
         do {
+            guard await MainActor.run(body: commitIf) else { return .ignored }
             let synchronized = try await synchronizeForegroundSession(
                 sessionIdentity,
                 ticket: ticket,
-                persistState: persistState
+                persistState: persistState,
+                commitIf: commitIf
             )
             let result = try await fetchUserData(synchronized.state)
+            try Task.checkCancellation()
+            guard await MainActor.run(body: commitIf) else { return .ignored }
             let current = try await synchronizeForegroundSession(
                 sessionIdentity,
                 ticket: ticket,
-                persistState: persistState
+                persistState: persistState,
+                commitIf: commitIf
             ).identity
 
             guard await SuperTokensSessionBridge.isCurrentSession(current),
@@ -451,18 +546,22 @@ class UserData {
 
             switch result {
             case .notFound:
-                let retainsPendingReplacement = await MainActor.run {
+                let retainsPendingHydration = await MainActor.run { () -> Bool? in
                     let auth = Context.currentContext.store.state.auth
-                    return fetchCoordinator.isCurrent(ticket)
-                        && auth.replacementProfilePendingSessionIdentity == current.stable
-                        && SuperTokensSessionBridge.tokensBelongToSameSession(
+                    guard commitIf(),
+                          fetchCoordinator.isCurrent(ticket),
+                          SuperTokensSessionBridge.tokensBelongToSameSession(
                             auth.accessToken,
                             current.accessToken
-                        )
+                          ) else {
+                        return nil
+                    }
+                    return auth.profileHydrationPendingSessionIdentity == current.stable
                 }
-                if retainsPendingReplacement {
-                    log.warning("The replacement user profile is still unavailable; retaining its session for a later retry.")
-                    return .replacementProfileStillPending
+                guard let retainsPendingHydration else { return .ignored }
+                if retainsPendingHydration {
+                    log.warning("The user profile is still unavailable; retaining its session for a later retry.")
+                    return .profileHydrationStillPending
                 }
 
                 let didSignOut = await SuperTokensSessionBridge.signOutIfCurrentSession(
@@ -478,23 +577,32 @@ class UserData {
             case .profile(let userResponse):
                 let didCommit = await MainActor.run {
                     let store = Context.currentContext.store
-                    guard fetchCoordinator.isCurrent(ticket),
+                    guard let state = store.state,
+                          commitIf(),
+                          fetchCoordinator.isCurrent(ticket),
                           SuperTokensSessionBridge.tokensBelongToSameSession(
-                            store.state.auth.accessToken,
+                            state.auth.accessToken,
                             current.accessToken
                           ) else {
                         return false
                     }
 
-                    var auth = store.state.auth
-                    let clearedPendingReplacement =
-                        auth.replacementProfilePendingSessionIdentity == current.stable
-                    if clearedPendingReplacement {
-                        auth.replacementProfilePendingSessionIdentity = nil
+                    var auth = state.auth
+                    let clearedPendingHydration =
+                        auth.profileHydrationPendingSessionIdentity == current.stable
+                    if clearedPendingHydration {
+                        auth.profileHydrationPendingSessionIdentity = nil
+                    }
+                    let user = userResponse.toUserState()
+                    var candidate = state
+                    candidate.auth = auth
+                    candidate.user = user
+                    guard persistState(candidate) else { return false }
+                    if clearedPendingHydration {
                         store.dispatch(SetAuthState(payload: auth))
                     }
-                    store.dispatch(SetUserState(payload: userResponse.toUserState()))
-                    return !clearedPendingReplacement || persistState(store.state)
+                    store.dispatch(SetUserState(payload: user))
+                    return true
                 }
                 guard didCommit else { return .failed }
 
@@ -502,21 +610,27 @@ class UserData {
                       fetchCoordinator.isCurrent(ticket) else {
                     await MainActor.run {
                         let store = Context.currentContext.store
-                        guard fetchCoordinator.isCurrent(ticket),
+                        guard let state = store.state,
+                              commitIf(),
+                              fetchCoordinator.isCurrent(ticket),
                               SuperTokensSessionBridge.tokensBelongToSameSession(
-                                store.state.auth.accessToken,
+                                state.auth.accessToken,
                                 current.accessToken
                               ) else {
                             return
                         }
+                        var candidate = state
+                        candidate.user = UserState()
+                        guard persistState(candidate) else { return }
                         store.dispatch(SetUserState(payload: UserState()))
-                        _ = persistState(store.state)
                     }
                     return .ignored
                 }
                 return .profileSynchronized
             }
         } catch {
+            if Task.isCancelled { return .ignored }
+            guard await MainActor.run(body: commitIf) else { return .ignored }
             log.error(
                 "Something went wrong while fetching the user's profile \(String(describing: error))"
             )
@@ -527,7 +641,8 @@ class UserData {
     private static func synchronizeForegroundSession(
         _ sessionIdentity: SuperTokensSessionBridge.SessionIdentity,
         ticket: UserProfileFetchCoordinator.Ticket,
-        persistState: @escaping @MainActor (RowndState) -> Bool
+        persistState: @escaping @MainActor (RowndState) -> Bool,
+        commitIf: @escaping @MainActor () -> Bool
     ) async throws -> (
         identity: SuperTokensSessionBridge.SessionIdentity,
         state: RowndState
@@ -541,30 +656,34 @@ class UserData {
 
             let synchronizedState = await MainActor.run { () -> RowndState? in
                 let store = Context.currentContext.store
-                guard fetchCoordinator.isCurrent(ticket),
+                guard let state = store.state,
+                      commitIf(),
+                      fetchCoordinator.isCurrent(ticket),
                       SuperTokensSessionBridge.tokensBelongToSameSession(
-                        store.state.auth.accessToken,
+                        state.auth.accessToken,
                         currentIdentity.accessToken
                       ) else {
                     return nil
                 }
 
-                var auth = store.state.auth
-                let shouldClearStaleMarker = auth.replacementProfilePendingSessionIdentity != nil
-                    && auth.replacementProfilePendingSessionIdentity != currentIdentity.stable
+                var auth = state.auth
+                let shouldClearStaleMarker = auth.profileHydrationPendingSessionIdentity != nil
+                    && auth.profileHydrationPendingSessionIdentity != currentIdentity.stable
                 let shouldSynchronizeToken = auth.accessToken != currentIdentity.accessToken
                 guard shouldClearStaleMarker || shouldSynchronizeToken else {
-                    return store.state
+                    return state
                 }
 
                 if shouldClearStaleMarker {
-                    auth.replacementProfilePendingSessionIdentity = nil
+                    auth.profileHydrationPendingSessionIdentity = nil
                 }
                 auth.accessToken = currentIdentity.accessToken
                 auth.refreshToken = nil
+                var candidate = state
+                candidate.auth = auth
+                guard persistState(candidate) else { return nil }
                 store.dispatch(SetAuthState(payload: auth))
-                guard persistState(store.state) else { return nil }
-                return store.state
+                return candidate
             }
             guard let synchronizedState,
                   let verifiedIdentity = await SuperTokensSessionBridge.currentTokenVersion(

@@ -12,8 +12,6 @@ import AnyCodable
 import ReSwiftThunk
 import Combine
 
-private let appleSignInDataKey = "userAppleSignInData"
-
 struct AppleSignInData: Codable {
     var email: String
     var firstName: String?
@@ -49,17 +47,67 @@ class AppleSignUpCoordinator: NSObject {
     @MainActor private var completionTask: Task<Void, Never>?
     @MainActor private var currentHubRequestID: UUID?
     @MainActor private var authorizationOperations: [ObjectIdentifier: UUID] = [:]
+    @MainActor private var authOperationPermits: [UUID: SuperTokensSessionBridge.AuthOperationPermit] = [:]
     var parent: Rownd?
     var intent: RowndSignInIntent?
     var cancellables = Set<AnyCancellable>()
-    var signInWithApple: (String, String) async throws -> SuperTokensThirdPartySignInResponse
+    var signInWithApple: (String, String) async throws -> SuperTokensAppleSignInResponse
+    var captureAuthOperationPermit: () -> SuperTokensSessionBridge.AuthOperationPermit = {
+        SuperTokensSessionBridge.captureAuthOperationPermit()
+    }
+    var invalidateAuthOperationPermits: () -> Void = {
+        SuperTokensSessionBridge.invalidateAuthOperationPermits()
+    }
+    var isAuthOperationPermitCurrent: (SuperTokensSessionBridge.AuthOperationPermit) -> Bool = {
+        $0 == SuperTokensSessionBridge.captureAuthOperationPermit()
+    }
+    var adoptResponseSession: (
+        SuperTokensSessionTokens,
+        SuperTokensSessionBridge.AuthOperationPermit
+    ) async -> SuperTokensSessionBridge.SessionIdentity? = {
+        await SuperTokensSessionBridge.adoptResponseSession($0, permit: $1)
+    }
+    var discardSessionIfCurrent: (SuperTokensSessionBridge.SessionIdentity) async -> Bool = {
+        await SuperTokensSessionBridge.discardSessionIfCurrent($0)
+    }
+    var isCurrentSession: (SuperTokensSessionBridge.SessionIdentity) async -> Bool = {
+        await SuperTokensSessionBridge.isCurrentSession($0)
+    }
+    var saveExpectedSession: (
+        [String: AnyCodable],
+        [String: AnyCodable],
+        SuperTokensSessionBridge.SessionIdentity,
+        UserProfileFetchCoordinator.Ticket
+    ) async -> Bool = { data, expectedData, sessionIdentity, ticket in
+        await UserData.saveExpectedSession(
+            data,
+            expectedData: expectedData,
+            expectedSessionIdentity: sessionIdentity,
+            ticket: ticket
+        )
+    }
+    var signOutIfCurrentSession: (
+        SuperTokensSessionBridge.SessionIdentity,
+        String,
+        () -> Bool
+    ) async -> Bool = { identity, accessToken, condition in
+        await SuperTokensSessionBridge.signOutIfCurrentSession(
+            identity,
+            expectedRowndAccessToken: accessToken,
+            condition: condition
+        )
+    }
     var fetchAppConfig: () async -> AppConfigResponse? = {
         await AppConfig.fetch()
     }
-    var syncAuthState: (@MainActor () -> Bool) async -> Bool = { commitIf in
+    var syncAuthState: (
+        SuperTokensSessionBridge.SessionIdentity,
+        @MainActor () -> Bool
+    ) async -> Bool = { sessionIdentity, commitIf in
         await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens(
             afterTokenRead: {},
-            commitIf: commitIf
+            commitIf: commitIf,
+            expectedSessionIdentity: sessionIdentity
         )
     }
     var waitBeforeCompletion: () async -> Void = {
@@ -110,10 +158,6 @@ class AppleSignUpCoordinator: NSObject {
         authorizationController.performRequests()
     }
 
-    private func getFullName(firstName: String?, lastName: String?) -> String {
-        return String("\(firstName ?? "") \(lastName ?? "")")
-    }
-
     @MainActor fileprivate func completeAuthorization(
         controllerID: ObjectIdentifier,
         authorization: ASAuthorization
@@ -127,22 +171,6 @@ class AppleSignUpCoordinator: NSObject {
             let fullName = appleIDCredential.fullName
             let email = appleIDCredential.email
             let authorizationCode = appleIDCredential.authorizationCode
-            var userAppleSignInData: AppleSignInData? = nil
-
-            if let email = email {
-                // Store email and fullName in AppleSignInData struct if available
-                userAppleSignInData = AppleSignInData(
-                    email: email,
-                    firstName: fullName?.givenName,
-                    lastName: fullName?.familyName,
-                    fullName: getFullName(firstName: fullName?.givenName, lastName: fullName?.familyName)
-                )
-                let encoder = JSONEncoder()
-                if let encoded = try? encoder.encode(userAppleSignInData) {
-                    let defaults = UserDefaults.standard
-                    defaults.set(encoded, forKey: appleSignInDataKey)
-                }
-            }
 
             if let authorizationCode = authorizationCode,
                let authCode = String(data: authorizationCode, encoding: .utf8) {
@@ -165,7 +193,7 @@ class AppleSignUpCoordinator: NSObject {
                 }
                 setCompletionTask(task, for: operationID)
             } else {
-                logger.error("Missing data from Apple sign-in response: \(String(describing: appleIDCredential))")
+                logger.error("Apple sign-in response did not include an authorization code")
                 Rownd.requestSignIn(jsFnOptions: RowndSignInJsOptions(
                     loginStep: .error,
                     signInType: .apple
@@ -173,7 +201,7 @@ class AppleSignUpCoordinator: NSObject {
             }
 
         default:
-            logger.error("Unknown credential type returned from Apple ID sign-in: \(String(describing: authorization.credential))")
+            logger.error("Apple sign-in returned an unsupported credential type")
             Rownd.requestSignIn(jsFnOptions: RowndSignInJsOptions(
                 loginStep: .error,
                 signInType: .apple
@@ -226,11 +254,32 @@ class AppleSignUpCoordinator: NSObject {
         hubRequestID: UUID,
         operationID: UUID
     ) async {
+        let operationPermit = await MainActor.run { () -> SuperTokensSessionBridge.AuthOperationPermit? in
+            guard let permit = self.authOperationPermits[operationID],
+                  self.canCommitAuthState(
+                    operationID: operationID,
+                    hubRequestID: hubRequestID,
+                    permit: permit
+                  ) else {
+                return nil
+            }
+            return permit
+        }
+        guard let operationPermit else { return }
+
         guard let clientType = await resolveAppleClientType() else {
-            guard await isCurrentOperation(operationID) else { return }
+            guard await canCommitAuthState(
+                operationID: operationID,
+                hubRequestID: hubRequestID,
+                permit: operationPermit
+            ) else { return }
             logger.error("Apple sign-in requires a non-empty ios_client_type in app config")
             await MainActor.run {
-                guard self.isCurrentOperation(operationID) else { return }
+                guard self.canCommitAuthState(
+                    operationID: operationID,
+                    hubRequestID: hubRequestID,
+                    permit: operationPermit
+                ) else { return }
                 Rownd.updateSignInForNativeCompletion(
                     jsFnOptions: RowndSignInJsOptions(
                         loginStep: .error,
@@ -242,13 +291,21 @@ class AppleSignUpCoordinator: NSObject {
             return
         }
 
-        let signInResponse: SuperTokensThirdPartySignInResponse
+        let signInResponse: SuperTokensAppleSignInResponse
         do {
             signInResponse = try await signInWithApple(authorizationCode, clientType)
         } catch {
-            guard await isCurrentOperation(operationID) else { return }
+            guard await canCommitAuthState(
+                operationID: operationID,
+                hubRequestID: hubRequestID,
+                permit: operationPermit
+            ) else { return }
             await MainActor.run {
-                guard self.isCurrentOperation(operationID) else { return }
+                guard self.canCommitAuthState(
+                    operationID: operationID,
+                    hubRequestID: hubRequestID,
+                    permit: operationPermit
+                ) else { return }
                 Rownd.updateSignInForNativeCompletion(
                     jsFnOptions: RowndSignInJsOptions(
                         loginStep: .error,
@@ -261,7 +318,11 @@ class AppleSignUpCoordinator: NSObject {
         }
 
         let didPresentSuccess = await MainActor.run {
-            guard self.isCurrentOperation(operationID),
+            guard self.canCommitAuthState(
+                    operationID: operationID,
+                    hubRequestID: hubRequestID,
+                    permit: operationPermit
+                  ),
                   Rownd.isNativeHubRequestActive(hubRequestID) else {
                 return false
             }
@@ -280,7 +341,11 @@ class AppleSignUpCoordinator: NSObject {
             // Prevent fast auth handshakes from feeling jarring to the user
             await waitBeforeCompletion()
             let shouldDismissHub = await MainActor.run {
-                self.isCurrentOperation(operationID)
+                self.canCommitAuthState(
+                    operationID: operationID,
+                    hubRequestID: hubRequestID,
+                    permit: operationPermit
+                )
                     && Rownd.isNativeHubRequestActive(hubRequestID)
             }
             if shouldDismissHub {
@@ -291,27 +356,57 @@ class AppleSignUpCoordinator: NSObject {
 
         guard await canCommitAuthState(
             operationID: operationID,
-            hubRequestID: hubRequestID
+            hubRequestID: hubRequestID,
+            permit: operationPermit
         ) else { return }
-        let commitAuthState: @MainActor () -> Bool = {
-            self.canCommitAuthState(
-                operationID: operationID,
-                hubRequestID: hubRequestID
-            )
-        }
-        guard await syncAuthState(commitAuthState) else {
+        guard let sessionIdentity = await adoptResponseSession(
+            signInResponse.sessionTokens,
+            operationPermit
+        ) else {
             guard await canCommitAuthState(
                 operationID: operationID,
-                hubRequestID: hubRequestID
+                hubRequestID: hubRequestID,
+                permit: operationPermit
             ) else { return }
             await presentSyncFailure(
                 replacing: hubRequestID,
-                operationID: operationID
+                operationID: operationID,
+                permit: operationPermit
+            )
+            return
+        }
+        guard await canCommitAuthState(
+            operationID: operationID,
+            hubRequestID: hubRequestID,
+            permit: operationPermit
+        ) else {
+            _ = await discardSessionIfCurrent(sessionIdentity)
+            return
+        }
+        let commitAuthState: @MainActor () -> Bool = {
+            self.canCommitAuthState(
+                operationID: operationID,
+                hubRequestID: hubRequestID,
+                permit: operationPermit
+            )
+        }
+        guard await syncAuthState(sessionIdentity, commitAuthState) else {
+            _ = await discardSessionIfCurrent(sessionIdentity)
+            guard await canCommitAuthState(
+                operationID: operationID,
+                hubRequestID: hubRequestID,
+                permit: operationPermit
+            ) else { return }
+            await presentSyncFailure(
+                replacing: hubRequestID,
+                operationID: operationID,
+                permit: operationPermit
             )
             return
         }
 
         await beforeFinalization()
+        guard await isCurrentSession(sessionIdentity) else { return }
         let completionEvent = RowndEvent(
             event: .signInCompleted,
             data: [
@@ -323,34 +418,61 @@ class AppleSignUpCoordinator: NSObject {
         await MainActor.run {
             guard self.canCommitAuthState(
                 operationID: operationID,
-                hubRequestID: hubRequestID
+                hubRequestID: hubRequestID,
+                permit: operationPermit
             ) else { return }
             Context.currentContext.store.dispatch(SetLastSignInMethod(payload: SignInMethodTypes.apple))
             guard self.canCommitAuthState(
                 operationID: operationID,
-                hubRequestID: hubRequestID
+                hubRequestID: hubRequestID,
+                permit: operationPermit
             ) else { return }
-            self.updateUserDataWithAppleData(fullName: fullName, email: email)
+            self.updateUserDataWithAppleData(
+                fullName: fullName,
+                email: email,
+                sessionIdentity: sessionIdentity
+            )
             guard self.canCommitAuthState(
                 operationID: operationID,
-                hubRequestID: hubRequestID
+                hubRequestID: hubRequestID,
+                permit: operationPermit
             ) else { return }
             self.emitEvent(completionEvent)
         }
     }
 
-    @MainActor private func canCommitAuthState(operationID: UUID, hubRequestID: UUID) -> Bool {
-        isCurrentOperation(operationID)
-            && Rownd.canCommitAuthState(forNativeHubRequest: hubRequestID)
+    @MainActor private func canCommitAuthState(
+        operationID: UUID,
+        hubRequestID: UUID,
+        permit: SuperTokensSessionBridge.AuthOperationPermit? = nil
+    ) -> Bool {
+        guard isCurrentOperation(operationID),
+              Rownd.canCommitAuthState(forNativeHubRequest: hubRequestID) else {
+            return false
+        }
+        guard let permit else { return true }
+        return authOperationPermits[operationID] == permit
+            && isAuthOperationPermitCurrent(permit)
     }
 
-    private func presentSyncFailure(replacing completedRequestID: UUID, operationID: UUID) async {
+    private func presentSyncFailure(
+        replacing completedRequestID: UUID,
+        operationID: UUID,
+        permit: SuperTokensSessionBridge.AuthOperationPermit
+    ) async {
         let fallbackRequestID = UUID()
+        guard await canCommitAuthState(
+            operationID: operationID,
+            hubRequestID: completedRequestID,
+            permit: permit
+        ) else { return }
         guard await bindHubRequest(fallbackRequestID, to: operationID) else { return }
 
         let didPresent = await MainActor.run {
             guard self.isCurrentOperation(operationID),
-                  self.isHubRequestBound(fallbackRequestID, to: operationID) else {
+                  self.isHubRequestBound(fallbackRequestID, to: operationID),
+                  self.authOperationPermits[operationID] == permit,
+                  self.isAuthOperationPermitCurrent(permit) else {
                 return false
             }
             return Rownd.requestSignInForNativeCompletionFallback(
@@ -369,12 +491,15 @@ class AppleSignUpCoordinator: NSObject {
 
     @MainActor private func beginOperation() -> UUID {
         completionTask?.cancel()
+        invalidateAuthOperationPermits()
         let previousHubRequestID = currentHubRequestID
         let operationID = UUID()
         currentOperationID = operationID
         completionTask = nil
         currentHubRequestID = nil
         authorizationOperations.removeAll()
+        authOperationPermits.removeAll()
+        authOperationPermits[operationID] = captureAuthOperationPermit()
         retireHubRequest(previousHubRequestID)
         return operationID
     }
@@ -382,15 +507,30 @@ class AppleSignUpCoordinator: NSObject {
     @discardableResult
     @MainActor func registerAuthorizationOperation(controllerID: ObjectIdentifier) -> UUID {
         completionTask?.cancel()
+        invalidateAuthOperationPermits()
         let previousHubRequestID = currentHubRequestID
         let operationID = UUID()
         currentOperationID = operationID
         completionTask = nil
         currentHubRequestID = nil
         authorizationOperations.removeAll()
+        authOperationPermits.removeAll()
         authorizationOperations[controllerID] = operationID
+        authOperationPermits[operationID] = captureAuthOperationPermit()
         retireHubRequest(previousHubRequestID)
         return operationID
+    }
+
+    @MainActor func cancelCurrentOperation() {
+        completionTask?.cancel()
+        invalidateAuthOperationPermits()
+        let previousHubRequestID = currentHubRequestID
+        completionTask = nil
+        currentOperationID = nil
+        currentHubRequestID = nil
+        authorizationOperations.removeAll()
+        authOperationPermits.removeAll()
+        retireHubRequest(previousHubRequestID)
     }
 
     @MainActor func consumeAuthorizationOperation(controllerID: ObjectIdentifier) -> UUID? {
@@ -485,14 +625,19 @@ class AppleSignUpCoordinator: NSObject {
         return clientType
     }
 
-    @MainActor func updateUserDataWithAppleData(fullName: PersonNameComponents?, email: String?) {
+    @MainActor func updateUserDataWithAppleData(
+        fullName: PersonNameComponents?,
+        email: String?,
+        sessionIdentity: SuperTokensSessionBridge.SessionIdentity
+    ) {
         Context.currentContext.store.dispatch(Thunk<RowndState> { _, getState in
             guard let state = getState() else { return }
             Task {
                 _ = await self.enrichUserDataWithAppleData(
                     fullName: fullName,
                     email: email,
-                    state: state
+                    state: state,
+                    sessionIdentity: sessionIdentity
                 )
             }
         })
@@ -503,10 +648,16 @@ class AppleSignUpCoordinator: NSObject {
         fullName: PersonNameComponents?,
         email: String?,
         state: RowndState,
-        fetchUserData: @escaping (RowndState) async throws -> UserData.FetchResult = UserData.fetchUserData
+        sessionIdentity: SuperTokensSessionBridge.SessionIdentity,
+        fetchUserData: @escaping (RowndState) async throws -> UserData.FetchResult = UserData.fetchUserData,
+        persistState: @escaping @MainActor (RowndState) -> Bool = { $0.saveImmediately() },
+        scheduleProfileHydrationRetry: @escaping (
+            SuperTokensSessionBridge.StableSessionIdentity
+        ) async -> Void = { identity in
+            await UserData.scheduleProfileHydrationRetry(for: identity)
+        }
     ) async -> Bool {
         guard let accessToken = state.auth.accessToken,
-              let sessionIdentity = await SuperTokensSessionBridge.currentSessionIdentity(),
               SuperTokensSessionBridge.tokensBelongToSameSession(
                 accessToken,
                 sessionIdentity.accessToken
@@ -530,7 +681,9 @@ class AppleSignUpCoordinator: NSObject {
             state: state,
             sessionIdentity: sessionIdentity,
             ticket: ticket,
-            fetchUserData: fetchUserData
+            fetchUserData: fetchUserData,
+            persistState: persistState,
+            scheduleProfileHydrationRetry: scheduleProfileHydrationRetry
         )
         UserData.fetchCoordinator.finish(ticket)
         await MainActor.run {
@@ -548,14 +701,18 @@ class AppleSignUpCoordinator: NSObject {
         state: RowndState,
         sessionIdentity: SuperTokensSessionBridge.SessionIdentity,
         ticket: UserProfileFetchCoordinator.Ticket,
-        fetchUserData: @escaping (RowndState) async throws -> UserData.FetchResult
+        fetchUserData: @escaping (RowndState) async throws -> UserData.FetchResult,
+        persistState: @escaping @MainActor (RowndState) -> Bool,
+        scheduleProfileHydrationRetry: @escaping (
+            SuperTokensSessionBridge.StableSessionIdentity
+        ) async -> Void
     ) async -> Bool {
         do {
             var fetchState = state
             fetchState.auth.accessToken = sessionIdentity.accessToken
             switch try await fetchUserData(fetchState) {
-            case .profile:
-                guard await SuperTokensSessionBridge.isCurrentSession(sessionIdentity),
+            case .profile(let userResponse):
+                guard await isCurrentSession(sessionIdentity),
                       UserData.fetchCoordinator.isCurrent(ticket),
                       await MainActor.run(body: {
                         UserData.fetchCoordinator.isCurrent(ticket)
@@ -567,47 +724,53 @@ class AppleSignUpCoordinator: NSObject {
                     return false
                 }
 
-                var appleUserData: [String: AnyCodable] = [:]
-                var usedStoredAppleData = false
-                let defaults = UserDefaults.standard
-                if let storedAppleData = defaults.object(forKey: appleSignInDataKey) as? Data,
-                   let loadedAppleSignInData = try? JSONDecoder().decode(
-                    AppleSignInData.self,
-                    from: storedAppleData
-                   ) {
-                    appleUserData = loadedAppleSignInData.toDictionary()
-                    usedStoredAppleData = true
-                } else if let email {
-                    let name = [fullName?.givenName, fullName?.familyName]
-                        .compactMap { $0 }
-                        .joined(separator: " ")
-                    appleUserData = AppleSignInData(
-                        email: email,
-                        firstName: fullName?.givenName,
-                        lastName: fullName?.familyName,
-                        fullName: name.isEmpty ? nil : name
-                    ).toDictionary()
+                let appleUserData = Self.appleUserData(fullName: fullName, email: email)
+
+                if !appleUserData.isEmpty {
+                    guard await saveExpectedSession(
+                        appleUserData,
+                        state.user.data,
+                        sessionIdentity,
+                        ticket
+                    ) else {
+                        return false
+                    }
+                }
+                guard await isCurrentSession(sessionIdentity),
+                      UserData.fetchCoordinator.isCurrent(ticket) else {
+                    return false
                 }
 
-                guard !appleUserData.isEmpty else { return true }
-                let didSave = await UserData.saveExpectedSession(
-                    appleUserData,
-                    expectedData: state.user.data,
-                    expectedSessionIdentity: sessionIdentity,
-                    ticket: ticket
+                return await commitAppleProfileHydration(
+                    userResponse: userResponse,
+                    usesUpdatedUserData: !appleUserData.isEmpty,
+                    sessionIdentity: sessionIdentity,
+                    ticket: ticket,
+                    persistState: persistState
                 )
-                if didSave, usedStoredAppleData {
-                    defaults.removeObject(forKey: appleSignInDataKey)
-                }
-                if didSave {
-                    logger.debug("UserData saved after Apple sign-in: \(String(describing: appleUserData))")
-                }
-                return didSave
             case .notFound:
-                let didSignOut = await SuperTokensSessionBridge.signOutIfCurrentSession(
+                guard await isCurrentSession(sessionIdentity),
+                      UserData.fetchCoordinator.isCurrent(ticket) else {
+                    return false
+                }
+                let retainsPendingHydration = await MainActor.run {
+                    let auth = Context.currentContext.store.state.auth
+                    return UserData.fetchCoordinator.isCurrent(ticket)
+                        && auth.profileHydrationPendingSessionIdentity == sessionIdentity.stable
+                        && SuperTokensSessionBridge.tokensBelongToSameSession(
+                            auth.accessToken,
+                            sessionIdentity.accessToken
+                        )
+                }
+                if retainsPendingHydration {
+                    await scheduleProfileHydrationRetry(sessionIdentity.stable)
+                    return false
+                }
+
+                let didSignOut = await signOutIfCurrentSession(
                     sessionIdentity,
-                    expectedRowndAccessToken: sessionIdentity.accessToken,
-                    condition: { UserData.fetchCoordinator.isCurrent(ticket) }
+                    sessionIdentity.accessToken,
+                    { UserData.fetchCoordinator.isCurrent(ticket) }
                 )
                 if didSignOut {
                     logger.warning("The Apple sign-in profile was not found, so the current session was signed out.")
@@ -615,9 +778,65 @@ class AppleSignUpCoordinator: NSObject {
                 return false
             }
         } catch {
-            logger.error("Error fetching user data: \(error)")
+            logger.error("Apple profile enrichment failed")
             return false
         }
+    }
+
+    @MainActor private func commitAppleProfileHydration(
+        userResponse: UserStateResponse,
+        usesUpdatedUserData: Bool,
+        sessionIdentity: SuperTokensSessionBridge.SessionIdentity,
+        ticket: UserProfileFetchCoordinator.Ticket,
+        persistState: @escaping @MainActor (RowndState) -> Bool
+    ) -> Bool {
+        let store = Context.currentContext.store
+        guard let state = store.state,
+              UserData.fetchCoordinator.isCurrent(ticket),
+              SuperTokensSessionBridge.tokensBelongToSameSession(
+                state.auth.accessToken,
+                sessionIdentity.accessToken
+              ) else {
+            return false
+        }
+
+        var auth = state.auth
+        let clearsPendingHydration =
+            auth.profileHydrationPendingSessionIdentity == sessionIdentity.stable
+        if clearsPendingHydration {
+            auth.profileHydrationPendingSessionIdentity = nil
+        }
+
+        var user = userResponse.toUserState()
+        if usesUpdatedUserData {
+            user.data = state.user.data
+        }
+        var candidate = state
+        candidate.auth = auth
+        candidate.user = user
+        guard persistState(candidate) else { return false }
+
+        if clearsPendingHydration {
+            store.dispatch(SetAuthState(payload: auth))
+        }
+        store.dispatch(SetUserState(payload: user))
+        return true
+    }
+
+    static func appleUserData(
+        fullName: PersonNameComponents?,
+        email: String?
+    ) -> [String: AnyCodable] {
+        guard let email else { return [:] }
+        let name = [fullName?.givenName, fullName?.familyName]
+            .compactMap { $0 }
+            .joined(separator: " ")
+        return AppleSignInData(
+            email: email,
+            firstName: fullName?.givenName,
+            lastName: fullName?.familyName,
+            fullName: name.isEmpty ? nil : name
+        ).toDictionary()
     }
 
     @MainActor fileprivate func completeAuthorization(
@@ -627,7 +846,7 @@ class AppleSignUpCoordinator: NSObject {
         guard consumeAuthorizationOperation(controllerID: controllerID) != nil else { return }
 
         // If there is any error will get it here
-        logger.error("An error occurred while signing in with Apple. Error: \(String(describing: error))")
+        logger.error("Apple sign-in authorization failed")
         
         func defaultSignInFlow() {
             logger.error("Falling back to default sign flow")

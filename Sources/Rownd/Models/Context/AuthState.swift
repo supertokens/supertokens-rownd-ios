@@ -22,7 +22,7 @@ public struct AuthState: Hashable, CustomStringConvertible {
     public var userId: String?
     public var challengeId: String?
     public var userIdentifier: String?
-    internal var replacementProfilePendingSessionIdentity: SuperTokensSessionBridge.StableSessionIdentity? = nil
+    internal var profileHydrationPendingSessionIdentity: SuperTokensSessionBridge.StableSessionIdentity? = nil
 
     public var description: String {
         return "AuthState(isLoading: \(isLoading), isAuthenticated: \(isAuthenticated), accessToken: \(isAuthenticated ? "[REDACTED]" : "nil"), refreshToken: \(isAuthenticated ? "[REDACTED]" : "nil"), userId: \(userId ?? "nil"), challengeId: \(challengeId ?? "nil"), userIdentifier: \(userIdentifier ?? "nil"))"
@@ -91,7 +91,7 @@ extension AuthState: Codable {
         case hasPreviouslySignedIn = "has_previously_signed_in"
         case challengeId = "challenge_id"
         case userIdentifier = "user_identifier"
-        case replacementProfilePendingSessionIdentity = "replacement_profile_pending_session_identity"
+        case profileHydrationPendingSessionIdentity = "profile_hydration_pending_session_identity"
     }
 
     func toRphInitHash() -> String? {

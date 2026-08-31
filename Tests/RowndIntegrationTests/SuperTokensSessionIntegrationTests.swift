@@ -467,8 +467,12 @@ import AnyCodable
             Context.currentContext.store.state.auth.accessToken
         })
         let expectedIdentity = try #require(
-            await SuperTokensSessionBridge.currentSessionIdentity(matching: rowndAccessToken)
+            await SuperTokensSessionBridge.currentSessionIdentity()
         )
+        #expect(SuperTokensSessionBridge.tokensBelongToSameSession(
+            rowndAccessToken,
+            expectedIdentity.accessToken
+        ))
         let ticket = try #require(UserData.fetchCoordinator.begin(
             accessToken: rowndAccessToken,
             purpose: .foreground
@@ -1001,7 +1005,11 @@ import AnyCodable
 }
 
 private final class IntegrationAppleSignUpCoordinator: AppleSignUpCoordinator {
-    @MainActor override func updateUserDataWithAppleData(fullName: PersonNameComponents?, email: String?) {}
+    @MainActor override func updateUserDataWithAppleData(
+        fullName: PersonNameComponents?,
+        email: String?,
+        sessionIdentity: SuperTokensSessionBridge.SessionIdentity
+    ) {}
 }
 
 @MainActor private final class NativeCompletionStepRecorder {

@@ -16,12 +16,18 @@ internal enum SuperTokensSessionBridge {
         let stable: StableSessionIdentity
     }
 
+    struct AuthOperationPermit: Equatable, Sendable {
+        fileprivate let generation: UInt64
+    }
+
     enum ReplacementRowndStateSyncResult: Equatable {
         case profileSynchronized
         case profileUnavailable
     }
 
     private static let adoptionLock = NSLock()
+    private static let authOperationLock = NSLock()
+    private static var authOperationGeneration: UInt64 = 0
     // A single serial queue for every core session operation — install, clear,
     // reads, refresh, sign-out. Routing them all through one queue keeps them
     // strictly ordered, so a session installed from one task can never be observed
@@ -29,6 +35,7 @@ internal enum SuperTokensSessionBridge {
     // the install and a later read. Replaces the previous per-call `Task.detached`,
     // whose independent tasks could race one another.
     private static let sessionQueue = DispatchQueue(label: "io.rownd.supertokens.session", qos: .userInitiated)
+    private static let sessionQueueExecutor = SessionQueueExecutor(queue: sessionQueue)
     private static var sessionGeneration: UInt64 = 0
     // Only the refresh-token slot is still touched directly, by the adopt-over-
     // existing-session path below (a granular refresh-token swap the core SDK has no
@@ -36,10 +43,8 @@ internal enum SuperTokensSessionBridge {
     private static let refreshTokenStorageKey = "st-storage-item-st-refresh-token"
     internal static var storageOverride: SuperTokensSessionStorage?
 
-    private static func onSessionQueue<T>(_ work: @escaping () -> T) async -> T {
-        await withCheckedContinuation { continuation in
-            sessionQueue.async { continuation.resume(returning: work()) }
-        }
+    private static func onSessionQueue<T>(_ work: () -> T) async -> T {
+        await sessionQueueExecutor.run(work)
     }
 
     static func doesSessionExist() async -> Bool {
@@ -117,6 +122,67 @@ internal enum SuperTokensSessionBridge {
         SuperTokens.getAntiCSRF()
     }
 
+    static func captureAuthOperationPermit() -> AuthOperationPermit {
+        authOperationLock.lock()
+        defer { authOperationLock.unlock() }
+        return AuthOperationPermit(generation: authOperationGeneration)
+    }
+
+    static func invalidateAuthOperationPermits() {
+        authOperationLock.lock()
+        authOperationGeneration &+= 1
+        authOperationLock.unlock()
+    }
+
+    static func adoptResponseSession(
+        _ tokens: SuperTokensSessionTokens,
+        permit: AuthOperationPermit,
+        installSession: @escaping (SuperTokensSessionTokens) -> Bool = installResponseSession
+    ) async -> SuperTokensSessionBridge.SessionIdentity? {
+        await onSessionQueue {
+            guard isAuthOperationPermitValid(permit),
+                  !tokens.refreshToken.isEmpty,
+                  !tokens.frontToken.isEmpty,
+                  validatedUserId(
+                    accessToken: tokens.accessToken,
+                    frontToken: tokens.frontToken
+                  ) != nil,
+                  let stable = stableSessionIdentity(from: tokens.accessToken),
+                  installSession(tokens) else {
+                return nil
+            }
+
+            sessionGeneration &+= 1
+            let identity = SessionIdentity(
+                accessToken: tokens.accessToken,
+                generation: sessionGeneration,
+                stable: stable
+            )
+            guard isAuthOperationPermitValid(permit) else {
+                if sessionGeneration == identity.generation,
+                   SuperTokens.getAccessToken() == identity.accessToken {
+                    sessionGeneration &+= 1
+                    _ = SuperTokens.clearSessionLocally()
+                }
+                return nil
+            }
+            return identity
+        }
+    }
+
+    @discardableResult
+    static func discardSessionIfCurrent(_ identity: SessionIdentity) async -> Bool {
+        await onSessionQueue {
+            guard sessionGeneration == identity.generation,
+                  let accessToken = SuperTokens.getAccessToken(),
+                  stableSessionIdentity(from: accessToken) == identity.stable else {
+                return false
+            }
+            sessionGeneration &+= 1
+            return SuperTokens.clearSessionLocally()
+        }
+    }
+
     static func attemptRefresh() async -> Bool {
         await attemptRefresh(refreshSession: SuperTokens.attemptRefreshingSession)
     }
@@ -144,8 +210,9 @@ internal enum SuperTokensSessionBridge {
         _ expectedIdentity: SessionIdentity,
         expectedRowndAccessToken: String,
         afterSuperTokensSignOut: () async -> Void = {},
-        condition: @escaping () -> Bool = { true }
+        condition: () -> Bool = { true }
     ) async -> Bool {
+        guard condition() else { return false }
         let didSignOut = await onSessionQueue {
             guard condition(),
                   sessionGeneration == expectedIdentity.generation,
@@ -319,14 +386,11 @@ internal enum SuperTokensSessionBridge {
         afterTokenRead: () async -> Void,
         afterAuthDispatch: () async -> Void = {},
         afterReconciliationDispatch: (Int) async -> Void = { _ in },
-        afterTerminalReconciliationDispatch: () async -> Void = {
-            await MainActor.run {
-                _ = Context.currentContext.store.state.saveImmediately()
-            }
-        },
+        afterTerminalReconciliationDispatch: () async -> Void = {},
         commitIf: @MainActor () -> Bool = { true },
         expectedSessionIdentity: SessionIdentity? = nil,
-        reconcileOnSessionChange: Bool = true
+        reconcileOnSessionChange: Bool = true,
+        persistState: @escaping @MainActor (RowndState) -> Bool = { $0.saveImmediately() }
     ) async -> Bool {
         let rowndAccessTokenBeforeSync = await MainActor.run {
             Context.currentContext.store.state.auth.accessToken
@@ -340,7 +404,12 @@ internal enum SuperTokensSessionBridge {
                 stable: stable
             )
         }) else { return false }
-        guard expectedSessionIdentity == nil || snapshot == expectedSessionIdentity else { return false }
+        if let expectedSessionIdentity {
+            guard snapshot.generation == expectedSessionIdentity.generation,
+                  snapshot.stable == expectedSessionIdentity.stable else {
+                return false
+            }
+        }
 
         let accessToken = snapshot.accessToken
         await afterTokenRead()
@@ -355,30 +424,25 @@ internal enum SuperTokensSessionBridge {
         }
         guard sessionBeforeDispatch == snapshot else {
             guard reconcileOnSessionChange else { return false }
-            await reconcileRowndAuthState(
+            return await reconcileRowndAuthState(
                 replacing: rowndAccessTokenBeforeSync,
                 afterDispatch: afterReconciliationDispatch,
                 afterTerminalDispatch: afterTerminalReconciliationDispatch,
                 firstCommitAlreadyOccurred: false,
-                commitIf: commitIf
+                expectedSessionIdentity: expectedSessionIdentity,
+                commitIf: commitIf,
+                persistState: persistState
             )
-            return false
         }
 
         let didDispatch = await MainActor.run {
-            let store = Context.currentContext.store
-            guard store.state.auth.accessToken == rowndAccessTokenBeforeSync else { return false }
             guard commitIf() else { return false }
-            var auth = tokensBelongToSameSession(rowndAccessTokenBeforeSync, accessToken)
-                ? store.state.auth
-                : AuthState()
-            auth.accessToken = accessToken
-            auth.refreshToken = nil
-            if auth.replacementProfilePendingSessionIdentity != snapshot.stable {
-                auth.replacementProfilePendingSessionIdentity = nil
-            }
-            store.dispatch(SetAuthState(payload: auth))
-            return true
+            return commitRowndSessionState(
+                accessToken: accessToken,
+                stableIdentity: snapshot.stable,
+                replacing: rowndAccessTokenBeforeSync,
+                persistState: persistState
+            )
         }
         guard didDispatch else { return false }
         await afterAuthDispatch()
@@ -394,14 +458,15 @@ internal enum SuperTokensSessionBridge {
         }
         guard currentSession == snapshot else {
             guard reconcileOnSessionChange else { return false }
-            await reconcileRowndAuthState(
+            return await reconcileRowndAuthState(
                 replacing: accessToken,
                 afterDispatch: afterReconciliationDispatch,
                 afterTerminalDispatch: afterTerminalReconciliationDispatch,
                 firstCommitAlreadyOccurred: true,
-                commitIf: commitIf
+                expectedSessionIdentity: expectedSessionIdentity,
+                commitIf: commitIf,
+                persistState: persistState
             )
-            return false
         }
         return true
     }
@@ -489,18 +554,24 @@ internal enum SuperTokensSessionBridge {
         let profileCommitIdentity = currentSessionIdentity
         let didPersistCanonicalUser = await MainActor.run {
             let store = Context.currentContext.store
-            guard UserData.fetchCoordinator.isCurrent(ticket),
-                  store.state.auth.accessToken == profileCommitIdentity.accessToken else {
+            guard let state = store.state,
+                  UserData.fetchCoordinator.isCurrent(ticket),
+                  state.auth.accessToken == profileCommitIdentity.accessToken else {
                 return false
             }
-            var auth = store.state.auth
-            guard auth.replacementProfilePendingSessionIdentity == profileCommitIdentity.stable else {
+            var auth = state.auth
+            guard auth.profileHydrationPendingSessionIdentity == profileCommitIdentity.stable else {
                 return false
             }
-            auth.replacementProfilePendingSessionIdentity = nil
+            auth.profileHydrationPendingSessionIdentity = nil
+            let user = userResponse.toUserState()
+            var candidate = state
+            candidate.auth = auth
+            candidate.user = user
+            guard persistState(candidate) else { return false }
             store.dispatch(SetAuthState(payload: auth))
-            store.dispatch(SetUserState(payload: userResponse.toUserState()))
-            return persistState(store.state)
+            store.dispatch(SetUserState(payload: user))
+            return true
         }
 
         guard didPersistCanonicalUser else {
@@ -516,12 +587,15 @@ internal enum SuperTokensSessionBridge {
               UserData.fetchCoordinator.isCurrent(ticket) else {
             await MainActor.run {
                 let store = Context.currentContext.store
-                guard UserData.fetchCoordinator.isCurrent(ticket),
-                      store.state.auth.accessToken == finalSessionIdentity.accessToken else {
+                guard let state = store.state,
+                      UserData.fetchCoordinator.isCurrent(ticket),
+                      state.auth.accessToken == finalSessionIdentity.accessToken else {
                     return
                 }
+                var candidate = state
+                candidate.user = UserState()
+                guard persistState(candidate) else { return }
                 store.dispatch(SetUserState(payload: UserState()))
-                _ = persistState(store.state)
             }
             throw RowndError("Email verification replacement session was superseded")
         }
@@ -544,8 +618,12 @@ internal enum SuperTokensSessionBridge {
 
             let didPersist = await MainActor.run {
                 let store = Context.currentContext.store
-                let rowndAccessToken = store.state.auth.accessToken
-                guard UserData.fetchCoordinator.isCurrent(ticket),
+                guard let state = store.state,
+                      UserData.fetchCoordinator.isCurrent(ticket) else {
+                    return false
+                }
+                let rowndAccessToken = state.auth.accessToken
+                guard
                       rowndAccessToken == previousRowndAccessToken
                         || rowndAccessToken == responseAccessToken
                         || tokensBelongToSameSession(rowndAccessToken, previousRowndAccessToken)
@@ -554,14 +632,21 @@ internal enum SuperTokensSessionBridge {
                 }
 
                 var auth = tokensBelongToSameSession(rowndAccessToken, responseAccessToken)
-                    ? store.state.auth
+                    ? state.auth
                     : AuthState()
                 auth.accessToken = currentIdentity.accessToken
                 auth.refreshToken = nil
-                auth.replacementProfilePendingSessionIdentity = currentIdentity.stable
+                auth.profileHydrationPendingSessionIdentity = currentIdentity.stable
+                auth.hasPreviouslySignedIn = auth.hasPreviouslySignedIn == true
+                    || auth.isAuthenticated
+                let user = UserState()
+                var candidate = state
+                candidate.auth = auth
+                candidate.user = user
+                guard persistState(candidate) else { return false }
                 store.dispatch(SetAuthState(payload: auth))
-                store.dispatch(SetUserState(payload: UserState()))
-                return persistState(store.state)
+                store.dispatch(SetUserState(payload: user))
+                return true
             }
             guard didPersist else {
                 throw RowndError("Email verification could not persist the replacement session")
@@ -591,22 +676,26 @@ internal enum SuperTokensSessionBridge {
 
             let didPersistCurrentToken = await MainActor.run {
                 let store = Context.currentContext.store
-                guard UserData.fetchCoordinator.isCurrent(ticket),
+                guard let state = store.state,
+                      UserData.fetchCoordinator.isCurrent(ticket),
                       tokensBelongToSameSession(
-                        store.state.auth.accessToken,
+                        state.auth.accessToken,
                         sessionIdentity.accessToken
                       ) else {
                     return false
                 }
-                guard store.state.auth.accessToken != currentIdentity.accessToken else {
+                guard state.auth.accessToken != currentIdentity.accessToken else {
                     return true
                 }
 
-                var auth = store.state.auth
+                var auth = state.auth
                 auth.accessToken = currentIdentity.accessToken
                 auth.refreshToken = nil
+                var candidate = state
+                candidate.auth = auth
+                guard persistState(candidate) else { return false }
                 store.dispatch(SetAuthState(payload: auth))
-                return persistState(store.state)
+                return true
             }
             guard didPersistCurrentToken,
                   let verifiedIdentity = await currentTokenVersion(of: sessionIdentity) else {
@@ -645,8 +734,10 @@ internal enum SuperTokensSessionBridge {
         afterDispatch: (Int) async -> Void,
         afterTerminalDispatch: () async -> Void,
         firstCommitAlreadyOccurred: Bool,
-        commitIf: @MainActor () -> Bool
-    ) async {
+        expectedSessionIdentity: SessionIdentity?,
+        commitIf: @MainActor () -> Bool,
+        persistState: @escaping @MainActor (RowndState) -> Bool
+    ) async -> Bool {
         var expectedAccessToken = expectedAccessToken
         var hasCommittedState = firstCommitAlreadyOccurred
         for attempt in 0..<3 {
@@ -656,23 +747,15 @@ internal enum SuperTokensSessionBridge {
             let requiresCommitPermission = !hasCommittedState
             let expectedAccessTokenForAttempt = expectedAccessToken
             let didDispatch = await MainActor.run {
-                let store = Context.currentContext.store
-                guard store.state.auth.accessToken == expectedAccessTokenForAttempt else { return false }
                 guard !requiresCommitPermission || commitIf() else { return false }
-                var auth = tokensBelongToSameSession(
-                    expectedAccessTokenForAttempt,
-                    session.accessToken
-                ) ? store.state.auth : AuthState()
-                auth.accessToken = session.accessToken
-                auth.refreshToken = nil
-                let stableIdentity = session.accessToken.flatMap(stableSessionIdentity)
-                if auth.replacementProfilePendingSessionIdentity != stableIdentity {
-                    auth.replacementProfilePendingSessionIdentity = nil
-                }
-                store.dispatch(SetAuthState(payload: auth))
-                return true
+                return commitRowndSessionState(
+                    accessToken: session.accessToken,
+                    stableIdentity: session.accessToken.flatMap(stableSessionIdentity),
+                    replacing: expectedAccessTokenForAttempt,
+                    persistState: persistState
+                )
             }
-            guard didDispatch else { return }
+            guard didDispatch else { return false }
             hasCommittedState = true
             await afterDispatch(attempt)
 
@@ -681,7 +764,25 @@ internal enum SuperTokensSessionBridge {
             }
             guard verifiedSession.generation != session.generation
                     || verifiedSession.accessToken != session.accessToken else {
-                return
+                guard let expectedSessionIdentity,
+                      session.generation == expectedSessionIdentity.generation,
+                      let accessToken = session.accessToken,
+                      let stableIdentity = stableSessionIdentity(from: accessToken),
+                      stableIdentity == expectedSessionIdentity.stable else {
+                    return false
+                }
+                let reconciledIdentity = SessionIdentity(
+                    accessToken: accessToken,
+                    generation: session.generation,
+                    stable: stableIdentity
+                )
+                guard await currentTokenVersion(of: reconciledIdentity)?.accessToken == accessToken else {
+                    return false
+                }
+                return await MainActor.run {
+                    commitIf()
+                        && Context.currentContext.store.state.auth.accessToken == accessToken
+                }
             }
             expectedAccessToken = session.accessToken
         }
@@ -689,15 +790,18 @@ internal enum SuperTokensSessionBridge {
         let expectedAccessTokenAfterAttempts = expectedAccessToken
         let hasCommittedStateAfterAttempts = hasCommittedState
         let didDispatch = await MainActor.run {
-            let store = Context.currentContext.store
-            guard store.state.auth.accessToken == expectedAccessTokenAfterAttempts else { return false }
             guard hasCommittedStateAfterAttempts || commitIf() else { return false }
-            store.dispatch(SetAuthState(payload: AuthState()))
-            return true
+            return commitRowndSessionState(
+                accessToken: nil,
+                stableIdentity: nil,
+                replacing: expectedAccessTokenAfterAttempts,
+                persistState: persistState
+            )
         }
         if didDispatch {
             await afterTerminalDispatch()
         }
+        return false
     }
 
     static func buildFrontToken(from accessToken: String) -> String {
@@ -767,6 +871,72 @@ internal enum SuperTokensSessionBridge {
             apiBasePath: config?.apiBasePath,
             accessGroup: config?.keychainAccessGroup
         )
+    }
+
+    private static func isAuthOperationPermitValid(_ permit: AuthOperationPermit) -> Bool {
+        authOperationLock.lock()
+        defer { authOperationLock.unlock() }
+        return permit.generation == authOperationGeneration
+    }
+
+    private static func installResponseSession(_ tokens: SuperTokensSessionTokens) -> Bool {
+        SuperTokens.installSession(
+            accessToken: tokens.accessToken,
+            refreshToken: tokens.refreshToken,
+            frontToken: tokens.frontToken,
+            antiCSRFToken: tokens.antiCSRF
+        )
+    }
+
+    @MainActor
+    private static func commitRowndSessionState(
+        accessToken: String?,
+        stableIdentity: StableSessionIdentity?,
+        replacing expectedAccessToken: String?,
+        persistState: (RowndState) -> Bool
+    ) -> Bool {
+        let store = Context.currentContext.store
+        guard let state = store.state,
+              state.auth.accessToken == expectedAccessToken else { return false }
+
+        let preservesProfile = tokensBelongToSameSession(expectedAccessToken, accessToken)
+        var auth: AuthState
+        if preservesProfile {
+            auth = state.auth
+            if auth.profileHydrationPendingSessionIdentity != stableIdentity {
+                auth.profileHydrationPendingSessionIdentity = nil
+            }
+        } else {
+            auth = AuthState(hasPreviouslySignedIn: state.auth.hasPreviouslySignedIn)
+            auth.profileHydrationPendingSessionIdentity = stableIdentity
+        }
+        auth.accessToken = accessToken
+        auth.refreshToken = nil
+        auth.hasPreviouslySignedIn = auth.hasPreviouslySignedIn == true || auth.isAuthenticated
+        var candidate = state
+        candidate.auth = auth
+        if !preservesProfile {
+            candidate.user = UserState()
+        }
+        guard persistState(candidate) else { return false }
+        store.dispatch(SetAuthState(payload: auth))
+        if !preservesProfile {
+            store.dispatch(SetUserState(payload: UserState()))
+        }
+        return true
+    }
+
+}
+
+private actor SessionQueueExecutor {
+    let queue: DispatchQueue
+
+    init(queue: DispatchQueue) {
+        self.queue = queue
+    }
+
+    func run<T>(_ work: () -> T) -> T {
+        queue.sync(execute: work)
     }
 }
 

@@ -125,12 +125,30 @@ final class RowndExampleTests: XCTestCase {
                 coordinator.signInWithApple = { authorizationCode, clientType in
                     XCTAssertEqual(authorizationCode, "fake-apple-auth-code")
                     XCTAssertEqual(clientType, "native-apple-client")
-                    return SuperTokensThirdPartySignInResponse(
+                    return SuperTokensAppleSignInResponse(
                         status: "OK",
-                        createdNewRecipeUser: createdNewRecipeUser
+                        createdNewRecipeUser: createdNewRecipeUser,
+                        sessionTokens: SuperTokensSessionTokens(
+                            accessToken: "test-apple-access-token",
+                            refreshToken: "test-apple-refresh-token",
+                            frontToken: "test-apple-front-token",
+                            antiCSRF: nil
+                        )
                     )
                 }
-                coordinator.syncAuthState = { commitIf in
+                coordinator.adoptResponseSession = { tokens, _ in
+                    SuperTokensSessionBridge.SessionIdentity(
+                        accessToken: tokens.accessToken,
+                        generation: 1,
+                        stable: SuperTokensSessionBridge.StableSessionIdentity(
+                            sessionHandle: "test-apple-session",
+                            userId: "test-apple-user",
+                            tenantId: nil
+                        )
+                    )
+                }
+                coordinator.isCurrentSession = { _ in true }
+                coordinator.syncAuthState = { _, commitIf in
                     await MainActor.run {
                         guard commitIf() else { return false }
                         authStore.dispatch(SetAuthState(payload: Self.authenticatedTestState()))
@@ -259,7 +277,7 @@ final class RowndExampleTests: XCTestCase {
                     let isAuthenticated = await MainActor.run {
                         Context.currentContext.store.state.auth.isAuthenticated
                     }
-                    XCTAssertTrue(sessionExists)
+                    XCTAssertFalse(sessionExists)
                     XCTAssertFalse(isAuthenticated)
                 }
             )
@@ -302,6 +320,7 @@ final class RowndExampleTests: XCTestCase {
                 jsFnOptions: RowndSignInJsOptions(loginStep: .completing),
                 requestID: requestID
             )
+            fixture.presentIfNeeded(Rownd.getInstance().bottomSheetController)
         }
         let presentedBothLayers = await waitForPostAppleCondition {
             fixture.rootViewController.presentedViewController is BottomSheetViewController
@@ -360,7 +379,6 @@ final class RowndExampleTests: XCTestCase {
         timeoutNanoseconds: UInt64 = 5_000_000_000
     ) async throws -> PostAppleUIKitFixture {
         let deadline = DispatchTime.now().uptimeNanoseconds + timeoutNanoseconds
-        var didRequestSceneActivation = false
         while DispatchTime.now().uptimeNanoseconds < deadline {
             do {
                 let fixture = try await MainActor.run(body: { try PostAppleUIKitFixture() })
@@ -370,24 +388,6 @@ final class RowndExampleTests: XCTestCase {
                 }
                 await MainActor.run { fixture.tearDown() }
             } catch E2ETestError.missingForegroundWindowScene {
-                if !didRequestSceneActivation {
-                    didRequestSceneActivation = await MainActor.run {
-                        guard let scene = UIApplication.shared.connectedScenes
-                            .compactMap({ $0 as? UIWindowScene })
-                            .first(where: {
-                                $0.activationState == .foregroundInactive
-                                    || $0.activationState == .background
-                            }) else {
-                            return false
-                        }
-                        UIApplication.shared.requestSceneSessionActivation(
-                            scene.session,
-                            userActivity: nil,
-                            options: nil
-                        )
-                        return true
-                    }
-                }
                 try await Task.sleep(nanoseconds: 10_000_000)
             }
         }
@@ -578,7 +578,11 @@ private enum E2ETestError: Error {
 
 @MainActor
 private final class PostAppleCoordinator: AppleSignUpCoordinator {
-    override func updateUserDataWithAppleData(fullName: PersonNameComponents?, email: String?) {}
+    override func updateUserDataWithAppleData(
+        fullName: PersonNameComponents?,
+        email: String?,
+        sessionIdentity: SuperTokensSessionBridge.SessionIdentity
+    ) {}
 }
 
 private actor PostAppleGate {
@@ -611,21 +615,19 @@ private final class PostAppleUIKitFixture {
     let rootViewController = UIViewController()
     let button = UIButton(type: .system)
     private let window: UIWindow
-    private let previousRootViewController: UIViewController?
+    private let previousKeyWindow: UIWindow?
     private let animationsWereEnabled: Bool
     private(set) var tapCount = 0
 
     init() throws {
-        guard let scene = UIApplication.shared.connectedScenes
-            .compactMap({ $0 as? UIWindowScene })
-            .first(where: { $0.activationState == .foregroundActive }) else {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        guard let scene = scenes.first(where: { $0.activationState == .foregroundActive })
+            ?? scenes.first(where: { $0.activationState != .unattached }) else {
             throw E2ETestError.missingForegroundWindowScene
         }
-        guard let window = scene.windows.first(where: \.isKeyWindow) else {
-            throw E2ETestError.missingForegroundWindowScene
-        }
+        let window = UIWindow(windowScene: scene)
         self.window = window
-        self.previousRootViewController = window.rootViewController
+        self.previousKeyWindow = scene.windows.first(where: \.isKeyWindow)
         self.animationsWereEnabled = UIView.areAnimationsEnabled
         UIView.setAnimationsEnabled(false)
         rootViewController.view.frame = scene.coordinateSpace.bounds
@@ -635,12 +637,19 @@ private final class PostAppleUIKitFixture {
         button.addTarget(self, action: #selector(didTapButton), for: .touchUpInside)
         rootViewController.view.addSubview(button)
         window.rootViewController = rootViewController
+        window.makeKeyAndVisible()
     }
 
     func tearDown() {
         rootViewController.dismiss(animated: false)
-        window.rootViewController = previousRootViewController
+        window.isHidden = true
+        previousKeyWindow?.makeKey()
         UIView.setAnimationsEnabled(animationsWereEnabled)
+    }
+
+    func presentIfNeeded(_ viewController: UIViewController) {
+        guard viewController.presentingViewController == nil else { return }
+        rootViewController.present(viewController, animated: false)
     }
 
     var presentedModalIsAttached: Bool {

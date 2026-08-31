@@ -4,6 +4,14 @@ import Testing
 @testable import Rownd
 
 @Suite(.serialized) struct SuperTokensThirdPartySignInClientTests {
+    private static let appleSessionHeaders = [
+        "Content-Type": "application/json",
+        "st-access-token": "apple-access-token",
+        "st-refresh-token": "apple-refresh-token",
+        "front-token": "apple-front-token",
+        "anti-csrf": "apple-anti-csrf"
+    ]
+
     @Test func googleExchangePostsSigninupPayload() async throws {
         try await withGlobalTestLock {
             let originalConfig = Rownd.config
@@ -68,6 +76,7 @@ import Testing
         try await withGlobalTestLock {
             ThirdPartySignInURLProtocol.reset()
             ThirdPartySignInURLProtocol.responseBody = #"{"status":"OK","createdNewRecipeUser":true}"#.data(using: .utf8)!
+            ThirdPartySignInURLProtocol.responseHeaders = Self.appleSessionHeaders
 
             let configuration = URLSessionConfiguration.ephemeral
             configuration.protocolClasses = [ThirdPartySignInURLProtocol.self]
@@ -75,8 +84,10 @@ import Testing
             let client = SuperTokensThirdPartySignInClient(
                 apiDomain: "https://auth.example.com",
                 apiBasePath: "/auth",
-                session: session
+                session: session,
+                appleSession: session
             )
+            let sessionBeforeExchange = await SuperTokensSessionBridge.currentSessionIdentity()
 
             let response = try await client.signInWithApple(
                 authorizationCode: "apple-auth-code",
@@ -88,6 +99,14 @@ import Testing
             #expect(request.url?.absoluteString == "https://auth.example.com/auth/signinup")
             #expect(request.httpMethod == "POST")
             #expect(request.value(forHTTPHeaderField: "rid") == "thirdparty")
+            #expect(request.value(forHTTPHeaderField: "st-auth-mode") == "header")
+            #expect(response.sessionTokens == SuperTokensSessionTokens(
+                accessToken: "apple-access-token",
+                refreshToken: "apple-refresh-token",
+                frontToken: "apple-front-token",
+                antiCSRF: "apple-anti-csrf"
+            ))
+            #expect(await SuperTokensSessionBridge.currentSessionIdentity() == sessionBeforeExchange)
 
             let body = try #require(ThirdPartySignInURLProtocol.lastRequestBody)
             let json = try JSONSerialization.jsonObject(with: body) as? [String: Any]
@@ -106,6 +125,7 @@ import Testing
         try await withGlobalTestLock {
             ThirdPartySignInURLProtocol.reset()
             ThirdPartySignInURLProtocol.responseBody = #"{"status":"OK","createdNewRecipeUser":false}"#.data(using: .utf8)!
+            ThirdPartySignInURLProtocol.responseHeaders = Self.appleSessionHeaders
 
             let configuration = URLSessionConfiguration.ephemeral
             configuration.protocolClasses = [ThirdPartySignInURLProtocol.self]
@@ -113,7 +133,8 @@ import Testing
             let client = SuperTokensThirdPartySignInClient(
                 apiDomain: "https://auth.example.com",
                 apiBasePath: "/auth",
-                session: session
+                session: session,
+                appleSession: session
             )
 
             _ = try await client.signInWithApple(authorizationCode: "apple-auth-code", clientType: "ios")
@@ -133,7 +154,8 @@ import Testing
             let client = SuperTokensThirdPartySignInClient(
                 apiDomain: "https://auth.example.com",
                 apiBasePath: "/auth",
-                session: URLSession(configuration: configuration)
+                session: URLSession(configuration: configuration),
+                appleSession: URLSession(configuration: configuration)
             )
 
             do {
@@ -148,6 +170,42 @@ import Testing
 
             #expect(ThirdPartySignInURLProtocol.lastRequest == nil)
         }
+    }
+
+    @Test(arguments: ["st-access-token", "st-refresh-token", "front-token"])
+    func appleExchangeRejectsMissingRequiredSessionHeader(_ missingHeader: String) async throws {
+        try await withGlobalTestLock {
+            ThirdPartySignInURLProtocol.reset()
+            ThirdPartySignInURLProtocol.responseBody = #"{"status":"OK","createdNewRecipeUser":false}"#.data(using: .utf8)!
+            ThirdPartySignInURLProtocol.responseHeaders = Self.appleSessionHeaders.filter {
+                $0.key.caseInsensitiveCompare(missingHeader) != .orderedSame
+            }
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.protocolClasses = [ThirdPartySignInURLProtocol.self]
+            let appleSession = URLSession(configuration: configuration)
+            let client = SuperTokensThirdPartySignInClient(
+                apiDomain: "https://auth.example.com",
+                apiBasePath: "/auth",
+                appleSession: appleSession
+            )
+
+            do {
+                _ = try await client.signInWithApple(
+                    authorizationCode: "apple-auth-code",
+                    clientType: "ios"
+                )
+                Issue.record("Expected missing \(missingHeader) to fail")
+            } catch let error as RowndError {
+                #expect(error.description.contains(missingHeader))
+            }
+        }
+    }
+
+    @Test func productionAppleSessionExcludesRegisteredURLProtocols() {
+        let session = SuperTokensThirdPartySignInClient.makeIsolatedAppleSession()
+
+        #expect(session.configuration.identifier == nil)
+        #expect(session.configuration.protocolClasses?.isEmpty == true)
     }
 
     @Test func googleExchangeMapsExistingUsers() async throws {
@@ -220,6 +278,7 @@ private final class ThirdPartySignInURLProtocol: URLProtocol {
 
     static var responseBody = Data()
     static var responseStatusCode = 200
+    static var responseHeaders = ["Content-Type": "application/json"]
 
     static var lastRequest: URLRequest? {
         lock.withLock { _lastRequest }
@@ -235,6 +294,7 @@ private final class ThirdPartySignInURLProtocol: URLProtocol {
             _lastRequestBody = nil
             responseBody = Data()
             responseStatusCode = 200
+            responseHeaders = ["Content-Type": "application/json"]
         }
     }
 
@@ -270,11 +330,12 @@ private final class ThirdPartySignInURLProtocol: URLProtocol {
 
         let statusCode = Self.lock.withLock { Self.responseStatusCode }
         let responseBody = Self.lock.withLock { Self.responseBody }
+        let responseHeaders = Self.lock.withLock { Self.responseHeaders }
         let response = HTTPURLResponse(
             url: request.url!,
             statusCode: statusCode,
             httpVersion: nil,
-            headerFields: ["Content-Type": "application/json"]
+            headerFields: responseHeaders
         )!
 
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)

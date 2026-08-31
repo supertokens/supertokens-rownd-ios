@@ -1,13 +1,6 @@
 import Foundation
 import JWTDecode
 
-struct SuperTokensSessionTokens: Equatable {
-    let accessToken: String
-    let refreshToken: String?
-    let frontToken: String?
-    let antiCSRF: String?
-}
-
 enum LegacySessionMigrationResult: Equatable {
     case migrated(SuperTokensSessionTokens)
     case unauthorized
@@ -231,10 +224,6 @@ enum LegacySessionMigrator {
 
             switch result {
             case .migrated(let tokens):
-                guard hasCompleteNativeSessionTokens(tokens) else {
-                    logger.warning("Skipping SuperTokens session bootstrap because migration returned incomplete session headers")
-                    return
-                }
                 guard await dependencies.bootstrapSession(tokens) else {
                     logger.warning("Skipping legacy session migration completion because the SuperTokens session could not be adopted")
                     return
@@ -274,12 +263,6 @@ enum LegacySessionMigrator {
         }
     }
 
-    private static func hasCompleteNativeSessionTokens(_ tokens: SuperTokensSessionTokens) -> Bool {
-        !tokens.accessToken.isEmpty
-            && tokens.refreshToken?.isEmpty == false
-            && tokens.frontToken?.isEmpty == false
-    }
-
     private static func isAccessTokenValid(_ accessToken: String) -> Bool {
         guard let jwt = try? decode(jwt: accessToken), let expiresAt = jwt.expiresAt else {
             return false
@@ -315,16 +298,5 @@ private actor LegacySessionMigrationCoordinator {
         self.task = task
         await task.value
         self.task = nil
-    }
-}
-
-private extension HTTPURLResponse {
-    func headerValue(named name: String) -> String? {
-        for (key, value) in allHeaderFields {
-            guard let key = key as? String, key.caseInsensitiveCompare(name) == .orderedSame else { continue }
-            return value as? String
-        }
-
-        return nil
     }
 }

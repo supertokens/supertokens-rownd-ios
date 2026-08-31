@@ -65,6 +65,7 @@ import Testing
                 Rownd.isSuperTokensInitialized = originalSuperTokensInitialized
                 AppConfig.testingProtocolClasses = nil
                 AppConfigRequestURLProtocol.reset()
+                UserDefaults.standard.removeObject(forKey: "userAppleSignInData")
             }
 
             await MainActor.run {
@@ -119,6 +120,7 @@ import Testing
                 $0.sessionConfiguration.urlCache = nil
             }
             Rownd.isSuperTokensInitialized = true
+            UserDefaults.standard.set(Data("legacy-apple-data".utf8), forKey: "userAppleSignInData")
 
             _ = await Rownd.configure(appKey: "app_test", supertokens: expectedConfig)
 
@@ -130,6 +132,7 @@ import Testing
                 store.state.appConfig.config?.hub?.auth?.signInMethods?.apple?.iosClientType
             }
             #expect(installedClientType == "native-apple-client")
+            #expect(UserDefaults.standard.object(forKey: "userAppleSignInData") == nil)
             await MainActor.run {
                 store.dispatch(SetAppConfig(payload: originalAppConfig))
             }

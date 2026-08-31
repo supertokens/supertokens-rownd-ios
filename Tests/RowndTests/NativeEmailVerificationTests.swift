@@ -1,5 +1,6 @@
 import Foundation
-import SuperTokensIOS
+import AnyCodable
+@testable import SuperTokensIOS
 import Testing
 
 @testable import Rownd
@@ -277,16 +278,268 @@ import Testing
         EmailVerificationResponseURLProtocol.responseBody = #"{"status":"OK"}"#.data(using: .utf8)!
         EmailVerificationResponseURLProtocol.replacementAccessToken = newAccessToken
 
+        var scheduledIdentity: SuperTokensSessionBridge.StableSessionIdentity?
         let (_, response) = try await HubWebViewController.performNativeEmailVerification(
             request: request,
             session: session,
             getAccessToken: accessTokenSequence(oldAccessToken, newAccessToken),
             getRefreshToken: { "refresh-token" },
             getFrontToken: { "front-token" },
-            syncReplacementState: { _, _ in .profileUnavailable }
+            syncReplacementState: { _, _ in .profileUnavailable },
+            scheduleProfileRetry: { scheduledIdentity = $0 }
         )
 
         #expect(response.statusCode == 200)
+        #expect(scheduledIdentity == SuperTokensSessionBridge.stableSessionIdentity(
+            from: newAccessToken
+        ))
+    }
+
+    @Test func activeProfileHydrationRetryHydratesWhenProfileBecomesAvailable() async throws {
+        try await withNativeSessionHarness {
+            let originalContext = Context.currentContext
+            let store = createStore()
+            _ = Context(store)
+            defer { Context.currentContext = originalContext }
+
+            let accessToken = generateJwt(
+                expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+                sessionHandle: "retry-hydration-session"
+            )
+            let identity = try #require(await SuperTokensSessionBridge.adoptResponseSession(
+                SuperTokensSessionTokens(
+                    accessToken: accessToken,
+                    refreshToken: "refresh-token",
+                    frontToken: SuperTokensSessionBridge.buildFrontToken(from: accessToken),
+                    antiCSRF: nil
+                ),
+                permit: SuperTokensSessionBridge.captureAuthOperationPermit()
+            ))
+            await MainActor.run {
+                var auth = AuthState(accessToken: accessToken)
+                auth.profileHydrationPendingSessionIdentity = identity.stable
+                store.dispatch(SetAuthState(payload: auth))
+            }
+            let responses = ReplacementProfileResponseSequence()
+            let coordinator = ProfileHydrationRetryCoordinator(
+                delays: [0, 0, 0],
+                sleep: { _ in }
+            )
+
+            await UserData.scheduleProfileHydrationRetry(
+                for: identity.stable,
+                coordinator: coordinator,
+                appIsActive: { true },
+                fetchUserData: { _ in await responses.next() },
+                persistState: { _ in true }
+            )
+
+            #expect(await waitForCondition {
+                await MainActor.run {
+                    store.state.user.data["email"]?.value as? String == "canonical@example.com"
+                }
+            })
+            #expect(await responses.count == 2)
+            #expect(await !coordinator.isScheduled(for: identity.stable))
+            await MainActor.run {
+                #expect(store.state.auth.profileHydrationPendingSessionIdentity == nil)
+            }
+        }
+    }
+
+    @Test func profileHydrationRetryIgnoresSupersededSession() async throws {
+        try await withNativeSessionHarness {
+            let originalContext = Context.currentContext
+            let store = createStore()
+            _ = Context(store)
+            defer { Context.currentContext = originalContext }
+
+            let staleAccessToken = generateJwt(
+                expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+                sessionHandle: "stale-retry-session"
+            )
+            let replacementAccessToken = generateJwt(
+                expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+                sessionHandle: "replacement-retry-session"
+            )
+            let staleIdentity = try #require(await SuperTokensSessionBridge.adoptResponseSession(
+                SuperTokensSessionTokens(
+                    accessToken: staleAccessToken,
+                    refreshToken: "stale-refresh-token",
+                    frontToken: SuperTokensSessionBridge.buildFrontToken(from: staleAccessToken),
+                    antiCSRF: nil
+                ),
+                permit: SuperTokensSessionBridge.captureAuthOperationPermit()
+            ))
+            await MainActor.run {
+                var auth = AuthState(accessToken: staleAccessToken)
+                auth.profileHydrationPendingSessionIdentity = staleIdentity.stable
+                store.dispatch(SetAuthState(payload: auth))
+            }
+            let responses = ReplacementProfileResponseSequence()
+            let coordinator = ProfileHydrationRetryCoordinator(
+                delays: [20_000_000],
+                sleep: { try await Task.sleep(nanoseconds: $0) }
+            )
+            await UserData.scheduleProfileHydrationRetry(
+                for: staleIdentity.stable,
+                coordinator: coordinator,
+                appIsActive: { true },
+                fetchUserData: { _ in await responses.next() },
+                persistState: { _ in true }
+            )
+
+            #expect(await SuperTokensSessionBridge.adoptResponseSession(SuperTokensSessionTokens(
+                accessToken: replacementAccessToken,
+                refreshToken: "replacement-refresh-token",
+                frontToken: SuperTokensSessionBridge.buildFrontToken(from: replacementAccessToken),
+                antiCSRF: nil
+            ), permit: SuperTokensSessionBridge.captureAuthOperationPermit()) != nil)
+            await MainActor.run {
+                store.dispatch(SetAuthState(payload: AuthState(accessToken: replacementAccessToken)))
+                store.dispatch(SetUserState(payload: UserState(data: [
+                    "email": AnyCodable("replacement@example.com")
+                ])))
+            }
+
+            #expect(await waitForCondition {
+                await !coordinator.isScheduled(for: staleIdentity.stable)
+            })
+            #expect(await responses.count == 0)
+            await MainActor.run {
+                #expect(store.state.auth.accessToken == replacementAccessToken)
+                #expect(store.state.user.data["email"]?.value as? String == "replacement@example.com")
+            }
+        }
+    }
+
+    @Test func signOutCancelsPendingProfileHydrationRetry() async throws {
+        try await withNativeSessionHarness {
+            let originalContext = Context.currentContext
+            let store = createStore()
+            _ = Context(store)
+            defer { Context.currentContext = originalContext }
+
+            let accessToken = generateJwt(
+                expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+                sessionHandle: "signout-retry-session"
+            )
+            let identity = try #require(await SuperTokensSessionBridge.adoptResponseSession(
+                SuperTokensSessionTokens(
+                    accessToken: accessToken,
+                    refreshToken: "refresh-token",
+                    frontToken: SuperTokensSessionBridge.buildFrontToken(from: accessToken),
+                    antiCSRF: nil
+                ),
+                permit: SuperTokensSessionBridge.captureAuthOperationPermit()
+            ))
+            await MainActor.run {
+                var auth = AuthState(accessToken: accessToken)
+                auth.profileHydrationPendingSessionIdentity = identity.stable
+                store.dispatch(SetAuthState(payload: auth))
+            }
+            let responses = ReplacementProfileResponseSequence()
+            let coordinator = UserData.profileHydrationRetryCoordinator
+            await coordinator.cancel()
+            await UserData.scheduleProfileHydrationRetry(
+                for: identity.stable,
+                appIsActive: { true },
+                fetchUserData: { _ in await responses.next() },
+                persistState: { _ in true }
+            )
+            #expect(await waitForCondition {
+                await coordinator.isScheduled(for: identity.stable)
+            })
+
+            let wasInitialized = Rownd.isSuperTokensInitialized
+            Rownd.isSuperTokensInitialized = false
+            await Rownd.signOut()
+            Rownd.isSuperTokensInitialized = wasInitialized
+
+            #expect(await !coordinator.isScheduled(for: identity.stable))
+            #expect(await responses.count == 0)
+            await MainActor.run {
+                #expect(!store.state.auth.isAuthenticated)
+            }
+        }
+    }
+
+    @Test func directCancellationInvalidatesBlockedRetryTicketWithoutCommitting() async throws {
+        try await withNativeSessionHarness {
+            let originalContext = Context.currentContext
+            let store = createStore()
+            _ = Context(store)
+            defer { Context.currentContext = originalContext }
+
+            let accessToken = generateJwt(
+                expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+                sessionHandle: "direct-cancellation-retry-session"
+            )
+            let identity = try #require(await SuperTokensSessionBridge.adoptResponseSession(
+                SuperTokensSessionTokens(
+                    accessToken: accessToken,
+                    refreshToken: "refresh-token",
+                    frontToken: SuperTokensSessionBridge.buildFrontToken(from: accessToken),
+                    antiCSRF: nil
+                ),
+                permit: SuperTokensSessionBridge.captureAuthOperationPermit()
+            ))
+            await MainActor.run {
+                var auth = AuthState(accessToken: accessToken)
+                auth.profileHydrationPendingSessionIdentity = identity.stable
+                store.dispatch(SetAuthState(payload: auth))
+            }
+            let response = BlockingProfileResponse()
+            let coordinator = ProfileHydrationRetryCoordinator(
+                delays: [0],
+                sleep: { _ in }
+            )
+            await UserData.scheduleProfileHydrationRetry(
+                for: identity.stable,
+                coordinator: coordinator,
+                appIsActive: { true },
+                fetchUserData: { _ in await response.next() },
+                persistState: { _ in true }
+            )
+
+            #expect(await waitForCondition { await response.hasStarted })
+            let queueEntered = DispatchSemaphore(value: 0)
+            let releaseQueue = DispatchSemaphore(value: 0)
+            defer { releaseQueue.signal() }
+            let queueBlocker = Task {
+                await SuperTokensSessionBridge.attemptRefresh {
+                    queueEntered.signal()
+                    releaseQueue.wait()
+                    return true
+                }
+            }
+            await waitForSignal(queueEntered)
+            await response.release()
+            #expect(await waitForCondition { await response.hasFinished })
+
+            await coordinator.cancel()
+            let nextTicket = try #require(UserData.fetchCoordinator.begin(
+                accessToken: accessToken,
+                purpose: .foreground
+            ))
+            releaseQueue.signal()
+            #expect(await queueBlocker.value)
+            #expect(await waitForCondition {
+                await MainActor.run { !store.state.user.isLoading }
+            })
+
+            await MainActor.run {
+                #expect(
+                    store.state.auth.profileHydrationPendingSessionIdentity
+                        == identity.stable
+                )
+                #expect(store.state.user.data.isEmpty)
+                #expect(!store.state.user.isLoading)
+            }
+            #expect(await SuperTokensSessionBridge.getAccessToken() == accessToken)
+            #expect(UserData.fetchCoordinator.isCurrent(nextTicket))
+            UserData.fetchCoordinator.finish(nextTicket)
+        }
     }
 
     @Test func verificationAcceptsCurrentTokenRotationFromResponseSession() async throws {
@@ -384,6 +637,90 @@ import Testing
             "https://hub.example.com/account/verify-email?token=email-token#rph_init=session-tokens"
         ))
         #expect(Redact.urlForLogging(url) == "https://hub.example.com/account/verify-email")
+    }
+
+    private func withNativeSessionHarness(
+        _ operation: @escaping () async throws -> Void
+    ) async throws {
+        try await withGlobalTestLock {
+            let originalConfig = Rownd.config
+            let originalInitialized = Rownd.isSuperTokensInitialized
+            SuperTokens.resetForTests()
+            Rownd.isSuperTokensInitialized = false
+            Rownd.config.supertokens = RowndSuperTokensConfig(
+                appName: "Native verification tests",
+                apiDomain: "https://api.example.com",
+                apiBasePath: "/auth"
+            )
+            _ = try Rownd.initializeSuperTokensIfNeeded()
+            let sessionStore = InMemorySessionStore()
+            SDKStorage.setTokenStorageForTests(sessionStore)
+            FrontToken.clearInMemoryCache()
+            SuperTokensSessionBridge.storageOverride = sessionStore
+            defer {
+                SuperTokensSessionBridge.storageOverride = nil
+                SuperTokens.resetForTests()
+                Rownd.config = originalConfig
+                Rownd.isSuperTokensInitialized = originalInitialized
+            }
+            try await operation()
+        }
+    }
+
+    private func waitForCondition(
+        attempts: Int = 100,
+        condition: @escaping () async -> Bool
+    ) async -> Bool {
+        for _ in 0..<attempts {
+            if await condition() { return true }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        return false
+    }
+
+    private func waitForSignal(_ semaphore: DispatchSemaphore) async {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                semaphore.wait()
+                continuation.resume()
+            }
+        }
+    }
+}
+
+private actor ReplacementProfileResponseSequence {
+    private(set) var count = 0
+
+    func next() -> UserData.FetchResult {
+        count += 1
+        if count == 1 {
+            return .notFound
+        }
+        return .profile(UserStateResponse(data: [
+            "email": AnyCodable("canonical@example.com")
+        ]))
+    }
+}
+
+private actor BlockingProfileResponse {
+    private(set) var hasStarted = false
+    private(set) var hasFinished = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func next() async -> UserData.FetchResult {
+        hasStarted = true
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+        hasFinished = true
+        return .profile(UserStateResponse(data: [
+            "email": AnyCodable("must-not-commit@example.com")
+        ]))
+    }
+
+    func release() {
+        continuation?.resume()
+        continuation = nil
     }
 }
 

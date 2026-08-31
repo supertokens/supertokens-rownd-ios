@@ -20,9 +20,32 @@ struct SuperTokensThirdPartySignInRequest: Encodable {
     }
 }
 
-struct SuperTokensThirdPartySignInResponse: Decodable {
+struct SuperTokensThirdPartySignInResponse {
     let status: String?
     let createdNewRecipeUser: Bool?
+
+    init(
+        status: String?,
+        createdNewRecipeUser: Bool?
+    ) {
+        self.status = status
+        self.createdNewRecipeUser = createdNewRecipeUser
+    }
+
+    var userType: UserType {
+        createdNewRecipeUser == true ? .NewUser : .ExistingUser
+    }
+
+    fileprivate struct Body: Decodable {
+        let status: String?
+        let createdNewRecipeUser: Bool?
+    }
+}
+
+struct SuperTokensAppleSignInResponse {
+    let status: String?
+    let createdNewRecipeUser: Bool?
+    let sessionTokens: SuperTokensSessionTokens
 
     var userType: UserType {
         createdNewRecipeUser == true ? .NewUser : .ExistingUser
@@ -33,35 +56,51 @@ struct SuperTokensThirdPartySignInClient {
     private let apiDomainOverride: String?
     private let apiBasePathOverride: String?
     private let session: URLSession
+    private let appleSession: URLSession
 
     init(
         apiDomain: String? = nil,
         apiBasePath: String? = nil,
-        session: URLSession = .shared
+        session: URLSession = .shared,
+        appleSession: URLSession? = nil
     ) {
         self.apiDomainOverride = apiDomain
         self.apiBasePathOverride = apiBasePath
         self.session = session
+        self.appleSession = appleSession ?? Self.makeIsolatedAppleSession()
+    }
+
+    static func makeIsolatedAppleSession() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        // Defer session adoption until the owning Apple auth operation is revalidated.
+        configuration.protocolClasses = []
+        return URLSession(configuration: configuration)
     }
 
     func signInWithGoogle(idToken: String) async throws -> SuperTokensThirdPartySignInResponse {
-        try await signIn(
+        let result = try await signIn(
             SuperTokensThirdPartySignInRequest(
                 thirdPartyId: "google",
                 clientType: nil,
                 oAuthTokens: .init(idToken: idToken),
                 redirectURIInfo: nil
-            )
+            ),
+            using: session,
+            usesHeaderAuthMode: false
+        )
+        return SuperTokensThirdPartySignInResponse(
+            status: result.body.status,
+            createdNewRecipeUser: result.body.createdNewRecipeUser
         )
     }
 
-    func signInWithApple(authorizationCode: String, clientType: String) async throws -> SuperTokensThirdPartySignInResponse {
+    func signInWithApple(authorizationCode: String, clientType: String) async throws -> SuperTokensAppleSignInResponse {
         let clientType = clientType.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clientType.isEmpty else {
             throw RowndError("Apple sign-in requires a non-empty clientType")
         }
 
-        return try await signIn(
+        let result = try await signIn(
             SuperTokensThirdPartySignInRequest(
                 thirdPartyId: "apple",
                 clientType: clientType,
@@ -70,11 +109,22 @@ struct SuperTokensThirdPartySignInClient {
                     redirectURIOnProviderDashboard: "",
                     redirectURIQueryParams: ["code": authorizationCode]
                 )
-            )
+            ),
+            using: appleSession,
+            usesHeaderAuthMode: true
+        )
+        return SuperTokensAppleSignInResponse(
+            status: result.body.status,
+            createdNewRecipeUser: result.body.createdNewRecipeUser,
+            sessionTokens: try Self.sessionTokens(from: result.response)
         )
     }
 
-    private func signIn(_ body: SuperTokensThirdPartySignInRequest) async throws -> SuperTokensThirdPartySignInResponse {
+    private func signIn(
+        _ body: SuperTokensThirdPartySignInRequest,
+        using session: URLSession,
+        usesHeaderAuthMode: Bool
+    ) async throws -> (body: SuperTokensThirdPartySignInResponse.Body, response: HTTPURLResponse) {
         let supertokens = apiDomainOverride == nil || apiBasePathOverride == nil ? try Rownd.requireSuperTokensConfig() : nil
         let apiDomain = apiDomainOverride ?? supertokens!.apiDomain
         let apiBasePath = apiBasePathOverride ?? supertokens!.apiBasePath
@@ -97,6 +147,9 @@ struct SuperTokensThirdPartySignInClient {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("thirdparty", forHTTPHeaderField: "rid")
         request.setValue("4.1", forHTTPHeaderField: "fdi-version")
+        if usesHeaderAuthMode {
+            request.setValue("header", forHTTPHeaderField: "st-auth-mode")
+        }
         request.httpBody = try JSONEncoder().encode(body)
 
         let (data, response) = try await session.data(for: request)
@@ -108,6 +161,28 @@ struct SuperTokensThirdPartySignInClient {
             throw RowndError("SuperTokens signinup failed with status code \(httpResponse.statusCode)")
         }
 
-        return try JSONDecoder().decode(SuperTokensThirdPartySignInResponse.self, from: data)
+        return (
+            try JSONDecoder().decode(SuperTokensThirdPartySignInResponse.Body.self, from: data),
+            httpResponse
+        )
+    }
+
+    private static func sessionTokens(from response: HTTPURLResponse) throws -> SuperTokensSessionTokens {
+        guard let accessToken = response.headerValue(named: "st-access-token"), !accessToken.isEmpty else {
+            throw RowndError("SuperTokens signinup response did not include st-access-token")
+        }
+        guard let refreshToken = response.headerValue(named: "st-refresh-token"), !refreshToken.isEmpty else {
+            throw RowndError("SuperTokens signinup response did not include st-refresh-token")
+        }
+        guard let frontToken = response.headerValue(named: "front-token"), !frontToken.isEmpty else {
+            throw RowndError("SuperTokens signinup response did not include front-token")
+        }
+
+        return SuperTokensSessionTokens(
+            accessToken: accessToken,
+            refreshToken: refreshToken,
+            frontToken: frontToken,
+            antiCSRF: response.headerValue(named: "anti-csrf")
+        )
     }
 }

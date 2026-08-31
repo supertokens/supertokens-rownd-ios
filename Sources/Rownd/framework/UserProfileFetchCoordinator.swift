@@ -52,4 +52,17 @@ internal final class UserProfileFetchCoordinator: @unchecked Sendable {
         guard activeTicket == ticket else { return }
         activeTicket = nil
     }
+
+    func cancel(_ ticket: Ticket) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard activeTicket == ticket else { return }
+        activeTicket = nil
+    }
+
+    func cancelCurrent() {
+        lock.lock()
+        activeTicket = nil
+        lock.unlock()
+    }
 }
