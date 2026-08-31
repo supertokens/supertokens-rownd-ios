@@ -82,6 +82,20 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
     static let nativeEmailVerificationEventName = "rownd:native-email-verification"
     private static let offlinePageURL = URL(string: "rownd-offline://retry/")!
 
+    struct HubLoadFailure: Equatable {
+        let host: String
+        let errorDomain: String
+        let errorCode: Int
+
+        var event: RowndEvent {
+            RowndEvent(event: .hubLoadFailed, data: [
+                "host": AnyCodable(host),
+                "error_domain": AnyCodable(errorDomain),
+                "error_code": AnyCodable(errorCode)
+            ])
+        }
+    }
+
     struct NativeEmailVerificationParameters: Equatable {
         let token: String
         let pendingVerificationId: String
@@ -93,6 +107,22 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
 
     static func shouldForwardHubEvent(_ event: RowndEvent, on targetPage: HubPageSelector?) -> Bool {
         event.event != .signInCompleted || !canHandleAuthentication(on: targetPage)
+    }
+
+    static func hubRequest(url: URL) -> URLRequest {
+        URLRequest(url: url)
+    }
+
+    static func hubLoadFailure(error: Error, configuredURL: URL?) -> HubLoadFailure? {
+        let error = error as NSError
+        guard error.domain != NSURLErrorDomain || error.code != NSURLErrorCancelled else {
+            return nil
+        }
+
+        let failingURL = (error.userInfo[NSURLErrorFailingURLErrorKey] as? URL)
+            ?? (error.userInfo[NSURLErrorFailingURLStringErrorKey] as? String).flatMap(URL.init(string:))
+        let host = failingURL?.host ?? configuredURL?.host ?? "unknown"
+        return HubLoadFailure(host: host, errorDomain: error.domain, errorCode: error.code)
     }
 
     @MainActor static func completeAuthentication(
@@ -548,8 +578,10 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
     }
 
     func setUrl(url: URL) {
-        let shouldReload = webView.url == url
         self.url = url
+        guard isViewLoaded else { return }
+
+        let shouldReload = webView.url == url
         self.startLoading(force: shouldReload)
     }
 
@@ -561,8 +593,7 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
             webView.stopLoading()
         }
 
-        var hubRequest = URLRequest(url: url)
-        hubRequest.timeoutInterval = 10
+        let hubRequest = Self.hubRequest(url: url)
         logger.debug("Loading Hub URL in webview: \(Redact.urlForLogging(url))")
         webView.load(hubRequest)
     }
@@ -813,9 +844,22 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
     }
 
     public func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation, withError error: Error) {
+        handleProvisionalNavigationFailure(error, in: webView)
+    }
+
+    func handleProvisionalNavigationFailure(_ error: Error, in webView: WKWebView) {
+        guard let failure = Self.hubLoadFailure(error: error, configuredURL: url) else { return }
+
+        logger.error("Hub load failed: host=\(failure.host) error_domain=\(failure.errorDomain) error_code=\(failure.errorCode)")
+        RowndEventEmitter.emit(failure.event)
+
         let store = Context.currentContext.store
         webView.loadHTMLString(
-            NoInternetHTML(appConfig: store.state.appConfig),
+            NoInternetHTML(
+                appConfig: store.state.appConfig,
+                host: failure.host,
+                errorCode: failure.errorCode
+            ),
             baseURL: Self.offlinePageURL
         )
     }

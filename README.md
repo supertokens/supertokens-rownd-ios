@@ -437,6 +437,22 @@ Here's a list of events that the Rownd SDK emits and the corresponding data that
         </td>
     </tr>
 
+    <tr>
+        <td>Hub failed to load</td>
+        <td>`.hubLoadFailed`</td>
+        <td>
+
+        ```javascript
+        {
+            host: String,
+            error_domain: String,
+            error_code: Number
+        }
+        ```
+
+        </td>
+    </tr>
+
 </table>
 
 ### API reference

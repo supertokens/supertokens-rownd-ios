@@ -1,9 +1,19 @@
 import Foundation
 import SwiftUI
 
-func NoInternetHTML(appConfig: AppConfigState?) -> String {
+func escapeHTML(_ value: String) -> String {
+    value
+        .replacingOccurrences(of: "&", with: "&amp;")
+        .replacingOccurrences(of: "<", with: "&lt;")
+        .replacingOccurrences(of: ">", with: "&gt;")
+        .replacingOccurrences(of: "\"", with: "&quot;")
+        .replacingOccurrences(of: "'", with: "&#39;")
+}
+
+@MainActor func NoInternetHTML(appConfig: AppConfigState?, host: String, errorCode: Int) -> String {
     let hasAppConfig = appConfig != nil
     let fontSize = Rownd.config.customizations.defaultFontSize
+    let escapedHost = escapeHTML(host)
 
     var isDarkMode = UIViewController().traitCollection.userInterfaceStyle == .dark || Rownd.config.forceDarkMode
     if hasAppConfig {
@@ -33,8 +43,18 @@ func NoInternetHTML(appConfig: AppConfigState?) -> String {
                 </script>
             </head>
             <body>
-                <h1>You're offline</h1>
+                <h1>Connection failed</h1>
                 <p>Please check your connection and try again</p>
+                <div class="diagnostics">
+                    <div class="diagnostic-row">
+                        <span class="diagnostic-label">Host</span>
+                        <span class="diagnostic-value">\(escapedHost)</span>
+                    </div>
+                    <div class="diagnostic-row">
+                        <span class="diagnostic-label">Error code</span>
+                        <span class="diagnostic-value">\(errorCode)</span>
+                    </div>
+                </div>
                 <div class="wifi \(isDarkMode ? "wifi-dark":"")"></div>
                 <button onclick="tryAgain()">Try again<span></span></button>
             </body>
@@ -65,6 +85,37 @@ func CSS(fontSize: CGFloat, isDarkMode: Bool, primaryColor: String) -> String {
             margin-top: 0px;
             margin-bottom: 20px;
         }
+        .diagnostics {
+            width: calc(100% - 48px);
+            margin-bottom: 20px;
+            padding: 16px 20px;
+            background-color: \(isDarkMode ? "#171717" : "white");
+            border: 1px solid \(isDarkMode ? "#333333" : "#e5e5e5");
+            border-radius: 14px;
+            box-sizing: border-box;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px -1px rgba(0, 0, 0, 0.1);
+        }
+        .diagnostic-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            font-size: 14px;
+        }
+        .diagnostic-row + .diagnostic-row {
+            margin-top: 8px;
+        }
+        .diagnostic-label {
+            flex-shrink: 0;
+            color: \(isDarkMode ? "#a3a3a3" : "#737373");
+        }
+        .diagnostic-value {
+            min-width: 0;
+            color: \(isDarkMode ? "white" : "black");
+            font-weight: 500;
+            overflow-wrap: anywhere;
+            text-align: right;
+        }
         img {
             height: 80px;
             width: 80px;
@@ -84,7 +135,7 @@ func CSS(fontSize: CGFloat, isDarkMode: Bool, primaryColor: String) -> String {
             background-color: \(primaryColor);
             margin-top: 20px;
             font-size: 1.166em;
-            width: 80%;
+            width: calc(100% - 48px);
             padding: 10px 0px;
             border-radius: 12px;
             outline: none;

@@ -19,6 +19,7 @@ public enum RowndEventType: String, Codable {
     case userDataSaved = "user_data_saved"
     case verificationStarted = "verification_started"
     case verificationCompleted = "verification_completed"
+    case hubLoadFailed = "hub_load_failed"
 }
 
 public struct RowndEvent: Codable {
