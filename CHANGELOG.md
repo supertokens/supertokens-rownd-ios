@@ -1,5 +1,14 @@
 # Changelog
 
+## <small>0.1.14 (2026-08-31)</small>
+
+* fix: harden session adoption and profile hydration ([e8843ae](https://github.com/supertokens/supertokens-rownd-ios/commit/e8843ae))
+* fix: improve Hub navigation failure handling ([c1773f8](https://github.com/supertokens/supertokens-rownd-ios/commit/c1773f8))
+* fix: Persist verified email state on iOS ([b4b83c4](https://github.com/supertokens/supertokens-rownd-ios/commit/b4b83c4))
+* fix: publish Apple auth after Hub dismissal ([6f3e2fb](https://github.com/supertokens/supertokens-rownd-ios/commit/6f3e2fb))
+* test: cover cleanup before legacy migration ([d9f6329](https://github.com/supertokens/supertokens-rownd-ios/commit/d9f6329))
+* test: Cover email state after cold relaunch ([819ea06](https://github.com/supertokens/supertokens-rownd-ios/commit/819ea06))
+
 ## <small>0.1.13 (2026-08-27)</small>
 
 * fix: clear retained Hub session on reinstall ([d7a6737](https://github.com/supertokens/supertokens-rownd-ios/commit/d7a6737))
