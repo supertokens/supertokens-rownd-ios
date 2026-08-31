@@ -21,6 +21,7 @@ struct ContentView: View {
     @State private var isFetchingProtected = false
     @State private var isTestingRefresh = false
     @State private var refreshSimulationCompleted = false
+    @State private var accessTokenResolution = "not-requested"
     @State private var presentEditName = false
     @State private var firstName = ""
 
@@ -276,6 +277,14 @@ struct ContentView: View {
                 }
                 .accessibilityIdentifier("e2e-update-profile-button")
 
+                FlowButton("Resolve Rownd access token") {
+                    Task { await resolveAccessToken() }
+                }
+                .accessibilityIdentifier("e2e-resolve-access-token-button")
+
+                Text(accessTokenResolution)
+                    .accessibilityIdentifier("e2e-access-token-resolution")
+
                 FlowButton("E2E sign out all", style: .secondary) {
                     try? Rownd.signOut(scope: .all)
                     scenarioStatus = "e2e_sign_out_all_requested"
@@ -302,6 +311,20 @@ struct ContentView: View {
         } catch {
             protectedResult = String(describing: error)
             scenarioStatus = "protected_failed"
+        }
+    }
+
+    private func resolveAccessToken() async {
+        accessTokenResolution = "resolving"
+        do {
+            guard let accessToken = try await Rownd.getAccessToken(throwIfMissing: true),
+                  !accessToken.isEmpty else {
+                accessTokenResolution = "missing"
+                return
+            }
+            accessTokenResolution = "succeeded"
+        } catch {
+            accessTokenResolution = "failed"
         }
     }
 

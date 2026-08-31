@@ -30,6 +30,7 @@ public class Rownd: NSObject {
     @MainActor private var presentedHubRequestID: UUID?
     @MainActor private var dismissingHubRequestID: UUID?
     @MainActor private var pendingHubRequest: HubPresentationRequest?
+    @MainActor private var presentedHubDeepLinkURL: URL?
     internal static var apiClient = RowndApi().client
     internal static let automationsCoordinator = AutomationsCoordinator()
     internal static var customerWebViews = CustomerWebViewManager()
@@ -44,6 +45,7 @@ public class Rownd: NSObject {
         let page: HubPageSelector
         let jsFnOptions: Encodable?
         let requestID: UUID
+        let deepLinkURL: URL?
     }
 
     // Run processAutomations() every second to support time-based automations
@@ -292,7 +294,7 @@ public class Rownd: NSObject {
     internal static func openHubDeepLink(_ url: URL) {
         logger.debug("Opening Hub deep link: \(Redact.urlForLogging(url))")
         config.pendingHubDeepLinkUrl = url
-        inst.displayHub(.deepLink, jsFnOptions: nil)
+        inst.displayHub(.deepLink, jsFnOptions: nil, deepLinkURL: url)
     }
 
     public static func signOut(scope: RowndSignoutScope) throws {
@@ -526,7 +528,12 @@ public class Rownd: NSObject {
         ) async {
         guard let state = await MainActor.run(body: { () -> RowndState? in
             guard let state = Context.currentContext.store.state else { return nil }
-            return state.auth.isAuthenticated && appIsActive() ? state : nil
+            guard state.auth.isAuthenticated,
+                  appIsActive(),
+                  !isEmailVerificationHubRequestActiveOrPending() else {
+                return nil
+            }
+            return state
         }) else {
             return
         }
@@ -616,7 +623,11 @@ public class Rownd: NSObject {
         displayHub(page, jsFnOptions: nil)
     }
 
-    private func displayHub(_ page: HubPageSelector, jsFnOptions: Encodable?) {
+    private func displayHub(
+        _ page: HubPageSelector,
+        jsFnOptions: Encodable?,
+        deepLinkURL: URL? = nil
+    ) {
         if let displayHubHandler = Rownd.displayHubHandler {
             displayHubHandler(page, jsFnOptions)
             return
@@ -624,14 +635,20 @@ public class Rownd: NSObject {
 
         let requestID = UUID()
         Task { @MainActor in
-            displayHubOnMainActor(page, jsFnOptions: jsFnOptions, requestID: requestID)
+            displayHubOnMainActor(
+                page,
+                jsFnOptions: jsFnOptions,
+                requestID: requestID,
+                deepLinkURL: deepLinkURL
+            )
         }
     }
 
     @MainActor private func displayHubOnMainActor(
         _ page: HubPageSelector,
         jsFnOptions: Encodable?,
-        requestID: UUID
+        requestID: UUID,
+        deepLinkURL: URL? = nil
     ) {
         activeHubRequestID = requestID
         if let displayHubHandler = Rownd.displayHubHandler {
@@ -642,7 +659,8 @@ public class Rownd: NSObject {
         let request = HubPresentationRequest(
             page: page,
             jsFnOptions: jsFnOptions,
-            requestID: requestID
+            requestID: requestID,
+            deepLinkURL: deepLinkURL
         )
         guard dismissingHubRequestID == nil else {
             pendingHubRequest = request
@@ -654,6 +672,7 @@ public class Rownd: NSObject {
 
     @MainActor private func presentHub(_ request: HubPresentationRequest) {
         presentedHubRequestID = request.requestID
+        presentedHubDeepLinkURL = request.deepLinkURL
 
         let hubController = getHubViewController()
         hubController.presentationRequestID = request.requestID
@@ -680,6 +699,7 @@ public class Rownd: NSObject {
         }
         if presentedHubRequestID == requestID {
             presentedHubRequestID = nil
+            presentedHubDeepLinkURL = nil
         }
         if dismissingHubRequestID == requestID {
             dismissingHubRequestID = nil
@@ -735,6 +755,13 @@ public class Rownd: NSObject {
     @MainActor internal static func isDisplayingHub() -> Bool {
         return inst.bottomSheetController.controller != nil
             && inst.bottomSheetController.presentingViewController != nil
+    }
+
+    @MainActor private static func isEmailVerificationHubRequestActiveOrPending() -> Bool {
+        let isVerificationURL: (URL?) -> Bool = { $0?.path == "/account/verify-email" }
+        return isVerificationURL(config.pendingHubDeepLinkUrl)
+            || isVerificationURL(inst.presentedHubDeepLinkURL)
+            || isVerificationURL(inst.pendingHubRequest?.deepLinkURL)
     }
 
     @MainActor internal static func dismissHub(requestID: UUID) async {

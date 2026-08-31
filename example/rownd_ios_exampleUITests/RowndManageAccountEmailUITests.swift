@@ -20,12 +20,22 @@ final class RowndManageAccountEmailUITests: XCTestCase {
         try await runEmailVerificationScenario(delivery: .safari)
     }
 
-    func testSystemDispatchOpensAppAndPersistsVerifiedProfile() async throws {
-        try await runEmailVerificationScenario(delivery: .systemDispatch)
+    func testRealHubCustomerCanChangeEmailAndRetainSessionAndCachedProfileAcrossRelaunch() async throws {
+        guard #available(iOS 16.4, *) else {
+            throw XCTSkip("System custom-scheme dispatch requires iOS 16.4 or newer")
+        }
+        try await runEmailVerificationScenario(delivery: .systemDispatch, authentication: .realHubOTP)
     }
 
-    private func runEmailVerificationScenario(delivery: VerificationLinkDelivery) async throws {
-        let suffix = UUID().uuidString.lowercased()
+    private func runEmailVerificationScenario(
+        delivery: VerificationLinkDelivery,
+        authentication: Authentication = .profileFixture
+    ) async throws {
+        let suffix = UUID().uuidString.lowercased().replacingOccurrences(
+            of: "[0-9]",
+            with: "x",
+            options: .regularExpression
+        )
         let initialEmail = "ios-ui-old-\(suffix)@example.com"
         let editedEmail = "ios-ui-new-\(suffix)@example.com"
 
@@ -36,20 +46,33 @@ final class RowndManageAccountEmailUITests: XCTestCase {
         app.launchEnvironment = [
             "ROWND_E2E": "1",
             "ROWND_E2E_CONFIG_URL": backendURL.appendingPathComponent("config").absoluteString,
-            "ROWND_E2E_EMAIL": initialEmail,
-            "ROWND_E2E_FIRST_NAME": "Existing",
             "ROWND_E2E_RESET_SESSION": "1",
         ]
+        if authentication == .profileFixture {
+            app.launchEnvironment["ROWND_E2E_EMAIL"] = initialEmail
+            app.launchEnvironment["ROWND_E2E_FIRST_NAME"] = "Existing"
+        }
         app.launch()
         app.launchEnvironment.removeValue(forKey: "ROWND_E2E_RESET_SESSION")
 
         try waitForLabel(app.staticTexts["e2e-sdk-state"], toEqual: "ready")
         try waitForLabel(app.staticTexts["e2e-auth-state"], toEqual: "signed-out")
-        let createSessionButton = app.buttons["e2e-create-session-button"]
-        try scrollToElement(createSessionButton, in: app)
-        createSessionButton.tap()
+        switch authentication {
+        case .profileFixture:
+            let createSessionButton = app.buttons["e2e-create-session-button"]
+            try scrollToElement(createSessionButton, in: app)
+            createSessionButton.tap()
+            try waitForLabel(app.staticTexts["e2e-scenario-state"], toEqual: "e2e_session_created")
+        case .realHubOTP:
+            try startEmailSignUp(initialEmail, in: app)
+            let capture = try await waitForPasswordlessCapture(email: initialEmail)
+            completeEmailOTP(try XCTUnwrap(capture["userInputCode"] as? String), in: app)
+            XCTAssertTrue(app.webViews.firstMatch.waitForNonExistence(timeout: 10))
+            let counters = try await request("GET", path: "counters")
+            XCTAssertEqual(counters["createSession"] as? Int, 0, "Customer lifecycle must not use the profile-session fixture")
+            XCTAssertEqual(counters["passwordlessConsume"] as? Int, 1)
+        }
 
-        try waitForLabel(app.staticTexts["e2e-scenario-state"], toEqual: "e2e_session_created")
         try waitForLabel(app.staticTexts["e2e-auth-state"], toEqual: "authenticated")
         let initiatingSessionHandle = app.staticTexts["e2e-session-handle"].label
         XCTAssertNotEqual(initiatingSessionHandle, "no-session")
@@ -61,8 +84,7 @@ final class RowndManageAccountEmailUITests: XCTestCase {
         XCTAssertTrue(emailField.waitForExistence(timeout: 10))
         try waitForValue(emailField, toEqual: initialEmail)
 
-        try replaceText(in: emailField, with: editedEmail, app: app)
-        try waitForValue(emailField, toEqual: editedEmail)
+        try replaceText(in: emailField, with: editedEmail)
         let saveButton = webView.buttons["Save edits"]
         XCTAssertTrue(saveButton.waitForExistence(timeout: 5))
         saveButton.tap()
@@ -78,7 +100,9 @@ final class RowndManageAccountEmailUITests: XCTestCase {
             XCTAssertEqual(data["email"] as? String, editedEmail)
         }
 
-        try waitForValue(emailField, toEqual: initialEmail)
+        XCTAssertTrue(
+            webView.staticTexts["Verify your new email"].waitForExistence(timeout: 10)
+        )
         let verification = try await waitForVerificationEmail(email: editedEmail)
         let link = try XCTUnwrap(verification["link"] as? String)
         let verificationURL = try XCTUnwrap(URLComponents(string: link))
@@ -101,7 +125,6 @@ final class RowndManageAccountEmailUITests: XCTestCase {
             try openVerificationLinkInSafari(link, app: app)
         case .systemDispatch:
             let deepLink = try XCTUnwrap(URL(string: makeNativeDeepLink(from: link)))
-            app.terminate()
             if #available(iOS 16.4, *) {
                 app.open(deepLink)
             } else {
@@ -135,10 +158,13 @@ final class RowndManageAccountEmailUITests: XCTestCase {
         XCTAssertTrue(closeButton.waitForExistence(timeout: 10))
         closeButton.tap()
         XCTAssertTrue(app.webViews.firstMatch.waitForNonExistence(timeout: 10))
+        if authentication == .realHubOTP {
+            try resolveAccessToken(in: app)
+        }
 
         app.terminate()
         app.launchEnvironment.removeValue(forKey: "ROWND_E2E_DEEP_LINK")
-        try await setUserProfileGetBehavior(.holdNext)
+        try await setUserProfileGetBehavior(.holdAll)
         app.launch()
 
         do {
@@ -146,6 +172,9 @@ final class RowndManageAccountEmailUITests: XCTestCase {
             try waitForLabel(app.staticTexts["e2e-sdk-state"], toEqual: "ready")
             try waitForLabel(app.staticTexts["e2e-auth-state"], toEqual: "authenticated")
             try waitForLabel(sessionHandleLabel, toEqual: replacementSessionHandle)
+            if authentication == .realHubOTP {
+                try resolveAccessToken(in: app)
+            }
             try waitForLabel(app.staticTexts["e2e-cached-user-email"], toEqual: editedEmail)
         } catch {
             try? await setUserProfileGetBehavior(.normal)
@@ -157,6 +186,45 @@ final class RowndManageAccountEmailUITests: XCTestCase {
         let verifiedEmailField = app.webViews.firstMatch.textFields.firstMatch
         XCTAssertTrue(verifiedEmailField.waitForExistence(timeout: 10))
         try waitForValue(verifiedEmailField, toEqual: editedEmail)
+        try waitForLabel(app.staticTexts["e2e-auth-state"], toEqual: "authenticated")
+    }
+
+    private func startEmailSignUp(_ email: String, in app: XCUIApplication) throws {
+        try waitForLabel(app.staticTexts["e2e-challenge-state"], toEqual: "clear")
+        let signUpButton = app.buttons["e2e-sign-up-email-button"]
+        try scrollToElement(signUpButton, in: app)
+        signUpButton.tap()
+
+        let webView = app.webViews.firstMatch
+        let emailField = webView.textFields.firstMatch
+        XCTAssertTrue(emailField.waitForExistence(timeout: 15))
+        emailField.tap()
+        emailField.typeText(email)
+        let continueButton = webView.buttons["Continue"]
+        XCTAssertTrue(continueButton.waitForExistence(timeout: 10))
+        continueButton.tap()
+        try waitForLabel(app.staticTexts["e2e-challenge-state"], toEqual: "active")
+    }
+
+    private func completeEmailOTP(_ code: String, in app: XCUIApplication) {
+        let webView = app.webViews.firstMatch
+        let useCodeButton = webView.buttons["Use a code instead"]
+        XCTAssertTrue(useCodeButton.waitForExistence(timeout: 10))
+        useCodeButton.tap()
+        let codeField = webView.textFields.firstMatch
+        XCTAssertTrue(codeField.waitForExistence(timeout: 10))
+        codeField.tap()
+        codeField.typeText(code)
+        let continueButton = webView.buttons["Continue"]
+        XCTAssertTrue(continueButton.waitForExistence(timeout: 10))
+        continueButton.tap()
+    }
+
+    private func resolveAccessToken(in app: XCUIApplication) throws {
+        let button = app.buttons["e2e-resolve-access-token-button"]
+        try scrollToElement(button, in: app)
+        button.tap()
+        try waitForLabel(app.staticTexts["e2e-access-token-resolution"], toEqual: "succeeded")
     }
 
     private func openVerificationLinkInSafari(_ link: String, app: XCUIApplication) throws {
@@ -244,16 +312,16 @@ final class RowndManageAccountEmailUITests: XCTestCase {
         }
     }
 
-    private func replaceText(in field: XCUIElement, with text: String, app: XCUIApplication) throws {
-        field.tap()
-        field.press(forDuration: 1)
-
-        let selectAll = app.menuItems["Select All"]
-        guard selectAll.waitForExistence(timeout: 2) else {
-            throw UITestError.selectAllNotAvailable
+    private func replaceText(in field: XCUIElement, with text: String) throws {
+        for _ in 0..<3 {
+            field.tap()
+            field.typeKey("a", modifierFlags: .command)
+            field.typeText(text)
+            if (try? waitForValue(field, toEqual: text, timeout: 2)) != nil {
+                return
+            }
         }
-        selectAll.tap()
-        field.typeText(text)
+        throw UITestError.timedOutWaitingForElement
     }
 
     private func waitForLabel(
@@ -344,6 +412,23 @@ final class RowndManageAccountEmailUITests: XCTestCase {
         throw UITestError.verificationEmailNotCaptured
     }
 
+    private func waitForPasswordlessCapture(
+        email: String,
+        timeout: TimeInterval = 15
+    ) async throws -> [String: Any] {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let capture = try await request("GET", path: "test/passwordless/latest")
+            if capture["status"] as? String == "OK",
+               capture["email"] as? String == email {
+                return capture
+            }
+            try await Task.sleep(nanoseconds: 250_000_000)
+        }
+
+        throw UITestError.passwordlessEmailNotCaptured
+    }
+
     private func setUserProfileGetBehavior(_ behavior: UserProfileGetBehavior) async throws {
         let response = try await request(
             "POST",
@@ -396,7 +481,13 @@ private enum VerificationLinkDelivery {
     case systemDispatch
 }
 
+private enum Authentication {
+    case profileFixture
+    case realHubOTP
+}
+
 private enum UserProfileGetBehavior: String {
+    case holdAll = "hold-all"
     case holdNext = "hold-next"
     case normal
 }
@@ -405,8 +496,8 @@ private enum UITestError: Error {
     case appDidNotEnterBackground
     case emailVerificationNotCaptured
     case elementNotHittable
+    case passwordlessEmailNotCaptured
     case profileDidNotLoad
-    case selectAllNotAvailable
     case timedOutWaitingForElement
     case unexpectedResponse
     case userUpdateNotCaptured

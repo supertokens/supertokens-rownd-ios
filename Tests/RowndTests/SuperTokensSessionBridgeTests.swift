@@ -539,6 +539,71 @@ import AnyCodable
         }
     }
 
+    @Test func emailVerificationHubSuppressesAutomaticForegroundProfileHydrationUntilDismissal() async throws {
+        try await withGlobalTestLock {
+            let originalContext = Context.currentContext
+            let originalConfig = Rownd.config
+            let originalDisplayHubHandler = Rownd.displayHubHandler
+            let isolatedStore = createStore()
+            _ = Context(isolatedStore)
+            defer {
+                Context.currentContext = originalContext
+                Rownd.config = originalConfig
+                Rownd.displayHubHandler = originalDisplayHubHandler
+            }
+
+            let accessToken = generateJwt(
+                expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+                sessionHandle: "verification-hub-session"
+            )
+            let stableIdentity = try #require(
+                SuperTokensSessionBridge.stableSessionIdentity(from: accessToken)
+            )
+            let verificationURL = try #require(URL(
+                string: "https://hub.example.com/account/verify-email?token=email-token"
+            ))
+            await MainActor.run {
+                var auth = AuthState(accessToken: accessToken)
+                auth.profileHydrationPendingSessionIdentity = stableIdentity
+                isolatedStore.dispatch(SetAuthState(payload: auth))
+                Rownd.config.pendingHubDeepLinkUrl = verificationURL
+            }
+            let recorder = InitialForegroundProfileRecorder()
+
+            await fetchInitialForegroundProfile(recorder: recorder)
+
+            #expect(await recorder.fetchCount == 0)
+            #expect(await recorder.scheduleCount == 0)
+
+            await MainActor.run {
+                Rownd.config.pendingHubDeepLinkUrl = nil
+                Rownd.displayHubHandler = nil
+                Rownd.openHubDeepLink(verificationURL)
+            }
+            #expect(await waitUntil {
+                await MainActor.run {
+                    Rownd.getInstance().bottomSheetController.controller is HubViewController
+                }
+            })
+            await MainActor.run {
+                #expect(Rownd.config.consumePendingHubDeepLinkUrl() == verificationURL)
+            }
+
+            await fetchInitialForegroundProfile(recorder: recorder)
+
+            #expect(await recorder.fetchCount == 0)
+            #expect(await recorder.scheduleCount == 0)
+
+            await MainActor.run {
+                Rownd.getInstance().bottomSheetController.viewDidDisappear(false)
+            }
+            await fetchInitialForegroundProfile(recorder: recorder)
+
+            #expect(await recorder.fetchCount == 1)
+            #expect(await recorder.scheduleCount == 1)
+        }
+    }
+
     @Test func coldStartNetworkFailureRetriesUntilPendingProfileHydrates() async throws {
         try await withMockedSuperTokensSession {
             let originalContext = Context.currentContext
@@ -3135,6 +3200,21 @@ import AnyCodable
         return false
     }
 
+    private func fetchInitialForegroundProfile(
+        recorder: InitialForegroundProfileRecorder
+    ) async {
+        await Rownd.fetchInitialForegroundProfileIfNeeded(
+            appIsActive: { true },
+            fetchUserData: { _ in
+                await recorder.recordFetch(nil)
+                return .profileHydrationStillPending
+            },
+            scheduleRetry: { outcome in
+                await recorder.recordScheduledOutcome(outcome)
+            }
+        )
+    }
+
     private func waitForSignal(_ semaphore: DispatchSemaphore) async {
         await withCheckedContinuation { continuation in
             DispatchQueue.global().async {
@@ -3175,12 +3255,16 @@ private final class SynchronousConditionProbe: @unchecked Sendable {
 private actor InitialForegroundProfileRecorder {
     private(set) var fetchedIdentity: SuperTokensSessionBridge.StableSessionIdentity?
     private(set) var scheduledOutcome: UserData.ForegroundFetchOutcome?
+    private(set) var fetchCount = 0
+    private(set) var scheduleCount = 0
 
     func recordFetch(_ identity: SuperTokensSessionBridge.StableSessionIdentity?) {
+        fetchCount += 1
         fetchedIdentity = identity
     }
 
     func recordScheduledOutcome(_ outcome: UserData.ForegroundFetchOutcome) {
+        scheduleCount += 1
         scheduledOutcome = outcome
     }
 }

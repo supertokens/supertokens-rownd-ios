@@ -110,17 +110,20 @@ let latestPasswordlessEmail: CapturedPasswordlessEmail | undefined;
 const passwordlessConsumeStatuses: number[] = [];
 let migrationMode: MigrationMode = 'normal';
 let holdNextUserGet = false;
+let holdAllUserGets = false;
 const heldUserGetRequests = new Set<() => void>();
 
 function userGetBehaviorState() {
   return {
-    behavior: holdNextUserGet ? 'hold-next' : heldUserGetRequests.size > 0 ? 'holding' : 'normal',
+    behavior:
+      heldUserGetRequests.size > 0 ? 'holding' : holdAllUserGets ? 'hold-all' : holdNextUserGet ? 'hold-next' : 'normal',
     heldRequestCount: heldUserGetRequests.size,
   };
 }
 
 function restoreUserGetBehavior() {
   holdNextUserGet = false;
+  holdAllUserGets = false;
   for (const release of heldUserGetRequests) {
     release();
   }
@@ -450,7 +453,7 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
     if (req.method === 'GET' && req.path === '/auth/plugin/rownd/user') {
       counters.userGet += 1;
       capturePluginRequest('userGet', req, res);
-      if (holdNextUserGet) {
+      if (holdNextUserGet || holdAllUserGets) {
         holdNextUserGet = false;
         let releaseRequest!: () => void;
         const releasePromise = new Promise<void>((resolve) => {
@@ -501,11 +504,17 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
   app.post('/test/user-get-behavior', (req, res) => {
     const behavior = req.body?.behavior;
     if (behavior === 'hold-next') {
-      if (holdNextUserGet || heldUserGetRequests.size > 0) {
+      if (holdNextUserGet || holdAllUserGets || heldUserGetRequests.size > 0) {
         res.status(409).json({ status: 'ERROR', message: 'A user GET is already armed or held' });
         return;
       }
       holdNextUserGet = true;
+    } else if (behavior === 'hold-all') {
+      if (holdNextUserGet || holdAllUserGets || heldUserGetRequests.size > 0) {
+        res.status(409).json({ status: 'ERROR', message: 'A user GET is already armed or held' });
+        return;
+      }
+      holdAllUserGets = true;
     } else if (behavior === 'normal') {
       restoreUserGetBehavior();
     } else {
