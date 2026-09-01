@@ -100,6 +100,78 @@ import AnyCodable
         }
     }
 
+    @Test func case1StaleQueuedWorkFinishesBeforeS1AndCannotDefeatTheLastInstallation() async throws {
+        try await withMockedSuperTokensSession {
+            let s0AccessToken = generateJwt(
+                expires: Date(timeIntervalSinceNow: 1800).timeIntervalSince1970,
+                sessionHandle: "case-1-s0"
+            )
+            let rotatedS0AccessToken = generateJwt(
+                expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+                sessionHandle: "case-1-s0"
+            )
+            let s1AccessToken = generateJwt(
+                expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+                sessionHandle: "case-1-s1"
+            )
+            _ = try #require(await SuperTokensSessionBridge.adoptResponseSession(
+                SuperTokensSessionTokens(
+                    accessToken: s0AccessToken,
+                    refreshToken: "s0-refresh-token",
+                    frontToken: SuperTokensSessionBridge.buildFrontToken(from: s0AccessToken),
+                    antiCSRF: nil
+                ),
+                permit: SuperTokensSessionBridge.captureAuthOperationPermit()
+            ))
+            let staleWorkStarted = DispatchSemaphore(value: 0)
+            let releaseStaleWork = DispatchSemaphore(value: 0)
+
+            let staleWork = Task {
+                await SuperTokensSessionBridge.attemptRefresh {
+                    staleWorkStarted.signal()
+                    guard releaseStaleWork.wait(timeout: .now() + 2) == .success else {
+                        Issue.record("Timed out releasing stale S0 work")
+                        return false
+                    }
+                    return SDKStorage.set(
+                        "st-storage-item-st-access-token",
+                        value: rotatedS0AccessToken
+                    ) && FrontToken.setItem(
+                        frontToken: SuperTokensSessionBridge.buildFrontToken(
+                            from: rotatedS0AccessToken
+                        )
+                    )
+                }
+            }
+            guard await waitForSignal(staleWorkStarted, timeout: 2) else {
+                releaseStaleWork.signal()
+                _ = await staleWork.value
+                Issue.record("Stale S0 work did not start")
+                return
+            }
+
+            let s1Installation = Task {
+                await SuperTokensSessionBridge.adoptResponseSession(
+                    SuperTokensSessionTokens(
+                        accessToken: s1AccessToken,
+                        refreshToken: "s1-refresh-token",
+                        frontToken: SuperTokensSessionBridge.buildFrontToken(from: s1AccessToken),
+                        antiCSRF: "s1-anti-csrf"
+                    ),
+                    permit: SuperTokensSessionBridge.captureAuthOperationPermit()
+                )
+            }
+            releaseStaleWork.signal()
+
+            #expect(await staleWork.value)
+            let s1Identity = try #require(await s1Installation.value)
+            #expect(s1Identity.stable.sessionHandle == "case-1-s1")
+            #expect(await SuperTokensSessionBridge.getAccessToken() == s1AccessToken)
+            #expect(SuperTokensSessionBridge.getRefreshToken() == "s1-refresh-token")
+            #expect(SuperTokensSessionBridge.getAntiCSRF() == "s1-anti-csrf")
+        }
+    }
+
     @Test func invalidatedPermitRejectsAdoptionBeforeInstall() async throws {
         try await withMockedSuperTokensSession {
             let accessToken = generateJwt(
@@ -3220,6 +3292,19 @@ import AnyCodable
             DispatchQueue.global().async {
                 semaphore.wait()
                 continuation.resume()
+            }
+        }
+    }
+
+    private func waitForSignal(
+        _ semaphore: DispatchSemaphore,
+        timeout: TimeInterval
+    ) async -> Bool {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().asyncAfter(deadline: .now()) {
+                continuation.resume(
+                    returning: semaphore.wait(timeout: .now() + timeout) == .success
+                )
             }
         }
     }

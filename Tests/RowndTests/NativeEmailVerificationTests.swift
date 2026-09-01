@@ -542,6 +542,196 @@ import Testing
         }
     }
 
+    @Test func duplicateReplacementProfileRetrySchedulingIsIdempotent() async {
+        let identity = SuperTokensSessionBridge.StableSessionIdentity(
+            sessionHandle: "duplicate-retry-replacement",
+            userId: "user-id",
+            tenantId: nil
+        )
+        let sleepStarted = NativeVerificationGate()
+        let releaseSleep = NativeVerificationGate()
+        let attempts = NativeVerificationAttemptRecorder()
+        let coordinator = ProfileHydrationRetryCoordinator(
+            delays: [0],
+            sleep: { _ in
+                await sleepStarted.open()
+                await releaseSleep.wait()
+            }
+        )
+
+        await coordinator.schedule(for: identity) { _ in
+            await attempts.record()
+            return .stop
+        }
+        guard await waitForCondition(condition: { await sleepStarted.isOpen }) else {
+            await releaseSleep.open()
+            await coordinator.cancel()
+            Issue.record("Replacement profile retry did not start")
+            return
+        }
+        await coordinator.schedule(for: identity) { _ in
+            Issue.record("Duplicate scheduling must not replace the active retry")
+            return .stop
+        }
+        await releaseSleep.open()
+
+        let finished = await waitForCondition {
+            let attemptCount = await attempts.count
+            let isScheduled = await coordinator.isScheduled(for: identity)
+            return attemptCount == 1 && !isScheduled
+        }
+        if !finished {
+            await coordinator.cancel()
+        }
+        #expect(finished)
+    }
+
+    @Test func case9StaleForegroundProfileSuccessCannotOverwriteReplacementIdentity() async throws {
+        try await withNativeSessionHarness {
+            UserData.fetchCoordinator.cancelCurrent()
+            let originalContext = Context.currentContext
+            let store = createStore()
+            _ = Context(store)
+            defer {
+                UserData.fetchCoordinator.cancelCurrent()
+                Context.currentContext = originalContext
+            }
+            let s0AccessToken = generateJwt(
+                expires: Date(timeIntervalSinceNow: 1800).timeIntervalSince1970,
+                sessionHandle: "case-9-s0"
+            )
+            let s1AccessToken = generateJwt(
+                expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+                sessionHandle: "case-9-s1"
+            )
+            _ = try #require(await SuperTokensSessionBridge.adoptResponseSession(
+                SuperTokensSessionTokens(
+                    accessToken: s0AccessToken,
+                    refreshToken: "s0-refresh-token",
+                    frontToken: SuperTokensSessionBridge.buildFrontToken(from: s0AccessToken),
+                    antiCSRF: nil
+                ),
+                permit: SuperTokensSessionBridge.captureAuthOperationPermit()
+            ))
+            await MainActor.run {
+                store.dispatch(SetAuthState(payload: AuthState(accessToken: s0AccessToken)))
+                store.dispatch(SetUserState(payload: UserState(data: [
+                    "email": AnyCodable("s0@example.com")
+                ])))
+            }
+            let staleState = try #require(store.state)
+            let staleFetchStarted = NativeVerificationGate()
+            let releaseStaleFetch = NativeVerificationGate()
+            let staleFetch = Task {
+                await UserData.fetchForegroundUserData(
+                    staleState,
+                    fetchUserData: { _ in
+                        await staleFetchStarted.open()
+                        await releaseStaleFetch.wait()
+                        return .profile(UserStateResponse(data: [
+                            "email": AnyCodable("stale-s0@example.com")
+                        ]))
+                    },
+                    persistState: { _ in true }
+                )
+            }
+            guard await waitForCondition(condition: { await staleFetchStarted.isOpen }) else {
+                await releaseStaleFetch.open()
+                staleFetch.cancel()
+                _ = await staleFetch.value
+                Issue.record("Stale foreground profile fetch did not start")
+                return
+            }
+
+            guard await SuperTokensSessionBridge.adoptResponseSession(
+                SuperTokensSessionTokens(
+                    accessToken: s1AccessToken,
+                    refreshToken: "s1-refresh-token",
+                    frontToken: SuperTokensSessionBridge.buildFrontToken(from: s1AccessToken),
+                    antiCSRF: nil
+                ),
+                permit: SuperTokensSessionBridge.captureAuthOperationPermit()
+            ) != nil else {
+                await releaseStaleFetch.open()
+                staleFetch.cancel()
+                _ = await staleFetch.value
+                Issue.record("S1 could not be installed")
+                return
+            }
+            let replacementOutcome: SuperTokensSessionBridge.ReplacementRowndStateSyncResult
+            do {
+                replacementOutcome = try await SuperTokensSessionBridge
+                    .syncReplacementRowndStateFromSuperTokens(
+                        expectedAccessToken: s1AccessToken,
+                        expectedPreviousRowndAccessToken: s0AccessToken,
+                        fetchUserData: { _ in
+                            UserStateResponse(data: [
+                                "email": AnyCodable("verified-s1@example.com")
+                            ])
+                        },
+                        persistState: { _ in true }
+                    )
+            } catch {
+                await releaseStaleFetch.open()
+                staleFetch.cancel()
+                _ = await staleFetch.value
+                throw error
+            }
+            #expect(replacementOutcome == .profileSynchronized)
+            await releaseStaleFetch.open()
+
+            #expect(await staleFetch.value != .profileSynchronized)
+            #expect(await SuperTokensSessionBridge.getAccessToken() == s1AccessToken)
+            await MainActor.run {
+                #expect(store.state.auth.accessToken == s1AccessToken)
+                #expect(
+                    store.state.user.data["email"]?.value as? String
+                        == "verified-s1@example.com"
+                )
+            }
+        }
+    }
+
+    @Test func case11CancellationStopsVerificationTransportBeforeSynchronization() async throws {
+        CancellableEmailVerificationURLProtocol.reset()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [CancellableEmailVerificationURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let request = URLRequest(
+            url: URL(string: "https://api.example.com/auth/user/email/verify")!
+        )
+        let verification = Task {
+            try await HubWebViewController.performNativeEmailVerification(
+                request: request,
+                session: session,
+                getAccessToken: { "s0-access-token" },
+                syncReplacementState: { _, _ in
+                    Issue.record("Cancelled verification must not synchronize replacement state")
+                    return .profileSynchronized
+                }
+            )
+        }
+        guard await waitForSignal(
+            CancellableEmailVerificationURLProtocol.started,
+            timeout: 2
+        ) else {
+            verification.cancel()
+            _ = try? await verification.value
+            Issue.record("Verification transport did not start")
+            return
+        }
+
+        verification.cancel()
+
+        await #expect(throws: (any Error).self) {
+            try await verification.value
+        }
+        #expect(await waitForSignal(
+            CancellableEmailVerificationURLProtocol.stopped,
+            timeout: 2
+        ))
+    }
+
     @Test func verificationAcceptsCurrentTokenRotationFromResponseSession() async throws {
         let request = URLRequest(url: URL(string: "https://api.example.com/auth/user/email/verify")!)
         let configuration = URLSessionConfiguration.ephemeral
@@ -611,7 +801,7 @@ import Testing
         }
     }
 
-    @Test func responseDeliveryRequiresUnchangedTrustedNavigation() throws {
+    @Test func nativeResponseDeliveryRejectsChangedGenerationURLOrTargetPage() throws {
         let url = try #require(URL(string: "https://hub.example.com/account/verify-email?token=secret"))
 
         #expect(HubWebViewController.canDeliverNativeEmailVerificationResponse(
@@ -628,6 +818,22 @@ import Testing
             currentURL: url,
             requestedNavigationGeneration: 1,
             currentNavigationGeneration: 2,
+            baseURL: "https://hub.example.com"
+        ))
+        #expect(!HubWebViewController.canDeliverNativeEmailVerificationResponse(
+            on: .deepLink,
+            requestedURL: url,
+            currentURL: URL(string: "https://hub.example.com/account"),
+            requestedNavigationGeneration: 1,
+            currentNavigationGeneration: 1,
+            baseURL: "https://hub.example.com"
+        ))
+        #expect(!HubWebViewController.canDeliverNativeEmailVerificationResponse(
+            on: .manageAccount,
+            requestedURL: url,
+            currentURL: url,
+            requestedNavigationGeneration: 1,
+            currentNavigationGeneration: 1,
             baseURL: "https://hub.example.com"
         ))
     }
@@ -686,6 +892,19 @@ import Testing
             }
         }
     }
+
+    private func waitForSignal(
+        _ semaphore: DispatchSemaphore,
+        timeout: TimeInterval
+    ) async -> Bool {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().asyncAfter(deadline: .now()) {
+                continuation.resume(
+                    returning: semaphore.wait(timeout: .now() + timeout) == .success
+                )
+            }
+        }
+    }
 }
 
 private actor ReplacementProfileResponseSequence {
@@ -724,6 +943,34 @@ private actor BlockingProfileResponse {
     }
 }
 
+private actor NativeVerificationGate {
+    private(set) var isOpen = false
+    private var continuations: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        guard !isOpen else { return }
+        await withCheckedContinuation { continuation in
+            continuations.append(continuation)
+        }
+    }
+
+    func open() {
+        guard !isOpen else { return }
+        isOpen = true
+        let waiting = continuations
+        continuations.removeAll()
+        waiting.forEach { $0.resume() }
+    }
+}
+
+private actor NativeVerificationAttemptRecorder {
+    private(set) var count = 0
+
+    func record() {
+        count += 1
+    }
+}
+
 private func accessTokenSequence(_ values: String?...) -> () async -> String? {
     var values = values
     return { values.removeFirst() }
@@ -751,4 +998,25 @@ private final class EmailVerificationResponseURLProtocol: URLProtocol {
     }
 
     override func stopLoading() {}
+}
+
+private final class CancellableEmailVerificationURLProtocol: URLProtocol {
+    static var started = DispatchSemaphore(value: 0)
+    static var stopped = DispatchSemaphore(value: 0)
+
+    static func reset() {
+        started = DispatchSemaphore(value: 0)
+        stopped = DispatchSemaphore(value: 0)
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        Self.started.signal()
+    }
+
+    override func stopLoading() {
+        Self.stopped.signal()
+    }
 }
