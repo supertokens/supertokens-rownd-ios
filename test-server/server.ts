@@ -508,7 +508,8 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
     .withWaitStrategy(Wait.forLogMessage('database system is ready to accept connections'))
     .start();
 
-  coreContainer = await new GenericContainer('supertokens/supertokens-postgresql:12.0.10')
+  const coreImage = process.env.E2E_CORE_IMAGE || 'supertokens/supertokens-postgresql:12.0.10';
+  coreContainer = await new GenericContainer(coreImage)
     .withNetwork(network)
     .withEnvironment({
       POSTGRESQL_CONNECTION_URI: 'postgresql://supertokens:somepassword@postgres:5432/supertokens',

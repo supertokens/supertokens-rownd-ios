@@ -1,0 +1,91 @@
+name: Native email verification compatibility
+
+on:
+  workflow_dispatch:
+    inputs:
+      hub_ref:
+        description: Pushed Hub branch, tag, or commit
+        required: true
+        type: string
+      plugin_version:
+        description: Published @supertokens-plugins/rownd-nodejs version
+        required: true
+        default: 0.6.13
+        type: string
+      core_image:
+        description: SuperTokens Core container image, including tag or digest
+        required: true
+        default: supertokens/supertokens-postgresql:12.0.10
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-email-verification-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate selected versions
+    runs-on: macos-15-intel
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout iOS SDK
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Checkout Hub
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: supertokens/supertokens-rownd-hub
+          ref: ${{ inputs.hub_ref }}
+          path: supertokens-rownd-hub
+          token: ${{ secrets.ROWND_HUB_REPOSITORY_TOKEN }}
+          persist-credentials: false
+
+      - name: Set up Xcode
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
+        with:
+          xcode-version: 26.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Docker
+        uses: douglascamata/setup-docker-macos-action@d5ccc6aae0ce23e7700154f5e63cc53e6433ac48 # v1.1.0
+        with:
+          lima: v1.2.1
+          colima: v0.9.1
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm ci --prefix supertokens-rownd-hub
+
+      - name: Select released plugin
+        env:
+          PLUGIN_VERSION: ${{ inputs.plugin_version }}
+        run: npm install --no-save --package-lock=false "@supertokens-plugins/rownd-nodejs@$PLUGIN_VERSION"
+
+      - name: Resolve Swift dependencies
+        run: xcodebuild -resolvePackageDependencies -workspace RowndPackage.xcworkspace -scheme Rownd
+
+      - name: Run stale-authentication ordering test
+        env:
+          E2E_CORE_IMAGE: ${{ inputs.core_image }}
+          IOS_LOCAL_HUB_REPO: ${{ github.workspace }}/supertokens-rownd-hub
+        run: npm run test:e2e:stale-refresh-race
+
+      - name: Run Safari handoff test
+        env:
+          E2E_CORE_IMAGE: ${{ inputs.core_image }}
+          IOS_E2E_ONLY_UI: 1
+          IOS_E2E_UI_SCRIPT: test:e2e:safari-handoff
+          IOS_LOCAL_HUB_REPO: ${{ github.workspace }}/supertokens-rownd-hub
+        run: npm run test:e2e

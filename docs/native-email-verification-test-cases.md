@@ -151,7 +151,21 @@ Expected: existing browser behavior and unsupported-container messaging remain u
 
 ### 21. Version compatibility matrix
 
-Test the fixed Hub with iOS 0.1.15, the latest iOS SDK, supported older SDKs, released and repository-head plugins, and supported Core versions.
+Record the exact iOS, Hub, plugin, and Core commit/tag or image digest with every result. Run these combinations; do not substitute `latest` for a recorded version:
+
+| iOS | Hub | Plugin | Core | Required result |
+| --- | --- | --- | --- | --- |
+| `v0.1.15` | fixed commit | each supported released version | oldest and newest supported versions | Core invariant and normal authentication pass |
+| current branch | fixed commit | each supported released version | oldest and newest supported versions | Core invariant and normal authentication pass |
+| `v0.1.15`, then current branch | fixed commit | repository HEAD | current supported version | Core invariant passes |
+| current branch | pre-fix commit `2146e7ad6f67473d7d5aadab2f94cc5373c5ff0b` | current released version | current supported version | iOS guard prevents stale authentication |
+| latest supported pre-`v0.1.15` SDK | fixed commit | current released version | current supported version | pending email change is rejected before email delivery; normal authentication still passes |
+
+Use `.github/workflows/native-email-verification.yml` to test the current iOS branch with a selected Hub ref, published plugin version, and Core image. Run it once per released-plugin/Core pair. The workflow checks the Hub out into a separate directory, installs the public plugin without changing lockfiles, and passes `E2E_CORE_IMAGE` to the harness. Hub checkout still requires the read-only `ROWND_HUB_REPOSITORY_TOKEN` because the Hub repository is private.
+
+For a local Hub checkout, use the E2E commands already documented in `Tests/README.md` and set `IOS_LOCAL_HUB_REPO` to its path. The runner never changes that checkout's ref. Check out the desired Hub ref yourself or use a separate Git worktree. `E2E_CORE_IMAGE=supertokens/supertokens-postgresql:<version>` selects Core without credentials.
+
+Historical iOS refs and repository-head plugins remain manual. Historical refs may not contain the current E2E runner, and the existing local-plugin command replaces installed dependencies. Use isolated clones/worktrees, record their clean starting revisions, and do not run the local-plugin command in a checkout with dependency changes that must be preserved.
 
 Expected: fixed Hub protects existing clients without breaking normal authentication.
 
@@ -169,6 +183,18 @@ Expected: shared Hub suppression works and Android preserves its replacement ses
 
 ## Manual Real-Device Smoke Test
 
-Use a genuinely new account and perform its first email update. Open the real verification email on the device and return to the app through the configured universal link or custom scheme. Verify the core invariant immediately after verification, after a background/foreground cycle, and after a cold relaunch.
+This test requires an externally reachable integration; simulator loopback infrastructure is insufficient.
 
-Because production timing is uncontrolled, repeat the smoke test across fast and slow networks. A successful manual run validates the real integration but does not replace deterministic ordering tests.
+- Deploy the exact fixed Hub ref under test to the Hub origin used by the app and verification links. A local Hub alone cannot validate Universal Links on a device.
+- Deploy the backend with the selected plugin version, or expose it through a stable HTTPS tunnel. Its public `API_DOMAIN` must route to the backend for the entire test and its `/auth` base path must match the app and Hub configuration.
+- Connect that backend to the selected reachable Core version. Record the Core image tag or digest and storage mode.
+- Configure Hub/app metadata so the Hub origin, public backend/tunnel origin, app key, allowed origins, and mobile client domain all describe the same environment.
+- Install a development-signed build whose bundle ID and Associated Domains entitlement match the deployed Hub's valid `apple-app-site-association` entry. Do not modify or commit personal signing settings.
+- Confirm the device can open the Hub and backend health endpoint without VPN, localhost, certificate, or tunnel-warning failures. Confirm the tunnel does not rewrite cookies, exposed SuperTokens headers, query parameters, or redirects.
+- Use a genuinely new account and perform its first email update. Confirm a real email is delivered and its link contains non-empty `token` and `rowndPendingVerificationId` parameters without recording their values.
+- Open the email on the same device. Validate Universal Link handoff first; repeat with the registered custom scheme when that path is supported. Fail the run if the link remains in Safari unexpectedly.
+- Verify the core invariant immediately after verification, after a background/foreground cycle, and after a cold relaunch. Also perform one protected API request and one normal sign-out/sign-in cycle.
+- Repeat once on an unrestricted fast network and once with a constrained or high-latency network. Use a new account/email for each run so a consumed link or prior pending operation cannot mask the result.
+- Record device model, iOS version, app build/ref, Hub ref and deployed URL, backend/plugin ref and public URL, Core version, link type, network condition, and pass/fail. Redact tokens, cookies, API keys, app secrets, and verification-link query values.
+
+A successful manual run validates the real integration but does not replace deterministic ordering tests.
