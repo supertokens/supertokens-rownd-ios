@@ -27,9 +27,21 @@ final class RowndManageAccountEmailUITests: XCTestCase {
         try await runEmailVerificationScenario(delivery: .systemDispatch, authentication: .realHubOTP)
     }
 
+    func testDelayedHubStartupAuthenticationDoesNotReplaceNativeVerificationSession() async throws {
+        guard #available(iOS 16.4, *) else {
+            throw XCTSkip("System custom-scheme dispatch requires iOS 16.4 or newer")
+        }
+        try await runEmailVerificationScenario(
+            delivery: .systemDispatch,
+            authentication: .realHubOTP,
+            race: .delayedHubStartupRefresh
+        )
+    }
+
     private func runEmailVerificationScenario(
         delivery: VerificationLinkDelivery,
-        authentication: Authentication = .profileFixture
+        authentication: Authentication = .profileFixture,
+        race: EmailVerificationRace = .none
     ) async throws {
         let suffix = UUID().uuidString.lowercased().replacingOccurrences(
             of: "[0-9]",
@@ -41,7 +53,12 @@ final class RowndManageAccountEmailUITests: XCTestCase {
 
         let app = XCUIApplication()
         app.terminate()
-        addTeardownBlock { app.terminate() }
+        addTeardownBlock {
+            app.terminate()
+            if race == .delayedHubStartupRefresh {
+                _ = try? await self.updateStaleRefreshRace(action: "reset")
+            }
+        }
         _ = try await request("POST", path: "reset")
         app.launchEnvironment = [
             "ROWND_E2E": "1",
@@ -100,9 +117,11 @@ final class RowndManageAccountEmailUITests: XCTestCase {
             XCTAssertEqual(data["email"] as? String, editedEmail)
         }
 
-        XCTAssertTrue(
-            webView.staticTexts["Verify your new email"].waitForExistence(timeout: 10)
-        )
+        if race == .none {
+            XCTAssertTrue(
+                webView.staticTexts["Verify your new email"].waitForExistence(timeout: 10)
+            )
+        }
         let verification = try await waitForVerificationEmail(email: editedEmail)
         let link = try XCTUnwrap(verification["link"] as? String)
         let verificationURL = try XCTUnwrap(URLComponents(string: link))
@@ -115,6 +134,10 @@ final class RowndManageAccountEmailUITests: XCTestCase {
         XCTAssertFalse(queryItems["rowndPendingVerificationId", default: ""].isEmpty)
         XCTAssertEqual(queryItems["apiDomain"], backendURL.absoluteString)
         XCTAssertEqual(queryItems["apiBasePath"], "/auth")
+        if race == .delayedHubStartupRefresh {
+            let armed = try await updateStaleRefreshRace(action: "arm")
+            XCTAssertEqual(armed["armed"] as? Bool, true)
+        }
         switch delivery {
         case .directInjection:
             let deepLink = try makeNativeDeepLink(from: link)
@@ -152,7 +175,97 @@ final class RowndManageAccountEmailUITests: XCTestCase {
         try waitForLabel(sessionHandleLabel, toDifferFrom: initiatingSessionHandle)
         let replacementSessionHandle = sessionHandleLabel.label
         XCTAssertNotEqual(replacementSessionHandle, "no-session")
-        try waitForLabel(app.staticTexts["e2e-cached-user-email"], toEqual: editedEmail)
+
+        if race == .delayedHubStartupRefresh {
+            let heldRace = try await waitForStaleRefreshRace { response in
+                let refresh = response["heldRefresh"] as? [String: Any]
+                let profile = response["heldProfile"] as? [String: Any]
+                return refresh?["lifecycle"] as? String == "held"
+                    && response["verificationStatusCode"] as? Int == 200
+                    && profile?["lifecycle"] as? String == "held"
+            }
+            try assertStaleRefreshRace(
+                heldRace,
+                initiatingSessionHandle: initiatingSessionHandle,
+                replacementSessionHandle: replacementSessionHandle
+            )
+            XCTAssertTrue(webView.exists, "Profile hold must keep the verification WebView open")
+
+            let releasedRace = try await updateStaleRefreshRace(action: "release-stale-refresh")
+            try assertRaceEventOrder(
+                releasedRace,
+                earlier: "replacement-profile-held",
+                later: "stale-refresh-released"
+            )
+            _ = try await waitForStaleRefreshRace { response in
+                let refresh = response["heldRefresh"] as? [String: Any]
+                return refresh?["lifecycle"] as? String == "released"
+                    && refresh?["releaseReason"] as? String == "manual"
+                    && refresh?["responseFinished"] as? Bool == true
+            }
+            let postReleaseRace = try await waitForPostReleaseRefreshOrStableQuietWindow(
+                app: app,
+                replacementSessionHandle: replacementSessionHandle
+            )
+            XCTAssertEqual(
+                app.staticTexts["e2e-auth-state"].label,
+                "authenticated",
+                "Stale Hub authentication changed native auth state; race=\(postReleaseRace)"
+            )
+            XCTAssertEqual(
+                sessionHandleLabel.label,
+                replacementSessionHandle,
+                "Stale Hub authentication replaced S1; race=\(postReleaseRace)"
+            )
+            let postReleaseRefreshes = try XCTUnwrap(
+                postReleaseRace["postReleaseRefreshes"] as? [[String: Any]]
+            )
+            let postReleaseRefreshAttempts = postReleaseRace["postReleaseRefreshAttempts"] as? Int ?? 0
+            if postReleaseRefreshAttempts > 0 {
+                XCTAssertEqual(
+                    postReleaseRefreshes.count,
+                    postReleaseRefreshAttempts,
+                    "Every post-release refresh attempt must finish; race=\(postReleaseRace)"
+                )
+                XCTAssertTrue(
+                    postReleaseRefreshes.allSatisfy { $0["statusCode"] as? Int == 401 },
+                    "The stale initiating session must be rejected; race=\(postReleaseRace)"
+                )
+                try assertRaceEventOrder(
+                    postReleaseRace,
+                    earlier: "refresh-response-finished",
+                    later: "post-release-refresh-attempted"
+                )
+            }
+            print("STALE_REFRESH_RACE_POST_RELEASE \(postReleaseRace)")
+            _ = try await updateStaleRefreshRace(action: "release-profile")
+            let completedRace = try await waitForStaleRefreshRace { response in
+                let profile = response["heldProfile"] as? [String: Any]
+                return profile?["lifecycle"] as? String == "released"
+                    && profile?["releaseReason"] as? String == "manual"
+                    && profile?["responseFinished"] as? Bool == true
+            }
+            let completedProfile = try XCTUnwrap(completedRace["heldProfile"] as? [String: Any])
+            XCTAssertEqual(completedProfile["statusCode"] as? Int, 200)
+            try assertRaceEventOrder(
+                completedRace,
+                earlier: "replacement-profile-released",
+                later: "replacement-profile-response-finished"
+            )
+            print("STALE_REFRESH_RACE_PROFILE_FINISHED \(completedRace)")
+            try waitForLabel(app.staticTexts["e2e-auth-state"], toEqual: "authenticated")
+            try waitForLabel(sessionHandleLabel, toEqual: replacementSessionHandle)
+            let emailExpectation = XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "label == %@", editedEmail),
+                object: app.staticTexts["e2e-cached-user-email"]
+            )
+            guard XCTWaiter.wait(for: [emailExpectation], timeout: 15) == .completed else {
+                XCTFail("S1 profile response did not preserve edited cached email; race=\(completedRace)")
+                return
+            }
+        } else {
+            try waitForLabel(app.staticTexts["e2e-cached-user-email"], toEqual: editedEmail)
+        }
 
         let closeButton = app.webViews.firstMatch.buttons["Close"]
         XCTAssertTrue(closeButton.waitForExistence(timeout: 10))
@@ -454,6 +567,114 @@ final class RowndManageAccountEmailUITests: XCTestCase {
         throw UITestError.userProfileGetNotHeld
     }
 
+    private func updateStaleRefreshRace(action: String) async throws -> [String: Any] {
+        try await request(
+            "POST",
+            path: "test/stale-refresh-race",
+            body: ["action": action]
+        )
+    }
+
+    private func waitForStaleRefreshRace(
+        timeout: TimeInterval = 20,
+        predicate: @escaping ([String: Any]) -> Bool
+    ) async throws -> [String: Any] {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let response = try await request("GET", path: "test/stale-refresh-race")
+            if predicate(response) {
+                return response
+            }
+            try await Task.sleep(nanoseconds: 250_000_000)
+        }
+        throw UITestError.staleRefreshRaceNotExercised
+    }
+
+    private func assertStaleRefreshRace(
+        _ response: [String: Any],
+        initiatingSessionHandle: String,
+        replacementSessionHandle: String
+    ) throws {
+        let heldRefresh = try XCTUnwrap(response["heldRefresh"] as? [String: Any])
+        let heldProfile = try XCTUnwrap(response["heldProfile"] as? [String: Any])
+        let events = try XCTUnwrap(response["events"] as? [[String: Any]])
+        XCTAssertFalse(
+            events.contains {
+                let name = $0["name"] as? String ?? ""
+                return name.contains("timeout") || name.contains("disconnect")
+            },
+            "Race harness timed out or disconnected instead of exercising the intended release: \(events)"
+        )
+        XCTAssertEqual(response["refreshCandidateReserved"] as? Bool, true)
+        XCTAssertEqual(heldRefresh["lifecycle"] as? String, "held")
+        XCTAssertEqual(heldRefresh["responseFinished"] as? Bool, false)
+        XCTAssertEqual(heldProfile["lifecycle"] as? String, "held")
+        XCTAssertEqual(heldProfile["responseFinished"] as? Bool, false)
+        XCTAssertEqual(heldRefresh["statusCode"] as? Int, 200)
+        XCTAssertEqual(
+            heldRefresh["sessionHandle"] as? String,
+            initiatingSessionHandle,
+            "Held startup refresh must belong to initiating session S0"
+        )
+        XCTAssertEqual(
+            heldProfile["requestSessionHandle"] as? String,
+            replacementSessionHandle,
+            "Held profile request must belong to replacement session S1"
+        )
+        try assertRaceEventOrder(response, earlier: "refresh-response-held", later: "verification-finished")
+        try assertRaceEventOrder(response, earlier: "verification-finished", later: "replacement-profile-held")
+    }
+
+    private func waitForPostReleaseRefreshOrStableQuietWindow(
+        app: XCUIApplication,
+        replacementSessionHandle: String,
+        quietWindow: TimeInterval = 3,
+        timeout: TimeInterval = 12
+    ) async throws -> [String: Any] {
+        let deadline = Date().addingTimeInterval(timeout)
+        var stableSince: Date?
+        var latestResponse: [String: Any] = [:]
+
+        while Date() < deadline {
+            latestResponse = try await request("GET", path: "test/stale-refresh-race")
+            let attempts = latestResponse["postReleaseRefreshAttempts"] as? Int ?? 0
+            let finished = latestResponse["postReleaseRefreshes"] as? [[String: Any]] ?? []
+            if attempts > 0 && finished.count == attempts {
+                return latestResponse
+            }
+
+            let remainsStable = app.staticTexts["e2e-auth-state"].label == "authenticated"
+                && app.staticTexts["e2e-session-handle"].label == replacementSessionHandle
+                && app.webViews.firstMatch.exists
+            if remainsStable {
+                if stableSince == nil {
+                    stableSince = Date()
+                }
+                if let stableSince, Date().timeIntervalSince(stableSince) >= quietWindow {
+                    XCTAssertEqual(attempts, 0, "Quiet path must not hide an unfinished refresh attempt")
+                    return latestResponse
+                }
+            } else {
+                stableSince = nil
+            }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+
+        XCTFail("No finished post-release refresh or stable quiet window; race=\(latestResponse)")
+        throw UITestError.staleRefreshRaceNotExercised
+    }
+
+    private func assertRaceEventOrder(
+        _ response: [String: Any],
+        earlier: String,
+        later: String
+    ) throws {
+        let events = try XCTUnwrap(response["events"] as? [[String: Any]])
+        let earlierOrder = try XCTUnwrap(events.first { $0["name"] as? String == earlier }?["order"] as? Int)
+        let laterOrder = try XCTUnwrap(events.first { $0["name"] as? String == later }?["order"] as? Int)
+        XCTAssertLessThan(earlierOrder, laterOrder, "Expected \(earlier) before \(later); events=\(events)")
+    }
+
     private func request(
         _ method: String,
         path: String,
@@ -486,6 +707,11 @@ private enum Authentication {
     case realHubOTP
 }
 
+private enum EmailVerificationRace {
+    case none
+    case delayedHubStartupRefresh
+}
+
 private enum UserProfileGetBehavior: String {
     case holdAll = "hold-all"
     case holdNext = "hold-next"
@@ -498,6 +724,7 @@ private enum UITestError: Error {
     case elementNotHittable
     case passwordlessEmailNotCaptured
     case profileDidNotLoad
+    case staleRefreshRaceNotExercised
     case timedOutWaitingForElement
     case unexpectedResponse
     case userUpdateNotCaptured

@@ -67,6 +67,50 @@ type IntegrationHarness = {
   stop: () => Promise<void>;
 };
 
+type RaceEvent = {
+  order: number;
+  name: string;
+  statusCode?: number;
+  sessionHandle?: string;
+  reason?: string;
+};
+
+type HoldLifecycle = 'held' | 'released' | 'timed-out' | 'disconnected' | 'reset' | 'shutdown';
+type ReleaseReason = 'manual' | 'timeout' | 'disconnect' | 'reset' | 'shutdown' | 'dependency-ready';
+
+type ReleaseControl = {
+  isActive: () => boolean;
+  release: (reason: ReleaseReason) => boolean;
+};
+
+type StaleRefreshRace = {
+  generation: number;
+  armed: boolean;
+  events: RaceEvent[];
+  refreshCandidateReserved: boolean;
+  heldRefresh?: {
+    statusCode: number;
+    sessionHandle?: string;
+    lifecycle: HoldLifecycle;
+    releaseReason?: ReleaseReason;
+    responseFinished: boolean;
+  };
+  verificationWaiting: boolean;
+  verificationStatusCode?: number;
+  heldProfile?: {
+    requestSessionHandle?: string;
+    lifecycle: HoldLifecycle;
+    releaseReason?: ReleaseReason;
+    responseFinished: boolean;
+    statusCode?: number;
+  };
+  postReleaseRefreshAttempts: number;
+  postReleaseRefreshes: Array<{ statusCode: number; sessionHandle?: string }>;
+  refreshControl?: ReleaseControl;
+  verificationControl?: ReleaseControl;
+  profileControl?: ReleaseControl;
+};
+
 const port = Number(process.env.IOS_HARNESS_PORT || 3100);
 const appName = 'Rownd iOS Integration Tests';
 const hubBaseUrl = process.env.IOS_HUB_BASE_URL || 'http://127.0.0.1:8788';
@@ -112,6 +156,233 @@ let migrationMode: MigrationMode = 'normal';
 let holdNextUserGet = false;
 let holdAllUserGets = false;
 const heldUserGetRequests = new Set<() => void>();
+const raceTimeoutMs = 20_000;
+let nextRaceGeneration = 1;
+let staleRefreshRace: StaleRefreshRace = createStaleRefreshRace();
+
+function createStaleRefreshRace(): StaleRefreshRace {
+  return {
+    generation: nextRaceGeneration++,
+    armed: false,
+    events: [],
+    refreshCandidateReserved: false,
+    verificationWaiting: false,
+    postReleaseRefreshAttempts: 0,
+    postReleaseRefreshes: [],
+  };
+}
+
+function recordRaceEvent(
+  race: StaleRefreshRace,
+  name: string,
+  metadata: Omit<RaceEvent, 'name' | 'order'> = {},
+) {
+  race.events.push({ order: race.events.length + 1, name, ...metadata });
+}
+
+function sessionHandleFromTokenHeader(value: string | string[] | number | undefined) {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const token = value.startsWith('Bearer ') ? value.slice('Bearer '.length) : value;
+  const payload = token.split('.')[1];
+  if (!payload) {
+    return undefined;
+  }
+  try {
+    const decoded = JSON.parse(Buffer.from(payload, 'base64url').toString()) as Record<string, unknown>;
+    return typeof decoded.sessionHandle === 'string' ? decoded.sessionHandle : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function createReleaseControl(
+  race: StaleRefreshRace,
+  timeoutName: string,
+  onRelease: (reason: ReleaseReason) => void,
+): ReleaseControl {
+  let released = false;
+  const timeout = setTimeout(() => {
+    if (!released) {
+      recordRaceEvent(race, timeoutName, { reason: 'timeout' });
+      control.release('timeout');
+    }
+  }, raceTimeoutMs);
+  const control: ReleaseControl = {
+    isActive: () => !released,
+    release: (reason) => {
+      if (released) {
+        return false;
+      }
+      released = true;
+      clearTimeout(timeout);
+      onRelease(reason);
+      return true;
+    },
+  };
+  return control;
+}
+
+function lifecycleForRelease(reason: ReleaseReason): HoldLifecycle {
+  switch (reason) {
+    case 'manual':
+    case 'dependency-ready':
+      return 'released';
+    case 'timeout':
+      return 'timed-out';
+    case 'disconnect':
+      return 'disconnected';
+    case 'reset':
+      return 'reset';
+    case 'shutdown':
+      return 'shutdown';
+  }
+}
+
+function releaseStaleRefreshRace(race: StaleRefreshRace, reason: 'reset' | 'shutdown') {
+  race.refreshControl?.release(reason);
+  race.verificationControl?.release(reason);
+  race.profileControl?.release(reason);
+}
+
+function restoreStaleRefreshRace(reason: 'reset' | 'shutdown' = 'reset') {
+  const previousRace = staleRefreshRace;
+  releaseStaleRefreshRace(previousRace, reason);
+  staleRefreshRace = createStaleRefreshRace();
+}
+
+function staleRefreshRaceState() {
+  const race = staleRefreshRace;
+  return {
+    status: 'OK',
+    generation: race.generation,
+    armed: race.armed,
+    events: race.events,
+    refreshCandidateReserved: race.refreshCandidateReserved,
+    heldRefresh: race.heldRefresh,
+    verificationWaiting: race.verificationWaiting,
+    verificationStatusCode: race.verificationStatusCode,
+    heldProfile: race.heldProfile,
+    postReleaseRefreshAttempts: race.postReleaseRefreshAttempts,
+    postReleaseRefreshes: race.postReleaseRefreshes,
+  };
+}
+
+function observePostReleaseRefresh(race: StaleRefreshRace, res: express.Response) {
+  race.postReleaseRefreshAttempts += 1;
+  recordRaceEvent(race, 'post-release-refresh-attempted');
+  res.on('finish', () => {
+    const observation = {
+      statusCode: res.statusCode,
+      sessionHandle: sessionHandleFromTokenHeader(res.getHeader('st-access-token')),
+    };
+    race.postReleaseRefreshes.push(observation);
+    recordRaceEvent(race, 'post-release-refresh-finished', observation);
+  });
+  res.on('close', () => {
+    if (!res.writableFinished) {
+      recordRaceEvent(race, 'post-release-refresh-disconnected', { reason: 'disconnect' });
+    }
+  });
+}
+
+function interceptStaleRefreshResponse(race: StaleRefreshRace, req: express.Request, res: express.Response) {
+  const originalWrite = res.write.bind(res) as (...args: any[]) => boolean;
+  const originalEnd = res.end.bind(res) as (...args: any[]) => express.Response;
+  const writes: any[][] = [];
+  let endArgs: any[] = [];
+  let ended = false;
+  let disconnected = false;
+
+  const flush = () => {
+    res.write = originalWrite as typeof res.write;
+    res.end = originalEnd as typeof res.end;
+    if (res.destroyed) {
+      return;
+    }
+    for (const args of writes) {
+      originalWrite(...args);
+    }
+    originalEnd(...endArgs);
+  };
+
+  const releaseForDisconnect = () => {
+    disconnected = true;
+    if (!res.writableFinished && race.refreshControl?.isActive()) {
+      race.refreshControl.release('disconnect');
+    }
+  };
+  req.on('aborted', releaseForDisconnect);
+  res.on('close', releaseForDisconnect);
+  res.on('finish', () => {
+    if (race.heldRefresh) {
+      race.heldRefresh.responseFinished = true;
+      recordRaceEvent(race, 'refresh-response-finished', {
+        statusCode: res.statusCode,
+        sessionHandle: race.heldRefresh.sessionHandle,
+      });
+    } else {
+      recordRaceEvent(race, 'refresh-candidate-response-finished', { statusCode: res.statusCode });
+    }
+  });
+
+  res.write = ((...args: any[]) => {
+    writes.push(args);
+    return true;
+  }) as typeof res.write;
+  res.end = ((...args: any[]) => {
+    if (ended) {
+      return res;
+    }
+    ended = true;
+    endArgs = args;
+
+    if (res.statusCode < 200 || res.statusCode >= 300) {
+      recordRaceEvent(race, 'refresh-candidate-not-successful', { statusCode: res.statusCode });
+      flush();
+      return res;
+    }
+
+    const sessionHandle = sessionHandleFromTokenHeader(res.getHeader('st-access-token'));
+    race.heldRefresh = {
+      statusCode: res.statusCode,
+      sessionHandle,
+      lifecycle: 'held',
+      responseFinished: false,
+    };
+    recordRaceEvent(race, 'refresh-response-held', { statusCode: res.statusCode, sessionHandle });
+    race.refreshControl = createReleaseControl(race, 'refresh-hold-timeout', (reason) => {
+      if (race.heldRefresh) {
+        race.heldRefresh.lifecycle = lifecycleForRelease(reason);
+        race.heldRefresh.releaseReason = reason;
+      }
+      recordRaceEvent(race, 'refresh-response-released', { reason, statusCode: res.statusCode, sessionHandle });
+      flush();
+    });
+    if (disconnected) {
+      race.refreshControl.release('disconnect');
+    }
+    race.verificationControl?.release('dependency-ready');
+    return res;
+  }) as typeof res.end;
+}
+
+function observeRaceRefreshRequest(req: express.Request, res: express.Response) {
+  const race = staleRefreshRace;
+  if (!race.armed) {
+    return;
+  }
+  if (!race.refreshCandidateReserved) {
+    race.refreshCandidateReserved = true;
+    recordRaceEvent(race, 'refresh-candidate-reserved');
+    interceptStaleRefreshResponse(race, req, res);
+    return;
+  }
+  if (race.heldRefresh?.lifecycle === 'released' && race.heldRefresh.releaseReason === 'manual') {
+    observePostReleaseRefresh(race, res);
+  }
+}
 
 function userGetBehaviorState() {
   return {
@@ -166,6 +437,7 @@ function capturePluginRequest(name: string, req: express.Request, res: express.R
 }
 
 function resetCounters() {
+  restoreStaleRefreshRace();
   counters.createSession = 0;
   counters.appleSignIn = 0;
   counters.googleSignIn = 0;
@@ -443,6 +715,7 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
     }
     if (req.method === 'POST' && req.path === '/auth/session/refresh') {
       counters.stRefresh += 1;
+      observeRaceRefreshRequest(req, res);
     }
     if (req.method === 'POST' && req.path === '/auth/plugin/rownd/migrate') {
       counters.migrate += 1;
@@ -453,6 +726,48 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
     if (req.method === 'GET' && req.path === '/auth/plugin/rownd/user') {
       counters.userGet += 1;
       capturePluginRequest('userGet', req, res);
+      const race = staleRefreshRace;
+      if (race.armed && race.verificationStatusCode === 200 && !race.heldProfile) {
+        const requestSessionHandle = sessionHandleFromTokenHeader(req.header('authorization'));
+        const heldProfile: NonNullable<StaleRefreshRace['heldProfile']> = {
+          requestSessionHandle,
+          lifecycle: 'held' as HoldLifecycle,
+          responseFinished: false,
+        };
+        race.heldProfile = heldProfile;
+        recordRaceEvent(race, 'replacement-profile-held', { sessionHandle: requestSessionHandle });
+        let disconnected = false;
+        const releaseForDisconnect = () => {
+          disconnected = true;
+          race.profileControl?.release('disconnect');
+        };
+        req.on('aborted', releaseForDisconnect);
+        res.on('close', () => {
+          if (!res.writableFinished) {
+            releaseForDisconnect();
+          }
+        });
+        res.on('finish', () => {
+          heldProfile.responseFinished = true;
+          heldProfile.statusCode = res.statusCode;
+          recordRaceEvent(race, 'replacement-profile-response-finished', {
+            statusCode: res.statusCode,
+            sessionHandle: requestSessionHandle,
+          });
+        });
+        race.profileControl = createReleaseControl(race, 'profile-hold-timeout', (reason) => {
+          heldProfile.lifecycle = lifecycleForRelease(reason);
+          heldProfile.releaseReason = reason;
+          recordRaceEvent(race, 'replacement-profile-released', {
+            reason,
+            sessionHandle: requestSessionHandle,
+          });
+          if (!disconnected && !res.destroyed) {
+            next();
+          }
+        });
+        return;
+      }
       if (holdNextUserGet || holdAllUserGets) {
         holdNextUserGet = false;
         let releaseRequest!: () => void;
@@ -481,6 +796,50 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
     }
     if (req.method === 'POST' && req.path === '/auth/user/email/verify') {
       capturePluginRequest('emailVerify', req, res);
+      const race = staleRefreshRace;
+      if (race.armed) {
+        res.on('finish', () => {
+          race.verificationStatusCode = res.statusCode;
+          recordRaceEvent(race, 'verification-finished', {
+            statusCode: res.statusCode,
+            sessionHandle: sessionHandleFromTokenHeader(res.getHeader('st-access-token')),
+          });
+        });
+      }
+      if (race.armed && !race.heldRefresh) {
+        if (race.verificationWaiting) {
+          res.status(409).json({ status: 'ERROR', message: 'A verification request is already waiting' });
+          return;
+        }
+        race.verificationWaiting = true;
+        recordRaceEvent(race, 'verification-waiting-for-refresh');
+        let disconnected = false;
+        const releaseForDisconnect = () => {
+          disconnected = true;
+          race.verificationControl?.release('disconnect');
+        };
+        req.on('aborted', releaseForDisconnect);
+        res.on('close', () => {
+          if (!res.writableFinished) {
+            releaseForDisconnect();
+          }
+        });
+        race.verificationControl = createReleaseControl(
+          race,
+          'verification-wait-timeout',
+          (reason) => {
+            race.verificationWaiting = false;
+            recordRaceEvent(race, 'verification-proceeded', { reason });
+            if (!disconnected && !res.destroyed) {
+              next();
+            }
+          },
+        );
+        return;
+      }
+      if (race.armed) {
+        recordRaceEvent(race, 'verification-proceeded', { reason: 'dependency-ready' });
+      }
     }
 
     next();
@@ -495,6 +854,58 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
 
     migrationMode = mode;
     res.json({ status: 'OK', mode: migrationMode });
+  });
+
+  app.get('/test/stale-refresh-race', (_req, res) => {
+    res.json(staleRefreshRaceState());
+  });
+
+  app.post('/test/stale-refresh-race', (req, res) => {
+    const action = req.body?.action;
+    if (action === 'arm') {
+      restoreStaleRefreshRace();
+      const race = staleRefreshRace;
+      race.armed = true;
+      recordRaceEvent(race, 'armed');
+    } else if (action === 'release-stale-refresh') {
+      const race = staleRefreshRace;
+      if (
+        race.heldRefresh?.lifecycle !== 'held' ||
+        !race.refreshControl?.isActive() ||
+        race.heldProfile?.lifecycle !== 'held'
+      ) {
+        res.status(409).json({
+          ...staleRefreshRaceState(),
+          status: 'ERROR',
+          message: 'Active refresh and replacement profile holds are required before stale release',
+        });
+        return;
+      }
+      recordRaceEvent(race, 'stale-refresh-released', {
+        reason: 'manual',
+        statusCode: race.heldRefresh.statusCode,
+        sessionHandle: race.heldRefresh.sessionHandle,
+      });
+      race.refreshControl.release('manual');
+    } else if (action === 'release-profile') {
+      const race = staleRefreshRace;
+      if (race.heldProfile?.lifecycle !== 'held' || !race.profileControl?.isActive()) {
+        res.status(409).json({
+          ...staleRefreshRaceState(),
+          status: 'ERROR',
+          message: 'No active replacement profile request is held',
+        });
+        return;
+      }
+      race.profileControl.release('manual');
+    } else if (action === 'reset') {
+      restoreStaleRefreshRace();
+    } else {
+      res.status(400).json({ status: 'ERROR', message: 'Invalid stale refresh race action' });
+      return;
+    }
+
+    res.json(staleRefreshRaceState());
   });
 
   app.get('/test/user-get-behavior', (_req, res) => {
@@ -868,6 +1279,8 @@ function stopIntegrationHarness() {
 
 async function stopIntegrationHarnessResources() {
   const errors: unknown[] = [];
+  restoreStaleRefreshRace('shutdown');
+  restoreUserGetBehavior();
   const serverToStop = server;
   const coreToStop = coreContainer;
   const postgresToStop = postgresContainer;
