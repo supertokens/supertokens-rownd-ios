@@ -101,8 +101,12 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
         let pendingVerificationId: String
     }
 
-    static func canHandleAuthentication(on targetPage: HubPageSelector?) -> Bool {
-        targetPage == .signIn || targetPage == .deepLink
+    static func canHandleAuthentication(
+        on targetPage: HubPageSelector?,
+        nativeEmailVerificationOwnsSessionReplacement: Bool = false
+    ) -> Bool {
+        (targetPage == .signIn || targetPage == .deepLink) &&
+            !nativeEmailVerificationOwnsSessionReplacement
     }
 
     static func shouldForwardHubEvent(_ event: RowndEvent, on targetPage: HubPageSelector?) -> Bool {
@@ -541,6 +545,7 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
     private var authenticationGeneration = 0
     private var nativeEmailVerificationRequestId: String?
     private var nativeEmailVerificationTask: Task<Void, Never>?
+    private(set) var nativeEmailVerificationOwnsSessionReplacement = false
 
     init() {
         super.init(nibName: nil, bundle: nil)
@@ -645,11 +650,12 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
         }
     }
 
-    private func invalidateNativeEmailVerificationRequests() {
+    func invalidateNativeEmailVerificationRequests() {
         navigationGeneration &+= 1
         nativeEmailVerificationTask?.cancel()
         nativeEmailVerificationTask = nil
         nativeEmailVerificationRequestId = nil
+        nativeEmailVerificationOwnsSessionReplacement = false
     }
 
     private func verifyEmail(requestId: String, requestedURL: URL) {
@@ -657,12 +663,7 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
         nativeEmailVerificationTask?.cancel()
         nativeEmailVerificationRequestId = requestId
 
-        guard let parameters = Self.nativeEmailVerificationParameters(
-            on: hubViewController?.targetPage,
-            url: requestedURL,
-            trustedApiDomain: Rownd.config.supertokens.apiDomain,
-            trustedApiBasePath: Rownd.config.supertokens.apiBasePath
-        ) else {
+        guard let parameters = claimNativeEmailVerificationOwnership(for: requestedURL) else {
             sendNativeEmailVerificationResponse(
                 requestId: requestId,
                 requestedURL: requestedURL,
@@ -701,6 +702,21 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
                 )
             }
         }
+    }
+
+    func claimNativeEmailVerificationOwnership(
+        for requestedURL: URL
+    ) -> NativeEmailVerificationParameters? {
+        guard let parameters = Self.nativeEmailVerificationParameters(
+            on: hubViewController?.targetPage,
+            url: requestedURL,
+            trustedApiDomain: Rownd.config.supertokens.apiDomain,
+            trustedApiBasePath: Rownd.config.supertokens.apiBasePath
+        ) else {
+            return nil
+        }
+        nativeEmailVerificationOwnsSessionReplacement = true
+        return parameters
     }
 
     @MainActor private func sendNativeEmailVerificationResponse(
@@ -900,8 +916,11 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
             case .authentication:
                 guard case .authentication(let authMessage) = hubMessage.payload else { return }
                 let targetPage = hubViewController?.targetPage
-                guard Self.canHandleAuthentication(on: targetPage) else {
-                    logger.debug("Ignoring Hub authentication message for targetPage=\(String(describing: targetPage))")
+                guard Self.canHandleAuthentication(
+                    on: targetPage,
+                    nativeEmailVerificationOwnsSessionReplacement: nativeEmailVerificationOwnsSessionReplacement
+                ) else {
+                    logger.debug("Ignoring Hub authentication message for targetPage=\(String(describing: targetPage)) native_email_verification_owns_session_replacement=\(self.nativeEmailVerificationOwnsSessionReplacement)")
                     return
                 }
                 logger.debug("Handling Hub authentication message: targetPage=\(String(describing: targetPage)) user_type=\(authMessage.userType ?? "nil") app_variant_user_type=\(authMessage.appVariantUserType ?? "nil")")

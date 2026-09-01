@@ -42,16 +42,6 @@ import AnyCodable
         }
     }
 
-    // swift-testing instantiates the suite fresh per test, so init()/deinit act as
-    // per-test setup/teardown: start and end each test from a guaranteed-clean state.
-    init() {
-        Self.resetToKnownState()
-    }
-
-    // Note: deinit for a value type isn't invoked by swift-testing the way a class
-    // teardown would be, so each harness also cleans up on exit; resetToKnownState in
-    // init() is the authoritative guarantee.
-
     @Test func bootstrapSessionCreatesVisibleSession() async throws {
         try await withMockedSuperTokensSession {
             let accessToken = makeSuperTokensTestJWT(expiresIn: 3600)
@@ -3145,7 +3135,7 @@ import AnyCodable
             // SuperTokens.isInitCalled false — breaking the core APIs the bridge now
             // routes through.
             let previousIsInitialized = Rownd.isSuperTokensInitialized
-            SuperTokens.resetForTests()
+            Self.resetToKnownState()
             Rownd.isSuperTokensInitialized = false
             Rownd.config.supertokens = Self.supertokensConfig
             _ = try Rownd.initializeSuperTokensIfNeeded()
@@ -3182,7 +3172,7 @@ import AnyCodable
             let originalIsSuperTokensInitialized = Rownd.isSuperTokensInitialized
 
             Rownd.isSuperTokensInitialized = false
-            SuperTokens.resetForTests()
+            Self.resetToKnownState()
             Rownd.config.supertokens = RowndSuperTokensConfig(
                 appName: "Signout Race Test",
                 apiDomain: server.baseURL.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")),

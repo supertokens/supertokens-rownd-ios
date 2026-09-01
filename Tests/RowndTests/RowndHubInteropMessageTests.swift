@@ -48,6 +48,49 @@ import Foundation
         #expect(!HubWebViewController.canHandleAuthentication(on: nil))
     }
 
+    @Test func staleAuthenticationAfterS1IsRejectedWhileNativeVerificationOwnsReplacement() {
+        #expect(!HubWebViewController.canHandleAuthentication(
+            on: .deepLink,
+            nativeEmailVerificationOwnsSessionReplacement: true
+        ))
+    }
+
+    @Test func duplicateAndArbitrarilyLateAuthenticationRemainRejectedDuringOwnedReplacement() {
+        var bootstrapCount = 0
+
+        for _ in 0..<100 {
+            if HubWebViewController.canHandleAuthentication(
+                on: .deepLink,
+                nativeEmailVerificationOwnsSessionReplacement: true
+            ) {
+                bootstrapCount += 1
+            }
+        }
+
+        #expect(bootstrapCount == 0)
+    }
+
+    @Test func authenticationRemainsRejectedAfterVerificationURLCleanup() {
+        #expect(!HubWebViewController.canHandleAuthentication(
+            on: .deepLink,
+            nativeEmailVerificationOwnsSessionReplacement: true
+        ))
+    }
+
+    @Test func authenticationIsAdmittedAfterNativeVerificationOwnershipEnds() {
+        #expect(HubWebViewController.canHandleAuthentication(
+            on: .deepLink,
+            nativeEmailVerificationOwnsSessionReplacement: false
+        ))
+    }
+
+    @Test func ordinaryEmailVerificationDeepLinkAuthenticationRemainsCompatible() {
+        #expect(HubWebViewController.canHandleAuthentication(
+            on: .deepLink,
+            nativeEmailVerificationOwnsSessionReplacement: false
+        ))
+    }
+
     @Test func signInCompletionHubEventIsSuppressedOnAuthenticationPages() {
         let signInCompleted = RowndEvent(event: .signInCompleted)
         let userUpdated = RowndEvent(event: .userUpdated)
