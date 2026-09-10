@@ -140,14 +140,20 @@ final class RowndManageAccountEmailUITests: XCTestCase {
         }
         switch delivery {
         case .directInjection:
-            let deepLink = try makeNativeDeepLink(from: link)
+            let deepLink = try makeNativeDeepLink(
+                from: link,
+                expireHubSession: race == .delayedHubStartupRefresh
+            )
             app.terminate()
             app.launchEnvironment["ROWND_E2E_DEEP_LINK"] = deepLink
             app.launch()
         case .safari:
             try openVerificationLinkInSafari(link, app: app)
         case .systemDispatch:
-            let deepLink = try XCTUnwrap(URL(string: makeNativeDeepLink(from: link)))
+            let deepLink = try XCTUnwrap(URL(string: makeNativeDeepLink(
+                from: link,
+                expireHubSession: race == .delayedHubStartupRefresh
+            )))
             if #available(iOS 16.4, *) {
                 app.open(deepLink)
             } else {
@@ -384,13 +390,16 @@ final class RowndManageAccountEmailUITests: XCTestCase {
         }
     }
 
-    private func makeNativeDeepLink(from link: String) throws -> String {
+    private func makeNativeDeepLink(from link: String, expireHubSession: Bool = false) throws -> String {
         let source = try XCTUnwrap(URLComponents(string: link))
         var deepLink = URLComponents()
         deepLink.scheme = "rowndsupertokens"
         deepLink.host = "account"
         deepLink.path = "/verify-email"
         deepLink.queryItems = source.queryItems
+        if expireHubSession {
+            deepLink.queryItems?.append(URLQueryItem(name: "rowndE2EExpireHubSession", value: "1"))
+        }
         deepLink.fragment = source.fragment
         return try XCTUnwrap(deepLink.url?.absoluteString)
     }
@@ -427,8 +436,12 @@ final class RowndManageAccountEmailUITests: XCTestCase {
 
     private func replaceText(in field: XCUIElement, with text: String) throws {
         for _ in 0..<3 {
+            let currentValueLength = (field.value as? String)?.count ?? 0
             field.tap()
             field.typeKey("a", modifierFlags: .command)
+            for _ in 0..<currentValueLength {
+                field.typeKey(XCUIKeyboardKey.delete.rawValue, modifierFlags: [])
+            }
             field.typeText(text)
             if (try? waitForValue(field, toEqual: text, timeout: 2)) != nil {
                 return

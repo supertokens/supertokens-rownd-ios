@@ -2,6 +2,11 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>NSExtension</key>
+	<dict>
+		<key>NSExtensionPointIdentifier</key>
+		<string>com.apple.widgetkit-extension</string>
+	</dict>
 	<key>ROWND_EXAMPLE_API_BASE_PATH</key>
 	<string>$(ROWND_EXAMPLE_API_BASE_PATH)</string>
 	<key>ROWND_EXAMPLE_API_DOMAIN</key>
@@ -16,10 +21,5 @@
 	<string>$(ROWND_EXAMPLE_HUB_BASE_URL)</string>
 	<key>ROWND_EXAMPLE_SUBDOMAIN_EXTENSION</key>
 	<string>$(ROWND_EXAMPLE_SUBDOMAIN_EXTENSION)</string>
-	<key>NSExtension</key>
-	<dict>
-		<key>NSExtensionPointIdentifier</key>
-		<string>com.apple.widgetkit-extension</string>
-	</dict>
 </dict>
 </plist>

@@ -49,6 +49,7 @@ import UIKit
 func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey : Any]? = nil) -> Bool {
     let apiDomain = "https://api.example.com"
     let apiBasePath = "/auth"
+    Rownd.config.baseUrl = "https://supertokens-hub.sandboxx.us"
 
     Task {
         await Rownd.configure(
@@ -68,7 +69,7 @@ func application(_ application: UIApplication, didFinishLaunchingWithOptions lau
 
 Configuration notes:
 
-- `Rownd.config.baseUrl` should be the Rownd Hub base URL used by the SDK, usually `https://rownd-hub.supertokens.com`.
+- `Rownd.config.baseUrl` should be the Rownd Hub base URL used by the SDK. For example, use `https://supertokens-hub.sandboxx.us` for a custom Hub domain, or `https://rownd-hub.supertokens.com` for the default domain. Set it before calling `Rownd.configure()`.
 - `Rownd.config.deepLinkScheme` should be the custom URL scheme your app registers and the SDK accepts, for example `rowndsupertokens` or your app-specific scheme.
 - `RowndSuperTokensConfig.apiDomain` should point at the backend that hosts your SuperTokens plugin routes. `Rownd.configure()` also assigns this value to `Rownd.config.apiUrl`.
 - `RowndSuperTokensConfig.apiBasePath` must match your backend SuperTokens API base path, usually `/auth`.

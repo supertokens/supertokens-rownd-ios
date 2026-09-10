@@ -2,6 +2,13 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>NSAppClip</key>
+	<dict>
+		<key>NSAppClipRequestEphemeralUserNotification</key>
+		<false/>
+		<key>NSAppClipRequestLocationConfirmation</key>
+		<false/>
+	</dict>
 	<key>ROWND_EXAMPLE_API_BASE_PATH</key>
 	<string>$(ROWND_EXAMPLE_API_BASE_PATH)</string>
 	<key>ROWND_EXAMPLE_API_DOMAIN</key>
@@ -16,12 +23,5 @@
 	<string>$(ROWND_EXAMPLE_HUB_BASE_URL)</string>
 	<key>ROWND_EXAMPLE_SUBDOMAIN_EXTENSION</key>
 	<string>$(ROWND_EXAMPLE_SUBDOMAIN_EXTENSION)</string>
-	<key>NSAppClip</key>
-	<dict>
-		<key>NSAppClipRequestEphemeralUserNotification</key>
-		<false/>
-		<key>NSAppClipRequestLocationConfirmation</key>
-		<false/>
-	</dict>
 </dict>
 </plist>
