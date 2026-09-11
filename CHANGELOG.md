@@ -1,5 +1,17 @@
 # Changelog
 
+## <small>0.1.16 (2026-09-11)</small>
+
+* test: add native verification compatibility matrix ([7a59308](https://github.com/supertokens/supertokens-rownd-ios/commit/7a59308))
+* test: cover native email verification ordering ([33f3329](https://github.com/supertokens/supertokens-rownd-ios/commit/33f3329))
+* test: reproduce stale Hub auth after email verification ([0f73f9c](https://github.com/supertokens/supertokens-rownd-ios/commit/0f73f9c))
+* test: stabilize iOS full-suite verification ([96d4d60](https://github.com/supertokens/supertokens-rownd-ios/commit/96d4d60))
+* fix: clear failed legacy migrations without replacing newer sessions ([19f4e6e](https://github.com/supertokens/supertokens-rownd-ios/commit/19f4e6e))
+* fix: clear Hub session on native logout ([e011174](https://github.com/supertokens/supertokens-rownd-ios/commit/e011174))
+* fix: preserve iOS sessions during temporary refresh failures ([91573fd](https://github.com/supertokens/supertokens-rownd-ios/commit/91573fd))
+* fix: reject stale auth during native email verification ([abd9550](https://github.com/supertokens/supertokens-rownd-ios/commit/abd9550))
+* chore: fix example ([c689adf](https://github.com/supertokens/supertokens-rownd-ios/commit/c689adf))
+
 ## <small>0.1.15 (2026-08-31)</small>
 
 * fix: preserve session after email verification handoff ([de1bf58](https://github.com/supertokens/supertokens-rownd-ios/commit/de1bf58))
