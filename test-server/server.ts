@@ -7,6 +7,7 @@ import SuperTokens from 'supertokens-node';
 import { errorHandler, middleware } from 'supertokens-node/framework/express';
 import AccountLinking from 'supertokens-node/recipe/accountlinking';
 import EmailVerification from 'supertokens-node/recipe/emailverification';
+import Multitenancy from 'supertokens-node/recipe/multitenancy';
 import Passwordless from 'supertokens-node/recipe/passwordless';
 import Session from 'supertokens-node/recipe/session';
 import { verifySession } from 'supertokens-node/recipe/session/framework/express';
@@ -155,6 +156,7 @@ let latestVerificationEmail: CapturedVerificationEmail | undefined;
 let latestPasswordlessEmail: CapturedPasswordlessEmail | undefined;
 const passwordlessConsumeStatuses: number[] = [];
 let migrationMode: MigrationMode = 'normal';
+let refreshUnavailable = false;
 let holdNextUserGet = false;
 let holdAllUserGets = false;
 const heldUserGetRequests = new Set<() => void>();
@@ -466,6 +468,7 @@ function resetCounters() {
   latestPasswordlessEmail = undefined;
   passwordlessConsumeStatuses.length = 0;
   migrationMode = 'normal';
+  refreshUnavailable = false;
   restoreUserGetBehavior();
 }
 
@@ -516,12 +519,34 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
     .withNetwork(network)
     .withEnvironment({
       POSTGRESQL_CONNECTION_URI: 'postgresql://supertokens:somepassword@postgres:5432/supertokens',
+      ACCESS_TOKEN_VALIDITY: '3600',
+      REFRESH_TOKEN_VALIDITY: '144000',
     })
     .withExposedPorts(3567)
     .withWaitStrategy(Wait.forHttp('/hello', 3567))
     .start();
 
-  const coreConnectionURI = `http://${coreContainer.getHost()}:${coreContainer.getMappedPort(3567)}`;
+  const coreBaseURI = `http://${coreContainer.getHost()}:${coreContainer.getMappedPort(3567)}`;
+  const baseLicenseResponse = await fetch(`${coreBaseURI}/ee/license`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ licenseKey: accountLinkingTestLicense }),
+  });
+  if (!baseLicenseResponse.ok) {
+    throw new Error(`Failed to enable harness features: ${baseLicenseResponse.status} ${await baseLicenseResponse.text()}`);
+  }
+  // A named app allows the expiry fixture to change its lifetime via Core's API;
+  // the default app's base configuration is immutable at runtime.
+  const coreAppId = 'rownd-ios-harness';
+  const appResponse = await fetch(`${coreBaseURI}/recipe/multitenancy/app/v2`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', 'cdi-version': '5.3' },
+    body: JSON.stringify({ appId: coreAppId }),
+  });
+  if (!appResponse.ok) {
+    throw new Error(`Failed to create harness app: ${appResponse.status} ${await appResponse.text()}`);
+  }
+  const coreConnectionURI = `${coreBaseURI}/appid-${coreAppId}`;
   const licenseResponse = await fetch(`${coreConnectionURI}/ee/license`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -723,6 +748,10 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
         counters.stRefreshWithCredentials += 1;
       }
       observeRaceRefreshRequest(req, res);
+      if (refreshUnavailable) {
+        res.status(503).json({ status: 'ERROR', message: 'Temporary refresh outage' });
+        return;
+      }
     }
     if (req.method === 'POST' && req.path === '/auth/plugin/rownd/migrate') {
       counters.migrate += 1;
@@ -1210,6 +1239,54 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
 
     await Session.createNewSession(req, res, 'public', user.recipeUserId, {}, {}, {});
     res.json({ status: 'OK', userId: user.user.id });
+  });
+
+  // Issue a genuinely short-lived Core token, then restore the normal lifetime
+  // before refreshing. This avoids changing device time or forging expired JWTs.
+  app.post('/test/expiring-session', async (req, res) => {
+    const tenantId = 'public';
+    const accessTokenValidity = req.body?.accessTokenValidity ?? 5;
+    if (![5, 30, 90].includes(accessTokenValidity)) {
+      res.status(400).json({ status: 'ERROR', message: 'accessTokenValidity must be 5, 30, or 90 seconds' });
+      return;
+    }
+    await Multitenancy.createOrUpdateTenant(tenantId, {
+      coreConfig: { access_token_validity: accessTokenValidity, refresh_token_validity: 144000 },
+    });
+    let fixture;
+    try {
+      const user = await Passwordless.signInUp({
+        email: `ios-expiry-${randomUUID()}@example.com`,
+        tenantId,
+      });
+      const session = await Session.createNewSession(req, res, tenantId, user.recipeUserId);
+      counters.createSession += 1;
+      const info = await Session.getSessionInformation(session.getHandle());
+      fixture = { status: 'OK', userId: user.user.id, sessionHandle: session.getHandle(), info };
+    } finally {
+      await Multitenancy.createOrUpdateTenant(tenantId, {
+        coreConfig: { access_token_validity: 3600, refresh_token_validity: 144000 },
+      });
+    }
+    res.json(fixture);
+  });
+
+  app.post('/test/refresh-availability', (req, res) => {
+    if (typeof req.body?.unavailable !== 'boolean') {
+      res.status(400).json({ status: 'ERROR', message: 'unavailable must be a boolean' });
+      return;
+    }
+    refreshUnavailable = req.body.unavailable;
+    res.json({ status: 'OK' });
+  });
+
+  app.post('/test/revoke-session', async (req, res) => {
+    if (typeof req.body?.sessionHandle !== 'string') {
+      res.status(400).json({ status: 'ERROR', message: 'sessionHandle is required' });
+      return;
+    }
+    await Session.revokeSession(req.body.sessionHandle);
+    res.json({ status: 'OK' });
   });
 
   app.get('/test/protected', verifySession(), async (req: any, res) => {

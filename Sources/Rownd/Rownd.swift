@@ -541,6 +541,13 @@ public class Rownd: NSObject {
                 continue
             }
 
+            // getAccessToken() also returns nil when refresh fails temporarily.
+            // The native SDK retains refresh credentials on those failures and
+            // removes them on a definitive rejection; don't persist a logout yet.
+            if SuperTokensSessionBridge.getRefreshToken()?.isEmpty == false {
+                return false
+            }
+
             let clearedPersistedSession = await MainActor.run {
                 let store = Context.currentContext.store
                 guard let state = store.state,

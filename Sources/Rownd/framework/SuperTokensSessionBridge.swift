@@ -74,6 +74,19 @@ internal enum SuperTokensSessionBridge {
         await onSessionQueue { SuperTokens.getAccessToken() }
     }
 
+    static func getAccessTokenForAuthentication() async throws -> String? {
+        let result = await onSessionQueue {
+            let token = SuperTokens.getAccessToken()
+            return (token: token, canRetry: SuperTokens.getRefreshToken()?.isEmpty == false)
+        }
+        if result.token == nil && result.canRetry {
+            // The native getter suppresses refresh errors. Preserve Rownd's public
+            // contract: temporary failures throw, while an absent session returns nil.
+            throw AuthenticationError.serverError(details: "Session refresh failed temporarily; retry when the service is available")
+        }
+        return result.token
+    }
+
     static func currentSessionIdentity(matching accessToken: String? = nil) async -> SessionIdentity? {
         await onSessionQueue {
             guard let currentAccessToken = SuperTokens.getAccessToken(),
@@ -1123,12 +1136,12 @@ private struct SuperTokensKeychainSessionStorage: SuperTokensSessionStorage {
 
 internal struct SuperTokensSessionBridgeClient {
     var doesSessionExist: () async -> Bool
-    var getAccessToken: () async -> String?
+    var getAccessToken: () async throws -> String?
     var attemptRefresh: () async -> Bool
 
     static let live = SuperTokensSessionBridgeClient(
         doesSessionExist: SuperTokensSessionBridge.doesSessionExist,
-        getAccessToken: SuperTokensSessionBridge.getAccessToken,
+        getAccessToken: SuperTokensSessionBridge.getAccessTokenForAuthentication,
         attemptRefresh: SuperTokensSessionBridge.attemptRefresh
     )
 }

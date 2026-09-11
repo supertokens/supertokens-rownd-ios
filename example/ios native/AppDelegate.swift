@@ -226,13 +226,16 @@ enum E2ESupport {
         let environment = ProcessInfo.processInfo.environment
         let email = environment["ROWND_E2E_EMAIL"] ?? "ios-e2e-user@example.com"
         let firstName = environment["ROWND_E2E_FIRST_NAME"] ?? "Existing"
-        var request = URLRequest(url: apiURL.appendingPathComponent("test/profile-session"))
+        let expiringSession = environment["ROWND_E2E_EXPIRING_SESSION"] == "1"
+        let path = expiringSession ? "test/expiring-session" : "test/profile-session"
+        var request = URLRequest(url: apiURL.appendingPathComponent(path))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("header", forHTTPHeaderField: "st-auth-mode")
         request.httpBody = try JSONSerialization.data(withJSONObject: [
             "email": email,
-            "firstName": firstName
+            "firstName": firstName,
+            "accessTokenValidity": 90
         ])
 
         let (data, response) = try await URLSession.shared.data(for: request)

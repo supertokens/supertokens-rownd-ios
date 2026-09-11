@@ -243,6 +243,62 @@ final class RowndRealHubAuthenticationUITests: XCTestCase {
         try waitForLabel(app.staticTexts["e2e-session-handle"], equalTo: "no-session")
     }
 
+    func testExpiredSessionRefreshesAfterColdRelaunch() async throws {
+        try await assertExpiredSessionRelaunch(refreshUnavailable: false)
+    }
+
+    func testRefreshOutageDuringColdRelaunchPreservesLoginAndRecovers() async throws {
+        try await assertExpiredSessionRelaunch(refreshUnavailable: true)
+    }
+
+    private func assertExpiredSessionRelaunch(refreshUnavailable: Bool) async throws {
+        let app = try await launchIsolatedApp(resetSession: true, expiringSession: true)
+        let createButton = app.buttons["e2e-create-session-button"]
+        try scrollToElement(createButton, in: app)
+        createButton.tap()
+        try waitForLabel(app.staticTexts["e2e-scenario-state"], equalTo: "e2e_session_created")
+        try waitForLabel(app.staticTexts["e2e-auth-state"], equalTo: "authenticated")
+        let sessionHandle = app.staticTexts["e2e-session-handle"].label
+        XCTAssertNotEqual(sessionHandle, "no-session")
+        app.terminate()
+
+        // Exceed the real Core-issued 90-second lifetime while the process is
+        // stopped. Keeping it above 60 seconds avoids Rownd's proactive margin.
+        try await Task.sleep(nanoseconds: 91_000_000_000)
+        let beforeRelaunch = try await request("GET", path: "counters")
+        XCTAssertEqual(beforeRelaunch["stRefresh"] as? Int, 0)
+        _ = try await request("POST", path: "test/refresh-availability", jsonBody: ["unavailable": refreshUnavailable])
+        app.launch()
+        try waitForLabel(app.staticTexts["e2e-sdk-state"], equalTo: "ready")
+        try waitForLabel(app.staticTexts["e2e-auth-state"], equalTo: "authenticated")
+        try waitForLabel(app.staticTexts["e2e-session-handle"], equalTo: sessionHandle)
+
+        if refreshUnavailable {
+            _ = try await waitForCounters { ($0["stRefresh"] as? Int ?? 0) > 0 }
+            _ = try await request("POST", path: "test/refresh-availability", jsonBody: ["unavailable": false])
+            let resolveButton = app.buttons["e2e-resolve-access-token-button"]
+            try scrollToElement(resolveButton, in: app)
+            resolveButton.tap()
+            try waitForLabel(app.staticTexts["e2e-access-token-resolution"], equalTo: "succeeded")
+        }
+
+        let protectedButton = app.buttons["e2e-protected-button"]
+        try scrollToElement(protectedButton, in: app)
+        protectedButton.tap()
+        try waitForLabel(app.staticTexts["e2e-scenario-state"], equalTo: "protected_loaded")
+        try waitForLabel(app.staticTexts["e2e-session-handle"], equalTo: sessionHandle)
+        let counters = try await request("GET", path: "counters")
+        XCTAssertGreaterThan(try XCTUnwrap(counters["stRefresh"] as? Int), 0)
+        XCTAssertEqual(counters["createSession"] as? Int, 1)
+        XCTAssertEqual(counters["passwordlessConsume"] as? Int, 0)
+        XCTAssertEqual(counters["legacyRefresh"] as? Int, 0)
+        app.terminate()
+        app.launch()
+        try waitForLabel(app.staticTexts["e2e-sdk-state"], equalTo: "ready")
+        try waitForLabel(app.staticTexts["e2e-session-handle"], equalTo: sessionHandle)
+        try waitForLabel(app.staticTexts["e2e-auth-state"], equalTo: "authenticated")
+    }
+
     func testExistingSuperTokensSessionReplacesPersistedLegacyTokenOnRelaunch() async throws {
         let app = try await launchIsolatedApp(resetSession: true)
         app.terminate()
@@ -392,7 +448,7 @@ final class RowndRealHubAuthenticationUITests: XCTestCase {
         try await assertHubDoesNotResurrectSession()
     }
 
-    private func launchIsolatedApp(resetSession: Bool) async throws -> XCUIApplication {
+    private func launchIsolatedApp(resetSession: Bool, expiringSession: Bool = false) async throws -> XCUIApplication {
         let app = XCUIApplication()
         app.terminate()
         addTeardownBlock { app.terminate() }
@@ -403,6 +459,9 @@ final class RowndRealHubAuthenticationUITests: XCTestCase {
         ]
         if resetSession {
             app.launchEnvironment["ROWND_E2E_RESET_SESSION"] = "1"
+        }
+        if expiringSession {
+            app.launchEnvironment["ROWND_E2E_EXPIRING_SESSION"] = "1"
         }
         app.launch()
         app.launchEnvironment.removeValue(forKey: "ROWND_E2E_RESET_SESSION")

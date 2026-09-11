@@ -21,6 +21,10 @@ Run `npm run test:cocoapods` to install the local pod into generated static-libr
 
 The E2E runner builds and starts the Hub automatically. Set `IOS_LOCAL_HUB_REPO` to use a different checkout path or `E2E_HUB_PORT` to change its port.
 
+Run `npm run test:e2e:refresh` for the session-expiry regression suite. It exercises real Core-issued access tokens, automatic refresh, a temporary refresh HTTP 503, and a revoked session. Two XCUITests terminate the example app for 91 seconds each, then verify cold-launch refresh and outage recovery using persisted native credentials. Allow several minutes for the suite.
+
+The harness uses a named Core app so expiry fixtures can temporarily change access-token validity through the Core API. Refresh-token validity stays at `144000` **minutes** (100 days); access-token validity returns to `3600` **seconds** before refresh. See [the investigation](../docs/session-refresh-investigation.md) for the failure mechanism and reproduction details.
+
 To run only a selected UI script while still starting its Hub and backend dependencies, set `IOS_E2E_ONLY_UI=1` together with `IOS_E2E_UI_SCRIPT`.
 
 This starts the local Hub, SuperTokens Core, and backend harness before running the native integration suite, hosted example test, and rendered XCUITests. The UI suite covers Hub OTP and magic-link authentication through the WKWebView bridge, restored-session sign-out, relaunch reconciliation of persisted legacy Rownd state against an existing SuperTokens session without remigration, and pending-email verification. Run UI and Safari tests through the E2E runner so it can manage their dependencies and cleanup.

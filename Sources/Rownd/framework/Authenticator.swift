@@ -144,7 +144,7 @@ actor Authenticator: AuthenticatorProtocol {
             return try await handle.value
         }
 
-        guard let accessToken = await sessionBridge.getAccessToken() else {
+        guard let accessToken = try await sessionBridge.getAccessToken() else {
             throw AuthenticationError.noAccessTokenPresent
         }
 
@@ -168,12 +168,16 @@ actor Authenticator: AuthenticatorProtocol {
 
             let refreshed = await sessionBridge.attemptRefresh()
             let sessionExists = await sessionBridge.doesSessionExist()
+            let accessToken = try await sessionBridge.getAccessToken()
             guard refreshed || sessionExists else {
                 throw AuthenticationError.noAccessTokenPresent
             }
 
-            guard let accessToken = await sessionBridge.getAccessToken(), isAccessTokenValid(accessToken) else {
+            guard let accessToken else {
                 throw AuthenticationError.noAccessTokenPresent
+            }
+            guard isAccessTokenValid(accessToken) else {
+                throw AuthenticationError.serverError(details: "Session refresh did not produce a usable access token")
             }
 
             log.debug("Successfully refreshed SuperTokens session.")
