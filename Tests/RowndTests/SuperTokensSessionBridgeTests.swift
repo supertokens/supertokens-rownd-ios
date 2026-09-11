@@ -61,6 +61,56 @@ import AnyCodable
         }
     }
 
+    @Test func hubBootstrapRejectsPermitInvalidatedByLogout() async throws {
+        try await withMockedSuperTokensSession {
+            let permit = SuperTokensSessionBridge.captureAuthOperationPermit()
+            SuperTokensSessionBridge.invalidateAuthOperationPermits()
+            let succeeded = await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: makeSuperTokensTestJWT(expiresIn: 3600),
+                    refreshToken: makeSuperTokensTestJWT(expiresIn: 7200),
+                    permit: permit
+                )
+            }.value
+
+            #expect(!succeeded)
+            #expect(!(await SuperTokensSessionBridge.doesSessionExist()))
+            #expect(SuperTokensSessionBridge.getRefreshToken() == nil)
+        }
+    }
+
+    @Test func hubBootstrapDiscardsSessionWhenLogoutStartsDuringRefresh() async throws {
+        try await withMockedSuperTokensSession {
+            let original = makeSuperTokensTestJWT(expiresIn: 3600)
+            let replacement = makeSuperTokensTestJWT(expiresIn: 1800)
+            let permit = SuperTokensSessionBridge.captureAuthOperationPermit()
+            let installed = await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: original,
+                    refreshToken: makeSuperTokensTestJWT(expiresIn: 7200)
+                )
+            }.value
+            #expect(installed)
+
+            let succeeded = await Task.detached {
+                SuperTokensSessionBridge.bootstrapSession(
+                    accessToken: replacement,
+                    refreshToken: makeSuperTokensTestJWT(expiresIn: 5400),
+                    permit: permit,
+                    refreshSession: {
+                        SuperTokensSessionBridge.invalidateAuthOperationPermits()
+                        return SDKStorage.set("st-storage-item-st-access-token", value: replacement)
+                            && FrontToken.setItem(frontToken: SuperTokensSessionBridge.buildFrontToken(from: replacement))
+                    }
+                )
+            }.value
+
+            #expect(!succeeded)
+            #expect(!(await SuperTokensSessionBridge.doesSessionExist()))
+            #expect(SuperTokensSessionBridge.getRefreshToken() == nil)
+        }
+    }
+
     @Test @MainActor func adoptResponseSessionInstallsCompleteSessionAndReturnsExactIdentity() async throws {
         try await withMockedSuperTokensSession {
             let accessToken = generateJwt(

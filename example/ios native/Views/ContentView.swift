@@ -197,6 +197,16 @@ struct ContentView: View {
                     Rownd.signOut()
                     scenarioStatus = "signed_out"
                 }
+                .accessibilityIdentifier("e2e-native-sign-out-button")
+
+                if E2ESupport.isEnabled {
+                    FlowButton("Sign out and immediately reopen Hub", style: .secondary) {
+                        Rownd.signOut()
+                        Rownd.requestSignIn()
+                        scenarioStatus = "modal_open_requested"
+                    }
+                    .accessibilityIdentifier("e2e-sign-out-and-reopen-button")
+                }
 
                 Text(protectedResult.isEmpty ? "Protected response will appear here." : protectedResult)
                     .accessibilityIdentifier("e2e-protected-result")

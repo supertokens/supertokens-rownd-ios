@@ -211,6 +211,43 @@ import Foundation
         }
     }
 
+    @Test func logoutDuringHubDismissalSuppressesSignInCompletion() async throws {
+        try await withGlobalTestLock {
+            let originalContext = Context.currentContext
+            _ = Context(createStore())
+            defer { Context.currentContext = originalContext }
+
+            await MainActor.run {
+                RowndEventEmitter.resetForTests()
+                Context.currentContext.eventListeners.removeAll()
+                Context.currentContext.store.dispatch(SetClockSync(clockSyncState: .synced))
+                Context.currentContext.store.dispatch(SetAuthState(payload: AuthState(
+                    accessToken: generateJwt(expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970)
+                )))
+            }
+            let permit = SuperTokensSessionBridge.captureAuthOperationPermit()
+            let dismissal = await MainActor.run { HubDismissalProbe() }
+            let eventHandler = RecordingRowndEventHandler()
+            Rownd.addEventHandler(eventHandler)
+
+            let task = Task { @MainActor in
+                await HubWebViewController.completeAuthentication(
+                    store: Context.currentContext.store,
+                    initialJsFunctionArgsAsJson: "{}",
+                    currentJsFunctionArgsAsJson: { "{}" },
+                    hideHub: dismissal.hide,
+                    shouldComplete: { SuperTokensSessionBridge.isAuthOperationPermitValid(permit) }
+                )
+            }
+            await dismissal.waitUntilStarted()
+            SuperTokensSessionBridge.invalidateAuthOperationPermits()
+            await dismissal.complete()
+            await task.value
+
+            #expect(eventHandler.events.isEmpty)
+        }
+    }
+
     @Test func authenticationCompletionKeepsHubOpenAfterNewerAPICall() async throws {
         try await withGlobalTestLock {
             var didHideHub = false

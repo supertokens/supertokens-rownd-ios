@@ -24,6 +24,7 @@ type HarnessCounters = {
   userMetaUpdate: number;
   signOut: number;
   stRefresh: number;
+  stRefreshWithCredentials: number;
   legacyRefresh: number;
   migrate: number;
   protected: number;
@@ -139,6 +140,7 @@ const counters: HarnessCounters = {
   userMetaUpdate: 0,
   signOut: 0,
   stRefresh: 0,
+  stRefreshWithCredentials: 0,
   legacyRefresh: 0,
   migrate: 0,
   protected: 0,
@@ -447,6 +449,7 @@ function resetCounters() {
   counters.userMetaUpdate = 0;
   counters.signOut = 0;
   counters.stRefresh = 0;
+  counters.stRefreshWithCredentials = 0;
   counters.legacyRefresh = 0;
   counters.migrate = 0;
   counters.protected = 0;
@@ -716,6 +719,9 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
     }
     if (req.method === 'POST' && req.path === '/auth/session/refresh') {
       counters.stRefresh += 1;
+      if (req.headers.authorization || /(?:^|;\s*)sRefreshToken=[^;]+/.test(req.headers.cookie || '')) {
+        counters.stRefreshWithCredentials += 1;
+      }
       observeRaceRefreshRequest(req, res);
     }
     if (req.method === 'POST' && req.path === '/auth/plugin/rownd/migrate') {

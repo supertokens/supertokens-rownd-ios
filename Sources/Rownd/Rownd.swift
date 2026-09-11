@@ -37,6 +37,8 @@ public class Rownd: NSObject {
     @MainActor private static var instantUsers: InstantUsers?
     internal static var isSuperTokensInitialized = false
     private static let smartLinkStateLock = NSLock()
+    private static let signOutLock = NSLock()
+    private static var pendingSignOutCount = 0
     private static var isConfigurationComplete = false
     private static var pendingSmartLinkUrls: [URL] = []
     internal static var displayHubHandler: ((HubPageSelector, Encodable?) -> Void)?
@@ -298,8 +300,9 @@ public class Rownd: NSObject {
     }
 
     public static func signOut(scope: RowndSignoutScope) throws {
-        SuperTokensSessionBridge.invalidateAuthOperationPermits()
+        beginSignOut()
         Task {
+            defer { endSignOut() }
             do {
                 await prepareForSignOut()
                 try await performSignOut(scope: scope)
@@ -311,7 +314,8 @@ public class Rownd: NSObject {
     }
 
     public static func signOut(scope: RowndSignoutScope) async throws {
-        SuperTokensSessionBridge.invalidateAuthOperationPermits()
+        beginSignOut()
+        defer { endSignOut() }
         await prepareForSignOut()
         try await performSignOut(scope: scope)
     }
@@ -325,22 +329,25 @@ public class Rownd: NSObject {
     }
 
     public static func signOut() {
-        SuperTokensSessionBridge.invalidateAuthOperationPermits()
+        beginSignOut()
         Task {
+            defer { endSignOut() }
             await prepareForSignOut()
             await performLocalSignOut()
         }
     }
 
     public static func signOut() async {
-        SuperTokensSessionBridge.invalidateAuthOperationPermits()
+        beginSignOut()
+        defer { endSignOut() }
         await prepareForSignOut()
         await performLocalSignOut()
     }
 
     public static func signOut(completion: @escaping (Error?) -> Void) {
-        SuperTokensSessionBridge.invalidateAuthOperationPermits()
+        beginSignOut()
         Task {
+            defer { endSignOut() }
             await prepareForSignOut()
             await performLocalSignOut()
             completion(nil)
@@ -348,14 +355,41 @@ public class Rownd: NSObject {
     }
 
     internal static func signOutForMigrationFailure() async {
-        SuperTokensSessionBridge.invalidateAuthOperationPermits()
+        beginSignOut()
+        defer { endSignOut() }
         await prepareForSignOut()
         await performLocalSignOut()
     }
 
-    private static func prepareForSignOut() async {
-        await MainActor.run {
-            appleSignUpCoordinator.cancelCurrentOperation()
+    private static func beginSignOut() {
+        // Block immediate requestSignIn() calls before the async cleanup task starts.
+        signOutLock.lock()
+        pendingSignOutCount += 1
+        signOutLock.unlock()
+        SuperTokensSessionBridge.invalidateAuthOperationPermits()
+    }
+
+    private static func endSignOut() {
+        signOutLock.lock()
+        pendingSignOutCount -= 1
+        signOutLock.unlock()
+        Task { @MainActor in
+            inst.presentPendingHubIfPossible()
+        }
+    }
+
+    internal static var isSigningOut: Bool {
+        signOutLock.lock()
+        defer { signOutLock.unlock() }
+        return pendingSignOutCount > 0
+    }
+
+    @MainActor private static func prepareForSignOut() async {
+        appleSignUpCoordinator.cancelCurrentOperation()
+        guard let hubController = inst._bottomSheetController?.controller as? HubViewController else { return }
+        hubController.hubWebController.invalidate()
+        await withCheckedContinuation { continuation in
+            hubController.hide { continuation.resume() }
         }
     }
 
@@ -365,6 +399,14 @@ public class Rownd: NSObject {
         if isSuperTokensInitialized {
             // Keep the compatibility session from resurrecting Rownd auth on later syncs.
             await SuperTokensSessionBridge.signOut()
+        }
+
+        if !Bundle.main.bundlePath.hasSuffix(".appex") {
+            do {
+                try await HubWebsiteDataCleaner.clear(for: config.baseUrl)
+            } catch {
+                logger.error("Failed to clear Hub website data during sign-out: \(error)")
+            }
         }
 
         await MainActor.run {
@@ -662,7 +704,7 @@ public class Rownd: NSObject {
             requestID: requestID,
             deepLinkURL: deepLinkURL
         )
-        guard dismissingHubRequestID == nil else {
+        guard !Self.isSigningOut, dismissingHubRequestID == nil else {
             pendingHubRequest = request
             return
         }
@@ -711,7 +753,7 @@ public class Rownd: NSObject {
     }
 
     @MainActor private func presentPendingHubIfPossible() {
-        guard dismissingHubRequestID == nil,
+        guard !Self.isSigningOut, dismissingHubRequestID == nil,
               let pendingHubRequest,
               activeHubRequestID == pendingHubRequest.requestID else {
             return

@@ -265,6 +265,7 @@ internal enum SuperTokensSessionBridge {
         frontToken: String? = nil,
         antiCSRF: String? = nil,
         allowReplacingExistingSession: Bool = true,
+        permit: AuthOperationPermit? = nil,
         refreshSession: () throws -> Bool = SuperTokens.attemptRefreshingSession
     ) -> Bool {
         precondition(!Thread.isMainThread, "bootstrapSession must be called off the main thread")
@@ -272,6 +273,7 @@ internal enum SuperTokensSessionBridge {
         // internal reads/refresh can't interleave with a concurrent read, clear, or
         // sign-out from another task.
         return sessionQueue.sync {
+            if let permit, !isAuthOperationPermitValid(permit) { return false }
             let succeeded = bootstrapSessionOnQueue(
                 accessToken: accessToken,
                 refreshToken: refreshToken,
@@ -282,6 +284,12 @@ internal enum SuperTokensSessionBridge {
             )
             if succeeded {
                 sessionGeneration &+= 1
+            }
+            if let permit, !isAuthOperationPermitValid(permit) {
+                if succeeded {
+                    _ = SuperTokens.clearSessionLocally()
+                }
+                return false
             }
             return succeeded
         }
@@ -873,7 +881,7 @@ internal enum SuperTokensSessionBridge {
         )
     }
 
-    private static func isAuthOperationPermitValid(_ permit: AuthOperationPermit) -> Bool {
+    static func isAuthOperationPermitValid(_ permit: AuthOperationPermit) -> Bool {
         authOperationLock.lock()
         defer { authOperationLock.unlock() }
         return permit.generation == authOperationGeneration

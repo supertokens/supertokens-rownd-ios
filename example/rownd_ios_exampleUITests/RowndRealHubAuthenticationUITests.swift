@@ -108,6 +108,104 @@ final class RowndRealHubAuthenticationUITests: XCTestCase {
         app.terminate()
     }
 
+    func testNativeLogoutReopensRealHubWithoutStaleSessionRetryAndCanSignInAgain() async throws {
+        try await assertNativeLogoutCanSignInAgain(reopenImmediately: false)
+    }
+
+    func testSignInRequestedImmediatelyAfterNativeLogoutWaitsForHubCleanup() async throws {
+        try await assertNativeLogoutCanSignInAgain(reopenImmediately: true)
+    }
+
+    private func assertNativeLogoutCanSignInAgain(reopenImmediately: Bool) async throws {
+        let app = try await launchIsolatedApp(resetSession: true)
+        let email = uniqueEmail(prefix: "ios-logout-reopen")
+        try startEmailSignIn(email, in: app)
+        let coldHubCounters = try await request("GET", path: "counters")
+        let coldHubRefreshCount = try XCTUnwrap(coldHubCounters["stRefresh"] as? Int)
+        let firstCapture = try await waitForPasswordlessCapture(email: email)
+        completeEmailOTP(try XCTUnwrap(firstCapture["userInputCode"] as? String), in: app)
+        try waitForLabel(app.staticTexts["e2e-auth-state"], equalTo: "authenticated")
+        try waitForLabel(app.staticTexts["e2e-sign-in-completed-count"], equalTo: "1")
+        try waitForDisappearance(app.webViews.firstMatch)
+        let originalSession = app.staticTexts["e2e-session-handle"].label
+        let originalUser = app.staticTexts["e2e-user-id"].label
+        XCTAssertNotEqual(originalSession, "no-session")
+
+        let beforeLogout = try await request("GET", path: "counters")
+        let signOutCount = try XCTUnwrap(beforeLogout["stSignOut"] as? Int)
+        let logoutButton = app.buttons[reopenImmediately ? "e2e-sign-out-and-reopen-button" : "e2e-native-sign-out-button"]
+        try scrollToElement(logoutButton, in: app)
+        logoutButton.tap()
+        try waitForLabel(app.staticTexts["e2e-auth-state"], equalTo: "signed-out")
+        try waitForLabel(app.staticTexts["e2e-session-handle"], equalTo: "no-session")
+        _ = try await waitForCounters { ($0["stSignOut"] as? Int ?? 0) > signOutCount }
+        let beforeReopen = beforeLogout
+
+        // Reconfiguring or relaunching here would mask logout's retained WebKit session.
+        if !reopenImmediately {
+            let getStartedButton = app.buttons["e2e-sign-in-account-button"]
+            try scrollToElement(getStartedButton, in: app)
+            getStartedButton.tap()
+        }
+        let webView = app.webViews.firstMatch
+        let emailField = webView.textFields.firstMatch
+        let emailFormAppeared = emailField.waitForExistence(timeout: 15)
+
+        let settled = try await request("GET", path: "test/passwordless/consumes/settled")
+        let afterReopen = try await request("GET", path: "counters")
+        let authState = app.staticTexts["e2e-auth-state"].label
+        let sessionHandle = app.staticTexts["e2e-session-handle"].label
+        let completionCount = app.staticTexts["e2e-sign-in-completed-count"].label
+        let diagnostics = XCTAttachment(string: "Before reopening: \(beforeReopen)\nAfter reopening: \(afterReopen)\nConsumes: \(settled)\nAuth: \(authState)\nSession: \(sessionHandle)\nOriginal session: \(originalSession)\nCompletions: \(completionCount)")
+        diagnostics.name = "Native logout Hub reopen requests"
+        diagnostics.lifetime = .keepAlways
+        add(diagnostics)
+        guard emailFormAppeared, authState == "signed-out", sessionHandle == "no-session", completionCount == "1" else {
+            let screenshot = XCTAttachment(screenshot: app.screenshot())
+            screenshot.name = "Hub after native logout"
+            screenshot.lifetime = .keepAlways
+            add(screenshot)
+            XCTFail("Hub reopened with stale authentication: emailForm=\(emailFormAppeared), auth=\(authState), session=\(sessionHandle), completions=\(completionCount). Expected an email form, signed-out state, no session, and one prior completion.")
+            return
+        }
+        for counter in ["stRefreshWithCredentials", "legacyRefresh", "migrate", "passwordlessConsume", "passwordlessCreate"] {
+            XCTAssertEqual(
+                try XCTUnwrap(afterReopen[counter] as? Int),
+                try XCTUnwrap(beforeReopen[counter] as? Int),
+                "Reopening Hub after native logout attempted \(counter) before user authentication"
+            )
+        }
+        // A fresh WebView may probe for an HttpOnly session with a tokenless refresh.
+        // Allow only the same number of probes as the isolated, signed-out startup.
+        XCTAssertLessThanOrEqual(
+            try XCTUnwrap(afterReopen["stRefresh"] as? Int) - XCTUnwrap(beforeReopen["stRefresh"] as? Int),
+            coldHubRefreshCount
+        )
+        XCTAssertTrue(emailField.isHittable)
+        emailField.tap()
+        emailField.typeText(email)
+        webView.buttons["Continue"].tap()
+        try waitForLabel(app.staticTexts["e2e-challenge-state"], equalTo: "active")
+        _ = try await waitForCounters { ($0["passwordlessCreate"] as? Int) == 2 }
+        let secondCapture = try await waitForPasswordlessCapture(email: email)
+        completeEmailOTP(try XCTUnwrap(secondCapture["userInputCode"] as? String), in: app)
+        try waitForLabel(app.staticTexts["e2e-auth-state"], equalTo: "authenticated")
+        try waitForLabel(app.staticTexts["e2e-challenge-state"], equalTo: "clear")
+        try waitForLabel(app.staticTexts["e2e-sign-in-completed-count"], equalTo: "2")
+        try waitForDisappearance(webView)
+        XCTAssertEqual(app.staticTexts["e2e-user-id"].label, originalUser)
+        XCTAssertNotEqual(app.staticTexts["e2e-session-handle"].label, originalSession)
+        XCTAssertNotEqual(app.staticTexts["e2e-session-handle"].label, "no-session")
+
+        let protectedButton = app.buttons["e2e-protected-button"]
+        try scrollToElement(protectedButton, in: app)
+        protectedButton.tap()
+        try waitForLabel(app.staticTexts["e2e-scenario-state"], equalTo: "protected_loaded")
+        XCTAssertEqual(try protectedResponse(in: app)["userId"] as? String, originalUser)
+        let counters = try await request("GET", path: "counters")
+        XCTAssertEqual(counters["passwordlessConsume"] as? Int, 2)
+    }
+
     func testRestoredSessionCanSignOutFromRealManageAccountAndStaysSignedOut() async throws {
         let app = try await launchIsolatedApp(resetSession: true)
         let createSessionButton = app.buttons["e2e-create-session-button"]

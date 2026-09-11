@@ -134,8 +134,10 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
         initialJsFunctionArgsAsJson: String,
         currentJsFunctionArgsAsJson: @escaping @MainActor () -> String?,
         hideHub: @escaping @MainActor (@escaping () -> Void) -> Void,
-        eventData: [String: String] = [:]
+        eventData: [String: String] = [:],
+        shouldComplete: @MainActor () -> Bool = { true }
     ) async {
+        guard shouldComplete() else { return }
         store.dispatch(UserData.fetch())
         store.dispatch(ResetSignInState())
 
@@ -148,6 +150,7 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
             }
         }
 
+        guard shouldComplete() else { return }
         let signInCompletedData = eventData.reduce(into: [String: AnyCodable?]()) { result, entry in
             result[entry.key] = AnyCodable(entry.value)
         }
@@ -543,6 +546,7 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
     var jsFunctionArgsAsJson: String = "{}"
     private var navigationGeneration = 0
     private var authenticationGeneration = 0
+    private var isInvalidated = false
     private var nativeEmailVerificationRequestId: String?
     private var nativeEmailVerificationTask: Task<Void, Never>?
     private(set) var nativeEmailVerificationOwnsSessionReplacement = false
@@ -583,6 +587,7 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
     }
 
     func setUrl(url: URL) {
+        guard !isInvalidated else { return }
         self.url = url
         guard isViewLoaded else { return }
 
@@ -591,7 +596,7 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
     }
 
     private func startLoading(force: Bool = false) {
-        guard let url = self.url else { return }
+        guard !isInvalidated, let url = self.url else { return }
 
         if webView.isLoading {
             guard force || webView.url != url else { return }
@@ -625,10 +630,24 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
         super.viewDidDisappear(animated)
         invalidateNativeEmailVerificationRequests()
     }
+
+    func invalidate() {
+        guard !isInvalidated else { return }
+        isInvalidated = true
+        invalidateNativeEmailVerificationRequests()
+        // Break the handler/owner cycles and retire the page's in-memory session.
+        userController.removeScriptMessageHandler(forName: "rowndIosSDK")
+        webView.stopLoading()
+        webView.navigationDelegate = nil
+        webView.uiDelegate = nil
+        webView.loadHTMLString("", baseURL: nil)
+        hubViewController = nil
+    }
 }
 
 extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
     private func evaluateJavaScript(code: String, webView: WKWebView) {
+        guard !isInvalidated else { return }
         let wrappedJs = """
             if (typeof rownd !== 'undefined') {
                 \(code)
@@ -891,6 +910,8 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
     }
 
     public func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        let permit = SuperTokensSessionBridge.captureAuthOperationPermit()
+        guard !isInvalidated, !Rownd.isSigningOut else { return }
         // This function handles the events coming from javascript. We'll configure the javascript side of this later.
         // We can access properties through the message body, like this:
         guard let response = message.body as? String else { return }
@@ -934,11 +955,17 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
                         accessToken: authMessage.accessToken,
                         refreshToken: authMessage.refreshToken,
                         frontToken: authMessage.frontToken,
-                        antiCSRF: authMessage.antiCSRF
+                        antiCSRF: authMessage.antiCSRF,
+                        permit: permit
                     )
                     await Self.completeAuthenticationAfterAdoption(
                         succeeded: sessionAdopted,
-                        syncAuthState: SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens,
+                        syncAuthState: {
+                            await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens(
+                                afterTokenRead: {},
+                                commitIf: { SuperTokensSessionBridge.isAuthOperationPermitValid(permit) }
+                            )
+                        },
                         syncFailure: { [weak self] in
                             await self?.showAuthenticationSyncFailure(
                                 navigationGeneration: authenticationNavigationGeneration,
@@ -957,7 +984,8 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
                                     }
                                     hubViewController.hide(completion: completion)
                                 },
-                                eventData: authMessage.signInCompletedEventData
+                                eventData: authMessage.signInCompletedEventData,
+                                shouldComplete: { SuperTokensSessionBridge.isAuthOperationPermitValid(permit) }
                             )
                         }
                     )
@@ -1010,9 +1038,6 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
                     return;
                 }
 
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in // .now() + num_seconds
-                    self?.hubViewController?.hide()
-                }
                 Rownd.signOut()
             case .tryAgain:
                 startLoading()

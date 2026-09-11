@@ -300,6 +300,7 @@ public class HubViewController: UIViewController, HubViewProtocol, BottomSheetHo
     }
 
     func hostDidDisappear() {
+        hubWebController.invalidate()
         completeHide()
         if let presentationRequestID {
             onDisappeared?(presentationRequestID)
