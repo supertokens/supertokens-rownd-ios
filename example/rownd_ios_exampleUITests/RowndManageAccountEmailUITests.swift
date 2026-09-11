@@ -363,6 +363,14 @@ final class RowndManageAccountEmailUITests: XCTestCase {
 
         let verificationLink = safari.links["Open in app"]
         XCTAssertTrue(verificationLink.waitForExistence(timeout: 10))
+        // Safari's first-run menu tip consumes taps outside the popover, including link taps.
+        let menuTip = safari.staticTexts["View Bookmarks, Share Menu, and Open Tabs"]
+        if menuTip.waitForExistence(timeout: 2) {
+            let closeTipButton = safari.buttons["Close"]
+            XCTAssertTrue(closeTipButton.waitForExistence(timeout: 2))
+            closeTipButton.tap()
+            XCTAssertTrue(menuTip.waitForNonExistence(timeout: 2))
+        }
         try assertBackgrounded(app)
         verificationLink.tap()
 
@@ -438,6 +446,8 @@ final class RowndManageAccountEmailUITests: XCTestCase {
         for _ in 0..<3 {
             let currentValueLength = (field.value as? String)?.count ?? 0
             field.tap()
+            // Hardware-key events during keyboard presentation can stall XCTest's animation-idle tracking.
+            XCTAssertTrue(XCUIApplication().keyboards.firstMatch.waitForExistence(timeout: 5))
             field.typeKey("a", modifierFlags: .command)
             for _ in 0..<currentValueLength {
                 field.typeKey(XCUIKeyboardKey.delete.rawValue, modifierFlags: [])

@@ -192,6 +192,13 @@ import AnyCodable
         try await TestInfrastructure.prepare()
         try await setMigrationMode("migrateWithoutRefreshHeader")
 
+        await MainActor.run {
+            Context.currentContext.store.dispatch(SetUserState(payload: UserState(
+                data: ["user_id": "legacy-rownd-user", "first_name": "Legacy"],
+                meta: ["tier": "pro"]
+            )))
+        }
+
         try await migrateLegacySession(
             accessToken: generateJwt(expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970),
             refreshToken: "legacy-refresh-token"
@@ -201,7 +208,12 @@ import AnyCodable
         #expect(await SuperTokensSessionBridge.getAccessToken() == nil)
         #expect(SuperTokensSessionBridge.getRefreshToken() == nil)
         #expect(SuperTokensSessionBridge.getFrontToken() == nil)
-        #expect(await currentAuthRefreshToken() == "legacy-refresh-token")
+        #expect(SuperTokensSessionBridge.getAntiCSRF() == nil)
+        #expect(await currentAuthAccessToken() == nil)
+        #expect(await currentAuthRefreshToken() == nil)
+        await MainActor.run {
+            #expect(Context.currentContext.store.state.user == UserState())
+        }
 
         let counters = try await getJSON(path: "counters")
         #expect(counters["migrate"] as? Int == 1)

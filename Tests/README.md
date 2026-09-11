@@ -21,6 +21,8 @@ Run `npm run test:cocoapods` to install the local pod into generated static-libr
 
 The E2E runner builds and starts the Hub automatically. Set `IOS_LOCAL_HUB_REPO` to use a different checkout path or `E2E_HUB_PORT` to change its port.
 
+The main UI script waits for `iPhone 17` to finish booting before Xcode installs its test runner. Earlier Xcode stages can shut the simulator down; installing the runner during SpringBoard startup can leave a stale installation placeholder and fail launch with `Busy` / `Application failed preflight checks`.
+
 Run `npm run test:e2e:refresh` for the session-expiry regression suite. It exercises real Core-issued access tokens, automatic refresh, a temporary refresh HTTP 503, and a revoked session. Two XCUITests terminate the example app for 91 seconds each, then verify cold-launch refresh and outage recovery using persisted native credentials. Allow several minutes for the suite.
 
 The harness uses a named Core app so expiry fixtures can temporarily change access-token validity through the Core API. Refresh-token validity stays at `144000` **minutes** (100 days); access-token validity returns to `3600` **seconds** before refresh. See [the investigation](../docs/session-refresh-investigation.md) for the failure mechanism and reproduction details.
@@ -33,6 +35,13 @@ The Safari custom-scheme handoff test runs separately on the simulator because t
 
 ```sh
 IOS_E2E_UI_SCRIPT=test:e2e:safari-handoff npm run test:e2e
+```
+
+Use a simulator with only one app registered for `rowndsupertokens://`. Older example installations such as `io.rownd.ios-native` can claim the same scheme as `com.bogdancarpusor.rowndexample`, causing Safari to open the wrong app. Set `IOS_E2E_SAFARI_DESTINATION` to select an isolated simulator without changing existing devices:
+
+```sh
+IOS_E2E_SAFARI_DESTINATION='platform=iOS Simulator,id=<simulator-uuid>' \
+  IOS_E2E_ONLY_UI=1 IOS_E2E_UI_SCRIPT=test:e2e:safari-handoff npm run test:e2e
 ```
 
 The `test:e2e:local-plugin` and `test:e2e:safari-handoff:local-plugin` commands additionally require a plugin checkout at `../../../supertokens-plugins/packages/rownd-nodejs` with its dependencies installed.
