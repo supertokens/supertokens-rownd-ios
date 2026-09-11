@@ -142,6 +142,12 @@ If you configure values through Xcode scheme environment variables, remember tho
 
 After initialization, your app will typically call `Rownd.requestSignIn()` at some point, if the user is not already authenticated. This will display the Rownd interface for authenticating the user. Once they complete the sign-in process, an access token and the user's profile information will be available to your app.
 
+#### Legacy session migration
+
+`await Rownd.configure(...)` finishes legacy migration before returning. If a migration request fails, the SDK clears only that attempt's legacy credentials and cached profile, persists normal signed-out state, and emits the normal sign-out event. This includes HTTP errors, incomplete or invalid session responses, failed native adoption, and exhausted network/timeout retries. HTTP 409 succeeds only when a usable native SuperTokens session exists. A concurrent usable native session is preserved and synchronized; newer legacy credentials are untouched. The completed attempt's `auth.isLoading` is false. Apps with their own startup loader should finish it when configuration returns and use the usual signed-out flow, including `Rownd.requestSignIn()`.
+
+Migration network errors (`URLError`, including timeout) receive one immediate retry: at most two requests per attempt. HTTP and response-validation failures are not retried. Once failed migration credentials are cleared, a later launch does not retry them. Before a migration request is sent, transient legacy-refresh failures and request configuration/construction errors retain credentials; existing invalid-refresh-token HTTP 400/401 handling still signs out. Rotated legacy credentials are persisted before migration and used for its bounded retry, then cleared if that migration fails. Migration transport bypasses response interceptors, and revocable native adoption ownership prevents stale responses from installing or clearing a newer session.
+
 ### Handling authentication
 
 Rownd leverages an observeable architecture to expose data to your app. This means that as the Rownd state changes, an app can dynamically update without complicated logic. For example, a view can display different information based on the user's authentication status.

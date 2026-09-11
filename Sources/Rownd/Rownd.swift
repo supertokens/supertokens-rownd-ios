@@ -354,11 +354,22 @@ public class Rownd: NSObject {
         }
     }
 
-    internal static func signOutForMigrationFailure() async {
-        beginSignOut()
-        defer { endSignOut() }
-        await prepareForSignOut()
-        await performLocalSignOut()
+    @discardableResult
+    @MainActor internal static func signOutForMigrationFailure(
+        attempt: LegacyMigrationAttempt
+    ) -> Bool {
+        guard !Task.isCancelled, attempt.isCurrent,
+              !AuthState.isSuperTokensAccessToken(attempt.auth.accessToken) else { return false }
+        // Only discard the attempted legacy credentials. A concurrent native session is never signed out.
+        let store = attempt.context.store
+        let signedOut = AuthState(
+            hasPreviouslySignedIn: store.state.auth.hasPreviouslySignedIn
+        )
+        store.dispatch(SetAuthState(payload: signedOut))
+        store.dispatch(SetUserState(payload: UserState()))
+        store.state.saveImmediately()
+        RowndEventEmitter.emit(RowndEvent(event: .signOut))
+        return true
     }
 
     private static func beginSignOut() {

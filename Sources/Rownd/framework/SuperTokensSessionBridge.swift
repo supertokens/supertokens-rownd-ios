@@ -20,6 +20,25 @@ internal enum SuperTokensSessionBridge {
         fileprivate let generation: UInt64
     }
 
+    final class SessionAdoptionScope: @unchecked Sendable {
+        private let lock = NSLock()
+        private var valid = true
+        // Accessed only on sessionQueue, including cleanup queued by a successor flight.
+        fileprivate var installedIdentity: SessionIdentity?
+
+        var isValid: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return valid
+        }
+
+        func invalidate() {
+            lock.lock()
+            valid = false
+            lock.unlock()
+        }
+    }
+
     enum ReplacementRowndStateSyncResult: Equatable {
         case profileSynchronized
         case profileUnavailable
@@ -137,10 +156,13 @@ internal enum SuperTokensSessionBridge {
     static func adoptResponseSession(
         _ tokens: SuperTokensSessionTokens,
         permit: AuthOperationPermit,
+        scope: SessionAdoptionScope? = nil,
+        allowReplacingExistingSession: Bool = true,
         installSession: @escaping (SuperTokensSessionTokens) -> Bool = installResponseSession
     ) async -> SuperTokensSessionBridge.SessionIdentity? {
         await onSessionQueue {
             guard isAuthOperationPermitValid(permit),
+                  scope?.isValid != false,
                   !tokens.refreshToken.isEmpty,
                   !tokens.frontToken.isEmpty,
                   validatedUserId(
@@ -148,6 +170,7 @@ internal enum SuperTokensSessionBridge {
                     frontToken: tokens.frontToken
                   ) != nil,
                   let stable = stableSessionIdentity(from: tokens.accessToken),
+                  allowReplacingExistingSession || !SuperTokens.doesSessionExist(),
                   installSession(tokens) else {
                 return nil
             }
@@ -158,7 +181,8 @@ internal enum SuperTokensSessionBridge {
                 generation: sessionGeneration,
                 stable: stable
             )
-            guard isAuthOperationPermitValid(permit) else {
+            scope?.installedIdentity = identity
+            guard isAuthOperationPermitValid(permit), scope?.isValid != false else {
                 if sessionGeneration == identity.generation,
                    SuperTokens.getAccessToken() == identity.accessToken {
                     sessionGeneration &+= 1
@@ -173,14 +197,25 @@ internal enum SuperTokensSessionBridge {
     @discardableResult
     static func discardSessionIfCurrent(_ identity: SessionIdentity) async -> Bool {
         await onSessionQueue {
-            guard sessionGeneration == identity.generation,
-                  let accessToken = SuperTokens.getAccessToken(),
-                  stableSessionIdentity(from: accessToken) == identity.stable else {
-                return false
-            }
-            sessionGeneration &+= 1
-            return SuperTokens.clearSessionLocally()
+            discardSessionIfCurrentOnQueue(identity)
         }
+    }
+
+    static func discardSession(in scope: SessionAdoptionScope) async {
+        await onSessionQueue {
+            guard !scope.isValid, let identity = scope.installedIdentity else { return }
+            _ = discardSessionIfCurrentOnQueue(identity)
+        }
+    }
+
+    private static func discardSessionIfCurrentOnQueue(_ identity: SessionIdentity) -> Bool {
+        guard sessionGeneration == identity.generation,
+              let accessToken = SuperTokens.getAccessToken(),
+              stableSessionIdentity(from: accessToken) == identity.stable else {
+            return false
+        }
+        sessionGeneration &+= 1
+        return SuperTokens.clearSessionLocally()
     }
 
     static func attemptRefresh() async -> Bool {
