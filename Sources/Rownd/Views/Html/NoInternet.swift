@@ -45,6 +45,7 @@ func escapeHTML(_ value: String) -> String {
             <body>
                 <h1>Connection failed</h1>
                 <p>Please check your connection and try again</p>
+                <p class="hint">On a VPN? Try turning it off</p>
                 <div class="diagnostics">
                     <div class="diagnostic-row">
                         <span class="diagnostic-label">Host</span>
@@ -70,6 +71,7 @@ func CSS(fontSize: CGFloat, isDarkMode: Bool, primaryColor: String) -> String {
             display: flex;
             flex-direction: column;
             align-items: center;
+            text-align: center;
             width: 100%;
             margin: 0px;
             padding: 0px;
@@ -84,6 +86,11 @@ func CSS(fontSize: CGFloat, isDarkMode: Bool, primaryColor: String) -> String {
             font-size: 1.166em;
             margin-top: 0px;
             margin-bottom: 20px;
+        }
+        .hint {
+            font-size: 1em;
+            margin-top: -12px;
+            color: \(isDarkMode ? "#a3a3a3" : "#737373");
         }
         .diagnostics {
             width: calc(100% - 48px);
