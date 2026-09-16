@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.0 (2026-09-16)
+
+* feat(offline): suggest turning off a VPN on the connection failure screen ([0425d78](https://github.com/supertokens/supertokens-rownd-ios/commit/0425d78))
+
 ## <small>0.1.16 (2026-09-11)</small>
 
 * test: add native verification compatibility matrix ([7a59308](https://github.com/supertokens/supertokens-rownd-ios/commit/7a59308))
