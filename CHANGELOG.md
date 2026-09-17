@@ -1,5 +1,9 @@
 # Changelog
 
+## <small>0.2.1 (2026-09-17)</small>
+
+* improv: support named mobile client domains ([e2230d4](https://github.com/supertokens/supertokens-rownd-ios/commit/e2230d4))
+
 ## 0.2.0 (2026-09-16)
 
 * feat(offline): suggest turning off a VPN on the connection failure screen ([0425d78](https://github.com/supertokens/supertokens-rownd-ios/commit/0425d78))
