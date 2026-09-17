@@ -43,6 +43,8 @@ public struct RowndConfig: Encodable {
     public var subdomainExtension = ".rownd-hub.supertokens.com"
     public var appKey = ""
     public var appVariantId: String?
+    /// Selects a key in the backend plugin's `clientDomains` map, not a URL.
+    public var clientDomain: String?
     public var deepLinkScheme = "rowndsupertokens"
     public var forceDarkMode = false
     public var postSignInRedirect: String? = "NATIVE_APP"
@@ -88,6 +90,7 @@ public struct RowndConfig: Encodable {
               subdomainExtension,
               appKey,
               appVariantId,
+              clientDomain,
               deepLinkScheme,
               forceDarkMode,
              postSignInRedirect,
@@ -113,6 +116,7 @@ public struct RowndConfig: Encodable {
         try container.encode(subdomainExtension, forKey: .subdomainExtension)
         try container.encode(appKey, forKey: .appKey)
         try container.encodeIfPresent(appVariantId, forKey: .appVariantId)
+        try container.encodeIfPresent(clientDomain, forKey: .clientDomain)
         try container.encode(deepLinkScheme, forKey: .deepLinkScheme)
         try container.encode(forceDarkMode, forKey: .forceDarkMode)
         try container.encodeIfPresent(postSignInRedirect, forKey: .postSignInRedirect)

@@ -295,6 +295,34 @@ import Testing
         }
     }
 
+    @Test(arguments: [nil, "mobile_io"] as [String?])
+    func hubConfigPreservesClientDomainSelection(clientDomain: String?) throws {
+        var config = RowndConfig()
+        config.clientDomain = clientDomain
+        config.supertokens = RowndSuperTokensConfig(
+            appName: "Example App",
+            apiDomain: "https://api.example.com"
+        )
+
+        let encoded = try JSONEncoder().encode(config)
+        let url = try #require(HubViewController.buildHubLoaderUrl(
+            baseUrl: config.baseUrl,
+            config: config,
+            base64EncodedConfig: encoded.base64EncodedString(),
+            signInHash: nil
+        )?.url)
+        let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        let configValue = try #require(components.queryItems?.first { $0.name == "config" }?.value)
+        let data = try #require(Data(base64Encoded: configValue))
+        let decoded = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+        if let clientDomain {
+            #expect(decoded["clientDomain"] as? String == clientDomain)
+        } else {
+            #expect(decoded["clientDomain"] == nil)
+        }
+    }
+
     @Test func hubLoaderUrlIncludesRequiredScriptQueryParams() async throws {
         try await withGlobalTestLock {
             var config = RowndConfig()

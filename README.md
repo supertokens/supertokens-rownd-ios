@@ -74,12 +74,36 @@ Configuration notes:
 - `RowndSuperTokensConfig.apiDomain` should point at the backend that hosts your SuperTokens plugin routes. `Rownd.configure()` also assigns this value to `Rownd.config.apiUrl`.
 - `RowndSuperTokensConfig.apiBasePath` must match your backend SuperTokens API base path, usually `/auth`.
 - `appVariantId` is optional. Set it when this app belongs to a Rownd app variant so Hub and native Google sign-in include it in authentication requests.
+- `Rownd.config.clientDomain` optionally selects a key in the backend Rownd plugin's `clientDomains` map for Hub-generated authentication links. Set it before `Rownd.configure()`. This is a key such as `"mobile_io"`, not a URL. When omitted, mobile Hub requests use the backend's `mobile` entry.
 - Set `RowndSuperTokensConfig.clearSessionOnNewInstallation` to `true` to clear retained SuperTokens credentials when the installation marker is missing. In the containing app, this also removes all WebKit data types for the configured `Rownd.config.baseUrl` host. For SuperTokens-managed Hub domains, WebKit may group this data under a managed parent-domain record, in which case data for sibling subdomains in that record is also removed. Custom Hub domains are matched exactly. The setting defaults to `false`, and marker tracking is still established when cleanup is disabled.
 - Enabling cleanup in the first marker-aware release also clears existing SuperTokens sessions once. To avoid that adoption-time reset, first release with the default disabled, then enable cleanup after the installed population has established markers. Users who skip the marker-establishing release are still reset when they first launch a cleanup-enabled release.
 - Installation cleanup never removes legacy `RowndState`, allowing existing Rownd sessions to migrate to SuperTokens without requiring users to sign in again. SuperTokens-derived compatibility auth is cleared with the native session.
 - `Rownd.configure()` reconciles cached Rownd state with the native SuperTokens session before returning. After a session replacement, authentication may be available while profile data is temporarily empty; the SDK retries profile hydration while the app is active.
 
 When sharing sessions with app extensions, configure the same `Rownd.config.appGroupPrefix`, `keychainAccessGroup`, API domain, base path, and installation cleanup setting in the containing app and every extension. The app group shares the installation marker while the Keychain access group shares the credentials. App offloading preserves app data and therefore preserves the session. Deleting the app removes its local marker; retained SuperTokens credentials are cleared on the next containing-app launch when cleanup is enabled.
+
+#### Migrating mobile link domains
+
+Keep the backend plugin's `clientDomains.mobile` set to the existing domain for older app versions, and add a named entry for the new domain:
+
+```ts
+clientDomains: {
+  mobile: "https://waypoints.rownd-hub.supertokens.com",
+  mobile_io: "https://waypoints.rownd-hub.supertokens.io",
+}
+```
+
+Preserve other client-domain entries. If using the plugin's `resolveConfig`, include the new entry in its returned `clientDomains` too.
+
+New app versions can select the new entry before initialization:
+
+```swift
+Rownd.config.baseUrl = "https://rownd-hub.supertokens.io"
+Rownd.config.clientDomain = "mobile_io"
+Rownd.config.signInLinkPattern = ".*\\.rownd-hub\\.supertokens\\.(com|io)$"
+```
+
+Include both link hosts in Associated Domains and serve valid AASA files on both hosts during the transition. Allow the applicable old and new Hub/link origins in backend CORS. `baseUrl` selects the embedded Hub; `clientDomain` independently selects generated link destinations. Keep the existing backend `apiDomain` and `apiBasePath`.
 
 #### Handling deep links and universal links
 
