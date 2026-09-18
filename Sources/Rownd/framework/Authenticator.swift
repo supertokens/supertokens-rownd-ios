@@ -236,18 +236,16 @@ actor Authenticator: AuthenticatorProtocol {
     }
 
     private func isAccessTokenValid(_ accessToken: String) -> Bool {
-        do {
-            let jwt = try decode(jwt: accessToken)
-            let currentDate = NetworkTimeManager.shared.currentTime ?? Date()
-            guard let expiresAt = jwt.expiresAt,
-                let currentDateWithMargin = Calendar.current.date(byAdding: .second, value: 60, to: currentDate)
-            else {
-                return false
-            }
-
-            return !jwt.ntpExpired && currentDateWithMargin < expiresAt
-        } catch {
+        guard let jwt = AccessTokenDecoder.decode(accessToken) else {
             return false
         }
+        let currentDate = NetworkTimeManager.shared.currentTime ?? Date()
+        guard let expiresAt = jwt.expiresAt,
+            let currentDateWithMargin = Calendar.current.date(byAdding: .second, value: 60, to: currentDate)
+        else {
+            return false
+        }
+
+        return !jwt.ntpExpired && currentDateWithMargin < expiresAt
     }
 }

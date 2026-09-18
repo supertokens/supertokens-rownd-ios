@@ -771,7 +771,7 @@ internal enum SuperTokensSessionBridge {
     }
 
     static func stableSessionIdentity(from accessToken: String) -> StableSessionIdentity? {
-        guard let jwt = try? decode(jwt: accessToken),
+        guard let jwt = AccessTokenDecoder.decode(accessToken),
               let sessionHandle = jwt.claim(name: "sessionHandle").string,
               !sessionHandle.isEmpty,
               let userId = jwt.subject ?? jwt.claim(name: "userId").string,
@@ -864,7 +864,7 @@ internal enum SuperTokensSessionBridge {
         var userId = ""
         var accessTokenExpiry: Int64 = 0
 
-        if let jwt = try? decode(jwt: accessToken) {
+        if let jwt = AccessTokenDecoder.decode(accessToken) {
             userId = jwt.claim(name: "sub").string ?? jwt.claim(name: "userId").string ?? ""
             let expiration = jwt.expiresAt?.timeIntervalSince1970 ?? 0
             accessTokenExpiry = Int64(expiration * 1000)
@@ -880,7 +880,7 @@ internal enum SuperTokensSessionBridge {
     }
 
     private static func validatedUserId(accessToken: String, frontToken: String) -> String? {
-        guard let jwt = try? decode(jwt: accessToken),
+        guard let jwt = AccessTokenDecoder.decode(accessToken),
               let accessTokenUserId = jwt.subject ?? jwt.claim(name: "userId").string,
               !accessTokenUserId.isEmpty,
               jwt.expiresAt.map({ $0 > Date() }) == true,
