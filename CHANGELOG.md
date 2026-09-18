@@ -1,5 +1,9 @@
 # Changelog
 
+## <small>0.2.2 (2026-09-18)</small>
+
+* fix: validate access token structure before decoding ([7ce7ea0](https://github.com/supertokens/supertokens-rownd-ios/commit/7ce7ea0))
+
 ## <small>0.2.1 (2026-09-17)</small>
 
 * improv: support named mobile client domains ([e2230d4](https://github.com/supertokens/supertokens-rownd-ios/commit/e2230d4))
