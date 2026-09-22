@@ -1,5 +1,9 @@
 # Changelog
 
+## <small>0.2.3 (2026-09-22)</small>
+
+* fix: include Hub sign-in method in completion events ([22db78b](https://github.com/supertokens/supertokens-rownd-ios/commit/22db78b))
+
 ## <small>0.2.2 (2026-09-18)</small>
 
 * fix: validate access token structure before decoding ([7ce7ea0](https://github.com/supertokens/supertokens-rownd-ios/commit/7ce7ea0))
