@@ -31,6 +31,38 @@ import Foundation
         #expect(payload.frontToken == "front-token")
     }
 
+    @Test(arguments: ["email", "phone", "google", "future_auth_method", nil] as [String?])
+    func authenticationMethodRoundTripsWhenPresent(method: String?) throws {
+        var json = [
+            "access_token": "access-token",
+            "refresh_token": "refresh-token",
+            "front_token": "front-token"
+        ]
+        json["method"] = method
+        let payload = try JSONDecoder().decode(
+            MessagePayload.AuthenticationMessage.self,
+            from: JSONSerialization.data(withJSONObject: json)
+        )
+
+        #expect(payload.method == method)
+        #expect(payload.signInCompletedEventData == (method.map { ["method": $0] } ?? [:]))
+        let encoded = try #require(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(payload)) as? [String: String]
+        )
+        #expect(encoded == json)
+    }
+
+    @Test func authenticationMessageAcceptsNullMethod() throws {
+        let message = try RowndHubInteropMessage.fromJson(message: #"{"type":"authentication","payload":{"access_token":"access-token","refresh_token":"refresh-token","front_token":"front-token","method":null}}"#)
+        guard case .authentication(let payload) = message.payload else {
+            Issue.record("Expected authentication payload")
+            return
+        }
+
+        #expect(payload.method == nil)
+        #expect(payload.signInCompletedEventData.isEmpty)
+    }
+
     @Test func authenticationMessageRequiresRefreshToken() throws {
         assertAuthenticationMessageDecodeFails(#"{"type":"authentication","payload":{"access_token":"access-token","front_token":"front-token"}}"#)
         assertAuthenticationMessageDecodeFails(#"{"type":"authentication","payload":{"access_token":"access-token","refresh_token":null,"front_token":"front-token"}}"#)
@@ -161,7 +193,8 @@ import Foundation
         #expect(request.script == "rownd.requestSignIn(\(request.arguments))")
     }
 
-    @Test func existingAccountHubAuthenticationEmitsCompletionDataOnlyAfterDismissalCompletes() async throws {
+    @Test(arguments: ["email", nil] as [String?])
+    func existingAccountHubAuthenticationEmitsCompletionDataOnlyAfterDismissalCompletes(method: String?) async throws {
         try await withGlobalTestLock {
             let originalContext = Context.currentContext
             let isolatedStore = createStore()
@@ -179,7 +212,8 @@ import Foundation
                 )))
             }
 
-            let message = try RowndHubInteropMessage.fromJson(message: #"{"type":"authentication","payload":{"access_token":"access-token","refresh_token":"refresh-token","front_token":"front-token","user_type":"existing_user","app_variant_user_type":"existing_user"}}"#)
+            let methodField = method.map { #", "method":"\#($0)""# } ?? ""
+            let message = try RowndHubInteropMessage.fromJson(message: #"{"type":"authentication","payload":{"access_token":"access-token","refresh_token":"refresh-token","front_token":"front-token","user_type":"existing_user","app_variant_user_type":"existing_user"\#(methodField)}}"#)
             guard case .authentication(let payload) = message.payload else {
                 Issue.record("Expected authentication payload")
                 return
@@ -208,6 +242,7 @@ import Foundation
             #expect(eventHandler.events.map(\.event) == [.signInCompleted])
             #expect(event.data?["user_type"]??.value as? String == "existing_user")
             #expect(event.data?["app_variant_user_type"]??.value as? String == "existing_user")
+            #expect(event.data?["method"]??.value as? String == method)
         }
     }
 

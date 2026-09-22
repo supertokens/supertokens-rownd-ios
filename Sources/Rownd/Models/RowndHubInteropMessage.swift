@@ -167,6 +167,7 @@ enum MessagePayload: Decodable {
         var antiCSRF: String?
         var userType: String?
         var appVariantUserType: String?
+        var method: String?
 
         enum CodingKeys: String, CodingKey {
             case accessToken = "access_token"
@@ -175,6 +176,7 @@ enum MessagePayload: Decodable {
             case antiCSRF = "anti_csrf"
             case userType = "user_type"
             case appVariantUserType = "app_variant_user_type"
+            case method
         }
 
         var signInCompletedEventData: [String: String] {
@@ -186,6 +188,10 @@ enum MessagePayload: Decodable {
 
             if let appVariantUserType {
                 data["app_variant_user_type"] = appVariantUserType
+            }
+
+            if let method {
+                data["method"] = method
             }
 
             return data
