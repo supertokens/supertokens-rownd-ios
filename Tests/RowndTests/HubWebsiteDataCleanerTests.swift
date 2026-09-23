@@ -22,6 +22,52 @@ struct HubWebsiteDataCleanerTests {
         ))
     }
 
+    @Test func matchesIOHubHostAndManagedParentDomainRecords() {
+        #expect(HubWebsiteDataCleaner.recordDisplayName(
+            "rownd-hub.supertokens.io",
+            matchesHost: "rownd-hub.supertokens.io"
+        ))
+        #expect(HubWebsiteDataCleaner.recordDisplayName(
+            "supertokens.io",
+            matchesHost: "rownd-hub.supertokens.io"
+        ))
+        #expect(HubWebsiteDataCleaner.recordDisplayName(
+            "rownd-hub.supertokens.io",
+            matchesHost: "tenant.rownd-hub.supertokens.io"
+        ))
+        #expect(HubWebsiteDataCleaner.recordDisplayName(
+            "supertokens.io",
+            matchesHost: "tenant.rownd-hub.supertokens.io"
+        ))
+    }
+
+    @Test func rejectsUnrelatedAndLookalikeIODomains() {
+        #expect(!HubWebsiteDataCleaner.recordDisplayName(
+            "example.io",
+            matchesHost: "rownd-hub.supertokens.io"
+        ))
+        #expect(!HubWebsiteDataCleaner.recordDisplayName(
+            "supertokens.com",
+            matchesHost: "rownd-hub.supertokens.io"
+        ))
+        #expect(!HubWebsiteDataCleaner.recordDisplayName(
+            "supertokens.io",
+            matchesHost: "notsupertokens.io"
+        ))
+        #expect(!HubWebsiteDataCleaner.recordDisplayName(
+            "rownd-hub.supertokens.io",
+            matchesHost: "notrownd-hub.supertokens.io"
+        ))
+        #expect(!HubWebsiteDataCleaner.recordDisplayName(
+            "supertokens.io",
+            matchesHost: "rownd-hub.supertokens.io.example.com"
+        ))
+        #expect(!HubWebsiteDataCleaner.recordDisplayName(
+            "example.io",
+            matchesHost: "hub.example.io"
+        ))
+    }
+
     @Test func rejectsUnrelatedAndLookalikeDomains() {
         #expect(!HubWebsiteDataCleaner.recordDisplayName(
             "example.com",

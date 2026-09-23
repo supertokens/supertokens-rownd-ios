@@ -5,6 +5,8 @@ internal enum HubWebsiteDataCleaner {
     private static let managedParentDomains = [
         "rownd-hub.supertokens.com",
         "supertokens.com",
+        "rownd-hub.supertokens.io",
+        "supertokens.io",
     ]
 
     @MainActor
