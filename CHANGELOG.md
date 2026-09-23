@@ -1,5 +1,9 @@
 # Changelog
 
+## <small>0.2.4 (2026-09-23)</small>
+
+* fix: clear .io Hub website data on sign-out ([06b0b30](https://github.com/supertokens/supertokens-rownd-ios/commit/06b0b30))
+
 ## <small>0.2.3 (2026-09-22)</small>
 
 * fix: include Hub sign-in method in completion events ([22db78b](https://github.com/supertokens/supertokens-rownd-ios/commit/22db78b))
