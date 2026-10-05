@@ -1,5 +1,13 @@
 # Changelog
 
+## <small>0.2.8 (2026-10-05)</small>
+
+* fix: fail closed when thirdparty signinup returns a non-OK status ([acd43fa](https://github.com/supertokens/supertokens-rownd-ios/commit/acd43fa))
+* fix: report a Google sign-in that completes after its attempt is superseded ([60cea9b](https://github.com/supertokens/supertokens-rownd-ios/commit/60cea9b))
+* fix: scope Google sign-in attempts and emit one start event per entry point ([1b1e7f7](https://github.com/supertokens/supertokens-rownd-ios/commit/1b1e7f7))
+* test: cover a Google success that lands after its Hub request is replaced ([d127371](https://github.com/supertokens/supertokens-rownd-ios/commit/d127371))
+* ci: prefetch container images before simulator and backend startup ([5464ee3](https://github.com/supertokens/supertokens-rownd-ios/commit/5464ee3))
+
 ## <small>0.2.7 (2026-10-04)</small>
 
 * ci: allow sufficient time for Swift dependency resolution ([eb44310](https://github.com/supertokens/supertokens-rownd-ios/commit/eb44310))
