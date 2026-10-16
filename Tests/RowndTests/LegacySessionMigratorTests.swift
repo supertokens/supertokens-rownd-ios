@@ -669,8 +669,15 @@ import Testing
     private func withIsolatedStore(_ operation: @escaping @Sendable () async throws -> Void) async throws {
         try await withGlobalTestLock {
             let originalContext = Context.currentContext
+            let originalConfig = Rownd.config
+            Rownd.config.supertokens = RowndSuperTokensConfig(
+                appName: "Migration tests", apiDomain: "https://migration.example.com", apiBasePath: "/auth"
+            )
             _ = Context(createStore())
-            defer { Context.currentContext = originalContext }
+            defer {
+                Context.currentContext = originalContext
+                Rownd.config = originalConfig
+            }
 
             try await operation()
         }

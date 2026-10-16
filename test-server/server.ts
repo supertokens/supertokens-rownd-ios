@@ -35,6 +35,7 @@ type HarnessCounters = {
   protected: number;
   refreshOnce: number;
   passwordlessCreate: number;
+  verificationEmailDelivered: number;
   passwordlessConsume: number;
   stSignOut: number;
 };
@@ -151,11 +152,46 @@ const counters: HarnessCounters = {
   protected: 0,
   refreshOnce: 0,
   passwordlessCreate: 0,
+  verificationEmailDelivered: 0,
   passwordlessConsume: 0,
   stSignOut: 0,
 };
 
 const capturedRequests: Record<string, CapturedRequest | undefined> = {};
+const emailChangeOperations: Array<{ action: 'update'; sessionHandle?: string; statusCode: number }> = [];
+const multiLoginFixtures = new Map<string, { provider: 'google' | 'apple'; email: string; providerSubject: string; primaryUserId?: string }>();
+const multiLoginProviderCodes = new Map<string, string>();
+
+function overrideMultiLoginProvider(provider: string, original: any) {
+  return {
+    ...original,
+    exchangeAuthCodeForOAuthTokens: async (input: any) => {
+      const code = input.redirectURIInfo.redirectURIQueryParams.code;
+      const fixtureId = multiLoginProviderCodes.get(code);
+      const fixture = fixtureId ? multiLoginFixtures.get(fixtureId) : undefined;
+      if (!fixture || fixture.provider !== provider) throw new Error('Unknown test provider exchange code');
+      multiLoginProviderCodes.delete(code);
+      return { multiLoginFixtureId: fixtureId };
+    },
+    getUserInfo: async ({ oAuthTokens }: any) => {
+      const fixture = multiLoginFixtures.get(oAuthTokens.multiLoginFixtureId);
+      if (!fixture || fixture.provider !== provider) throw new Error('Unknown test provider claims');
+      return { thirdPartyUserId: fixture.providerSubject, email: { id: fixture.email, isVerified: true },
+        rawUserInfoFromProvider: { fromUserInfoAPI: { provider, simulated: true } } };
+    },
+  };
+}
+
+async function exchangeMultiLoginProvider(apiUrl: string, fixtureId: string) {
+  const fixture = multiLoginFixtures.get(fixtureId)!;
+  const code = `fixture-${randomUUID()}`;
+  multiLoginProviderCodes.set(code, fixtureId);
+  return fetch(`${apiUrl}/auth/signinup`, {
+    method: 'POST', headers: { 'content-type': 'application/json', 'st-auth-mode': 'header', rid: 'thirdparty', 'fdi-version': '3.1' },
+    body: JSON.stringify({ thirdPartyId: fixture.provider,
+      redirectURIInfo: { redirectURIOnProviderDashboard: `http://localhost/auth/callback/${fixture.provider}`, redirectURIQueryParams: { code } } }),
+  });
+}
 let latestVerificationEmail: CapturedVerificationEmail | undefined;
 let latestPasswordlessEmail: CapturedPasswordlessEmail | undefined;
 const passwordlessConsumeStatuses: number[] = [];
@@ -464,6 +500,8 @@ function resetCounters() {
   counters.protected = 0;
   counters.refreshOnce = 0;
   counters.passwordlessCreate = 0;
+  counters.verificationEmailDelivered = 0;
+  emailChangeOperations.length = 0;
   counters.passwordlessConsume = 0;
   counters.stSignOut = 0;
 
@@ -474,6 +512,8 @@ function resetCounters() {
   latestVerificationEmail = undefined;
   latestPasswordlessEmail = undefined;
   passwordlessConsumeStatuses.length = 0;
+  multiLoginFixtures.clear();
+  multiLoginProviderCodes.clear();
   migrationMode = 'normal';
   refreshUnavailable = false;
   restoreUserGetBehavior();
@@ -511,14 +551,16 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
   const { privateKey: applePrivateKey } = generateKeyPairSync('ec', {
     namedCurve: 'P-256',
   });
-  const testApplePrivateKey = applePrivateKey.export({ type: 'sec1', format: 'pem' }).toString();
+  const testApplePrivateKey = applePrivateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
 
   logStage('Creating Docker network (including Testcontainers runtime/reaper initialization)');
-  network = await new Network().start();
+  const suppliedNetwork = process.env.IOS_HARNESS_DOCKER_NETWORK;
+  if (!suppliedNetwork) network = await new Network().start();
+  const networkName = suppliedNetwork || network!.getName();
   logStage('Docker network ready; pulling/starting Postgres');
   const postgresLogs = containerStartupLogger('Postgres');
   postgresContainer = await new GenericContainer('postgres:14')
-    .withNetwork(network)
+    .withNetworkMode(networkName)
     .withNetworkAliases('postgres')
     .withEnvironment({
       POSTGRES_USER: 'supertokens',
@@ -537,7 +579,7 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
   logStage(`Postgres ready; pulling/starting SuperTokens Core (readiness budget ${readinessTimeoutMs / 1000}s, excluding image pull)`);
   const coreLogs = containerStartupLogger('Core');
   coreContainer = await new GenericContainer(coreImage)
-    .withNetwork(network)
+    .withNetworkMode(networkName)
     .withEnvironment({
       POSTGRESQL_CONNECTION_URI: 'postgresql://supertokens:somepassword@postgres:5432/supertokens',
       ACCESS_TOKEN_VALIDITY: '3600',
@@ -637,6 +679,7 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
                   },
                 ],
               },
+              override: (original) => overrideMultiLoginProvider('google', original),
             },
             {
               config: {
@@ -652,6 +695,7 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
                   },
                 ],
               },
+              override: (original) => overrideMultiLoginProvider('apple', original),
             },
           ],
         },
@@ -688,6 +732,7 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
                 link: input.emailVerifyLink,
                 token,
               };
+              counters.verificationEmailDelivered += 1;
             },
           },
         },
@@ -696,6 +741,7 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
     experimental: {
       plugins: [
         RowndMigrationPlugin.init({
+          emailChange: { maxSessionAgeSeconds: process.env.IOS_EMAIL_CHANGE_MAX_AGE === 'null' ? null : 600 },
           rowndAppKey: appKey,
           rowndAppSecret: 'rownd-e2e-secret-rownd-e2e-secret',
           schema: {
@@ -739,14 +785,19 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
     },
   });
 
+  // Reset the independently installed token validator before installing the legacy-auth fixture.
+  setRowndClient(undefined);
   setRowndClient({
-    validateToken: async () => ({ user_id: 'ios-test-user' }),
+    validateToken: async (token: string) => ({ user_id: multiLoginFixtures.has(token) ? token : 'ios-test-user' }),
+    findUserIdsByEmail: async ({ email }: { email: string }) =>
+      email === 'ios-test-user@example.com' ? ['ios-test-user'] : [...multiLoginFixtures].filter(([, fixture]) => fixture.email === email).map(([id]) => id),
     fetchUserInfo: async ({ user_id }: { user_id: string }) =>
       ({
         state: 'enabled',
         auth_level: 'verified',
-        data: { user_id, email: `${user_id}@example.com` },
-        verified_data: { email: `${user_id}@example.com` },
+        data: { user_id, email: multiLoginFixtures.get(user_id)?.email ?? `${user_id}@example.com`,
+          ...(multiLoginFixtures.has(user_id) ? { [`${multiLoginFixtures.get(user_id)!.provider}_id`]: multiLoginFixtures.get(user_id)!.providerSubject } : {}) },
+        verified_data: { email: multiLoginFixtures.get(user_id)?.email ?? `${user_id}@example.com` },
         groups: [],
         meta: {},
       }) as any,
@@ -766,6 +817,15 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
   });
   app.use(express.json());
   app.use((req, res, next) => {
+    if (req.method === 'PUT' && req.path === '/auth/plugin/rownd/user' && typeof req.body?.data?.email === 'string') {
+      const operation = {
+        action: 'update' as const,
+        sessionHandle: sessionHandleFromTokenHeader(req.header('authorization')),
+        statusCode: 0,
+      };
+      emailChangeOperations.push(operation);
+      res.on('finish', () => { operation.statusCode = res.statusCode; });
+    }
     if (req.method === 'POST' && req.path === '/auth/signinup/code') {
       counters.passwordlessCreate += 1;
     }
@@ -1165,6 +1225,10 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
     res.json(counters);
   });
 
+  app.get('/test/email-change-operations', (_req, res) => {
+    res.json({ operations: emailChangeOperations });
+  });
+
   app.get('/captured-requests', (_req, res) => {
     res.json(capturedRequests);
   });
@@ -1228,6 +1292,75 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
       userId,
       sessionHandleCount: sessionHandles.length,
     });
+  });
+
+  app.post('/test/multi-login-account', async (req, res) => {
+    const { provider, email } = req.body ?? {};
+    if (!['google', 'apple'].includes(provider) || typeof email !== 'string' || !email.endsWith('@example.com')) {
+      res.status(400).json({ status: 'ERROR', message: 'Test provider and example.com email required' });
+      return;
+    }
+    const fixtureId = `ios-multi-${randomUUID()}`;
+    const fixture = { provider, email, providerSubject: `ios-${provider}-${randomUUID()}`, primaryUserId: undefined as string | undefined };
+    multiLoginFixtures.set(fixtureId, fixture);
+    const migrated = await fetch(`${apiUrl}/auth/plugin/rownd/migrate`, {
+      method: 'POST', headers: { authorization: `Bearer ${fixtureId}`, 'st-auth-mode': 'header', 'content-type': 'application/json' }, body: '{}',
+    });
+    const migration = await migrated.json();
+    const token = migrated.headers.get('st-access-token');
+    if (!migrated.ok || migration.status !== 'OK' || !token) {
+      res.status(500).json({ status: 'ERROR', message: 'Actual fixture migration failed', migration });
+      return;
+    }
+    // Migration intentionally imports provider placeholders; a simulated first provider exchange supplies its email.
+    const providerResponse = await exchangeMultiLoginProvider(apiUrl, fixtureId);
+    if (!providerResponse.ok || (await providerResponse.json()).status !== 'OK') {
+      res.status(500).json({ status: 'ERROR', message: 'Initial simulated provider exchange failed' });
+      return;
+    }
+    const accountResponse = await fetch(`${apiUrl}/test/account`, { headers: { authorization: `Bearer ${token}`, 'st-auth-mode': 'header' } });
+    const account = await accountResponse.json();
+    if (!accountResponse.ok || account.loginMethods?.length !== 2) {
+      res.status(500).json({ status: 'ERROR', message: 'Expected migrated passwordless/provider graph', account });
+      return;
+    }
+    fixture.primaryUserId = account.userId;
+    const metadata = (await UserMetadata.getUserMetadata(account.userId)).metadata;
+    if (metadata.rownd_migration_complete !== true) {
+      res.status(500).json({ status: 'ERROR', message: 'Actual migration did not complete' });
+      return;
+    }
+    await Session.revokeAllSessionsForUser(account.userId, true);
+    const mapping = await SuperTokens.getUserIdMapping({ userId: account.userId, userIdType: 'EXTERNAL' });
+    res.json({ status: 'OK', fixtureId, primaryUserId: account.userId, providerSubject: fixture.providerSubject,
+      providerRecipeUserId: account.loginMethods.find((method: any) => method.thirdPartyId === provider)?.recipeUserId,
+      provider, originalEmail: email, migrationComplete: true, mapping, account });
+  });
+
+  app.post('/test/multi-login-provider-replay', async (req, res) => {
+    const fixtureId = req.body?.fixtureId;
+    const fixture = multiLoginFixtures.get(fixtureId);
+    if (!fixture?.primaryUserId) { res.status(404).json({ status: 'ERROR' }); return; }
+    const exchange = await exchangeMultiLoginProvider(apiUrl, fixtureId);
+    const result = await exchange.json();
+    const token = exchange.headers.get('st-access-token');
+    if (!exchange.ok || result.status !== 'OK' || !token) { res.status(500).json({ status: 'ERROR', message: 'Simulated provider exchange failed' }); return; }
+    const headers = { authorization: `Bearer ${token}`, 'st-auth-mode': 'header' };
+    const accountResponse = await fetch(`${apiUrl}/test/account`, { headers });
+    const profileResponse = await fetch(`${apiUrl}/auth/plugin/rownd/user`, { headers });
+    const account = await accountResponse.json();
+    const profile = await profileResponse.json();
+    if (!accountResponse.ok || !profileResponse.ok) { res.status(500).json({ status: 'ERROR', message: 'Provider session cannot read protected profile' }); return; }
+    const user = await SuperTokens.getUser(account.userId);
+    const metadata = (await UserMetadata.getUserMetadata(account.userId)).metadata;
+    const providerMethod = user?.loginMethods.find((method) => method.thirdParty?.id === fixture.provider && method.thirdParty.userId === fixture.providerSubject);
+    const mapping = await SuperTokens.getUserIdMapping({ userId: account.userId, userIdType: 'EXTERNAL' });
+    res.json({ status: 'OK', provider: fixture.provider, primaryUserId: user?.id, sessionUserId: account.userId,
+      canonicalEmail: profile.data?.email, providerEmail: providerMethod?.email, providerSubject: providerMethod?.thirdParty?.userId,
+      providerRecipeUserId: providerMethod?.recipeUserId.getAsString(), mapping,
+      passwordlessEmail: user?.loginMethods.find((method) => method.recipeId === 'passwordless')?.email,
+      loginMethodCount: user?.loginMethods.length, pendingCount: (metadata.rownd_pending_verification as any[] | undefined)?.length ?? 0,
+      providerExchange: 'simulated', account, profile });
   });
 
   app.post('/test/legacy-session', async (_req, res) => {
@@ -1353,6 +1486,28 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
     res.json({ status: 'OK' });
   });
 
+  app.get('/test/email-change-session', async (req, res) => {
+    const session = await Session.getSessionInformation(String(req.query.handle));
+    if (!session) { res.status(404).json({ status: 'NO_SESSION' }); return; }
+    const user = await SuperTokens.getUser(session.userId);
+    const metadata = (await UserMetadata.getUserMetadata(session.userId)).metadata;
+    res.json({ userId: user?.id, timeCreated: session.timeCreated, tenantId: session.tenantId,
+      loginMethods: user?.loginMethods.map((method) => ({ recipeId: method.recipeId, email: method.email, verified: method.verified,
+        thirdPartyId: method.thirdParty?.id, thirdPartyUserId: method.thirdParty?.userId })),
+      pending: (metadata.rownd_pending_verification as any[] | undefined)?.map(({ value, status }) => ({ value, status })) ?? [],
+    });
+  });
+
+  app.get('/test/email-change-user', async (req, res) => {
+    const userId = String(req.query.userId);
+    const user = await SuperTokens.getUser(userId);
+    const metadata = (await UserMetadata.getUserMetadata(userId)).metadata;
+    res.json({ userId: user?.id,
+      loginMethods: user?.loginMethods.map((method) => ({ recipeId: method.recipeId, email: method.email, verified: method.verified })),
+      pending: (metadata.rownd_pending_verification as any[] | undefined)?.map(({ value, status }) => ({ value, status })) ?? [],
+    });
+  });
+
   app.get('/test/protected', verifySession(), async (req: any, res) => {
     counters.protected += 1;
     captureRequest('protected', req);
@@ -1388,7 +1543,7 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
   });
 
   app.get(
-    '/test/refresh-once',
+    ['/test/refresh-once', '/test/refresh'],
     (req, res, next) => {
       counters.refreshOnce += 1;
       if (counters.refreshOnce === 1) {

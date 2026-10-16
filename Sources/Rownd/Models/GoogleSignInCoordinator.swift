@@ -12,15 +12,29 @@ import AnyCodable
 import JWTDecode
 
 class GoogleSignInCoordinator: NSObject {
+    struct Attempt {
+        let id: UUID
+        let continuation: EmailChangeContinuation.AuthenticationContext?
+        let permit: SuperTokensSessionBridge.AuthOperationPermit
+    }
     @MainActor private var currentAttemptID: UUID?
     var parent: Rownd
     var intent: RowndSignInIntent?
-    var signInWithGoogle: (String) async throws -> SuperTokensThirdPartySignInResponse
+    var signInWithGoogle: (String, SuperTokensThirdPartySignInClient.ExchangeContext) async throws -> SuperTokensThirdPartySignInResponse
     var syncAuthState: () async -> Bool = {
         await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens()
     }
     var currentAccessToken: () async -> String? = {
         await SuperTokensSessionBridge.getAccessToken()
+    }
+    var adoptResponseSession: (SuperTokensSessionTokens, SuperTokensSessionBridge.AuthOperationPermit) async -> SuperTokensSessionBridge.SessionIdentity? = {
+        await SuperTokensSessionBridge.adoptResponseSession($0, permit: $1)
+    }
+    var syncContinuationAuthState: (SuperTokensSessionBridge.SessionIdentity, @MainActor () -> Bool) async -> Bool = { identity, commitIf in
+        await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens(afterTokenRead: {}, commitIf: commitIf, expectedSessionIdentity: identity)
+    }
+    var discardSessionIfCurrent: (SuperTokensSessionBridge.SessionIdentity) async -> Bool = {
+        await SuperTokensSessionBridge.discardSessionIfCurrent($0)
     }
     var emitEvent: @MainActor (RowndEvent) -> Void = { event in
         RowndEventEmitter.emit(event)
@@ -35,8 +49,8 @@ class GoogleSignInCoordinator: NSObject {
 
     init(_ parent: Rownd, signInClient: SuperTokensThirdPartySignInClient = SuperTokensThirdPartySignInClient()) {
         self.parent = parent
-        self.signInWithGoogle = { idToken in
-            try await signInClient.signInWithGoogle(idToken: idToken)
+        self.signInWithGoogle = { idToken, context in
+            try await signInClient.signInWithGoogle(idToken: idToken, context: context)
         }
         super.init()
     }
@@ -69,6 +83,7 @@ class GoogleSignInCoordinator: NSObject {
                 return
             }
             // The Hub in the customer web view has already dispatched its own start event.
+            Rownd.emailChangeContinuation.clear()
             let attemptID = beginAttempt(emitsSignInStarted: false)
 
             do {
@@ -91,11 +106,12 @@ class GoogleSignInCoordinator: NSObject {
         }
     }
 
-    @MainActor func completeSignIn(idToken: String, webViewId: String, attemptID: UUID) async {
+    @MainActor func completeSignIn(idToken: String, webViewId: String, attemptID: Attempt) async {
+        guard isCurrentAttempt(attemptID), attemptID.continuation == nil else { return }
         evaluateCustomerWebViewJavaScript(webViewId, "window.rownd.requestSignIn({ 'login_step': 'completing' });")
 
         do {
-            let signInResponse = try await signInWithGoogle(idToken)
+            let signInResponse = try await signInWithGoogle(idToken, .ordinary)
             guard await syncAuthState(), let accessToken = await currentAccessToken() else {
                 failSignIn(Self.authSyncFailure, attemptID: attemptID, webViewId: webViewId)
                 return
@@ -202,25 +218,64 @@ class GoogleSignInCoordinator: NSObject {
     }
 
     /// Starts a Google attempt that supersedes any earlier one; only direct SDK calls emit `signInStarted`.
-    @MainActor func beginAttempt(emitsSignInStarted: Bool) -> UUID {
+    @MainActor func beginAttempt(emitsSignInStarted: Bool) -> Attempt {
+        if emitsSignInStarted { Rownd.emailChangeContinuation.clear() }
         let attemptID = UUID()
         currentAttemptID = attemptID
+        let continuation = Rownd.activeEmailChangeSignInOwner.flatMap {
+            Rownd.emailChangeContinuation.authenticationContext(owner: $0)
+        }
         if emitsSignInStarted {
             emitEvent(.signInStarted(method: .google))
         }
-        return attemptID
+        return Attempt(id: attemptID, continuation: continuation, permit: SuperTokensSessionBridge.captureAuthOperationPermit())
     }
 
-    @MainActor func completeSignIn(idToken: String, intent: RowndSignInIntent?, attemptID: UUID) async {
+    @MainActor func completeSignIn(idToken: String, intent: RowndSignInIntent?, attemptID: Attempt) async {
+        guard isCurrentAttempt(attemptID) else { return }
         let hubRequestID = UUID()
+        let continuation = attemptID.continuation?.replacingOwner(hubRequestID)
+        let permit = attemptID.permit
+        if let original = attemptID.continuation {
+            guard Rownd.isNativeHubRequestActive(original.owner),
+                  Rownd.emailChangeContinuation.validate(configuration: Rownd.emailChangeConfiguration),
+                  Rownd.emailChangeContinuation.ownsAuthentication(original),
+                  SuperTokensSessionBridge.isAuthOperationPermitValid(permit),
+                  Rownd.emailChangeContinuation.transfer(from: original.owner, to: hubRequestID) else { return }
+        }
         Rownd.requestSignInForNativeCompletion(
             jsFnOptions: RowndSignInJsOptions(loginStep: .completing),
             requestID: hubRequestID
         )
 
         do {
-            let signInResponse = try await signInWithGoogle(idToken)
-            guard await syncAuthState(), await currentAccessToken() != nil else {
+            let signInResponse = try await signInWithGoogle(idToken, continuation == nil ? .ordinary : .emailChange)
+            let synced: Bool
+            if let continuation {
+                let canComplete: @MainActor () -> Bool = {
+                    self.isCurrentAttempt(attemptID) && Rownd.isNativeHubRequestActive(hubRequestID)
+                        && Rownd.emailChangeContinuation.validate(configuration: Rownd.emailChangeConfiguration)
+                        && Rownd.emailChangeContinuation.ownsAuthentication(continuation)
+                        && SuperTokensSessionBridge.isAuthOperationPermitValid(permit)
+                }
+                guard canComplete() else { return }
+                guard let tokens = signInResponse.sessionTokens,
+                      let identity = await adoptResponseSession(tokens, permit) else {
+                    failSignIn(Self.authSyncFailure, attemptID: attemptID, hubRequestID: hubRequestID)
+                    return
+                }
+                guard canComplete() else { _ = await discardSessionIfCurrent(identity); return }
+                synced = await syncContinuationAuthState(identity, canComplete)
+                guard synced, canComplete() else {
+                    _ = await discardSessionIfCurrent(identity)
+                    if canComplete() { failSignIn(Self.authSyncFailure, attemptID: attemptID, hubRequestID: hubRequestID) }
+                    return
+                }
+            } else {
+                synced = await syncAuthState()
+            }
+            let hasSession = continuation != nil ? synced : await currentAccessToken() != nil
+            guard synced, hasSession else {
                 failSignIn(Self.authSyncFailure, attemptID: attemptID, hubRequestID: hubRequestID)
                 return
             }
@@ -237,6 +292,11 @@ class GoogleSignInCoordinator: NSObject {
                 )
             }
             reportSignInCompleted(signInResponse)
+            if continuation != nil, isCurrentAttempt(attemptID),
+               Rownd.emailChangeAuthenticationAdopted(owner: hubRequestID) {
+                await Rownd.dismissHub(requestID: hubRequestID)
+                Rownd.resumeEmailChange(after: hubRequestID)
+            }
         } catch ApiError.generic(let errorInfo) where errorInfo.code == "E_SIGN_IN_USER_NOT_FOUND" {
             logger.error("Google sign-in failed during Rownd token exchange. Error: \(String(describing: errorInfo))")
             guard isCurrentAttempt(attemptID) else { return }
@@ -253,8 +313,8 @@ class GoogleSignInCoordinator: NSObject {
         }
     }
 
-    @MainActor private func isCurrentAttempt(_ attemptID: UUID) -> Bool {
-        currentAttemptID == attemptID
+    @MainActor private func isCurrentAttempt(_ attemptID: Attempt) -> Bool {
+        currentAttemptID == attemptID.id
     }
 
     @MainActor private func reportSignInCompleted(_ signInResponse: SuperTokensThirdPartySignInResponse) {
@@ -270,7 +330,7 @@ class GoogleSignInCoordinator: NSObject {
     }
 
     /// Emits `signInFailed` for the current attempt; the error step lands only while its Hub request is still active.
-    @MainActor private func failSignIn(_ error: Error, attemptID: UUID, hubRequestID: UUID? = nil) {
+    @MainActor private func failSignIn(_ error: Error, attemptID: Attempt, hubRequestID: UUID? = nil) {
         logger.error("Google sign-in failed. Error: \(String(describing: error))")
         guard isCurrentAttempt(attemptID) else { return }
         let errorOptions = RowndSignInJsOptions(loginStep: .error, signInType: .google)
@@ -282,7 +342,7 @@ class GoogleSignInCoordinator: NSObject {
         emitEvent(.signInFailed(method: .google, error: error))
     }
 
-    @MainActor private func failSignIn(_ error: Error, attemptID: UUID, webViewId: String) {
+    @MainActor private func failSignIn(_ error: Error, attemptID: Attempt, webViewId: String) {
         logger.error("Google sign-in failed. Error: \(String(describing: error))")
         guard isCurrentAttempt(attemptID) else { return }
         evaluateCustomerWebViewJavaScript(webViewId, "window.rownd.requestSignIn({ 'login_step': 'error', 'sign_in_type': 'google' });")

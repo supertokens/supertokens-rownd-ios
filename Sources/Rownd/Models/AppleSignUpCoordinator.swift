@@ -44,6 +44,7 @@ struct AppleSignInData: Codable {
 
 class AppleSignUpCoordinator: NSObject {
     @MainActor private var currentOperationID: UUID?
+    @MainActor private var emailChangeContext: EmailChangeContinuation.AuthenticationContext?
     @MainActor private var completionTask: Task<Void, Never>?
     @MainActor private var currentHubRequestID: UUID?
     @MainActor private var authorizationOperations: [ObjectIdentifier: UUID] = [:]
@@ -51,7 +52,7 @@ class AppleSignUpCoordinator: NSObject {
     var parent: Rownd?
     var intent: RowndSignInIntent?
     var cancellables = Set<AnyCancellable>()
-    var signInWithApple: (String, String) async throws -> SuperTokensAppleSignInResponse
+    var signInWithApple: (String, String, SuperTokensThirdPartySignInClient.ExchangeContext) async throws -> SuperTokensAppleSignInResponse
     var captureAuthOperationPermit: () -> SuperTokensSessionBridge.AuthOperationPermit = {
         SuperTokensSessionBridge.captureAuthOperationPermit()
     }
@@ -125,10 +126,11 @@ class AppleSignUpCoordinator: NSObject {
 
     init(_ parent: Rownd, signInClient: SuperTokensThirdPartySignInClient = SuperTokensThirdPartySignInClient()) {
         self.parent = parent
-        self.signInWithApple = { authorizationCode, clientType in
+        self.signInWithApple = { authorizationCode, clientType, context in
             try await signInClient.signInWithApple(
                 authorizationCode: authorizationCode,
-                clientType: clientType
+                clientType: clientType,
+                context: context
             )
         }
         super.init()
@@ -295,8 +297,13 @@ class AppleSignUpCoordinator: NSObject {
         }
 
         let signInResponse: SuperTokensAppleSignInResponse
+        let exchangeContext = await MainActor.run { () -> SuperTokensThirdPartySignInClient.ExchangeContext? in
+            guard self.canCommitAuthState(operationID: operationID, hubRequestID: hubRequestID, permit: operationPermit) else { return nil }
+            return self.emailChangeContext == nil ? .ordinary : .emailChange
+        }
+        guard let exchangeContext else { return }
         do {
-            signInResponse = try await signInWithApple(authorizationCode, clientType)
+            signInResponse = try await signInWithApple(authorizationCode, clientType, exchangeContext)
         } catch {
             logger.error("Apple sign-in failed during SuperTokens signinup. Error: \(String(describing: error))")
             guard await canCommitAuthState(
@@ -354,6 +361,11 @@ class AppleSignUpCoordinator: NSObject {
                     && Rownd.isNativeHubRequestActive(hubRequestID)
             }
             if shouldDismissHub {
+                await MainActor.run {
+                    if Rownd.emailChangeContinuation.ownsSignIn(hubRequestID) {
+                        Rownd.emailChangeContinuation.expectDismissal(owner: hubRequestID)
+                    }
+                }
                 await dismissHub(hubRequestID)
                 await clearHubRequest(hubRequestID, for: operationID)
             }
@@ -443,6 +455,9 @@ class AppleSignUpCoordinator: NSObject {
                 permit: operationPermit
             ) else { return }
             self.emitEvent(completionEvent)
+            if self.emailChangeContext != nil, Rownd.emailChangeAuthenticationAdopted(owner: hubRequestID) {
+                Rownd.resumeEmailChange(after: hubRequestID)
+            }
         }
     }
 
@@ -452,8 +467,13 @@ class AppleSignUpCoordinator: NSObject {
         permit: SuperTokensSessionBridge.AuthOperationPermit? = nil
     ) -> Bool {
         guard isCurrentOperation(operationID),
-              Rownd.canCommitAuthState(forNativeHubRequest: hubRequestID) else {
+               Rownd.canCommitAuthState(forNativeHubRequest: hubRequestID) else {
             return false
+        }
+        if let context = emailChangeContext {
+            guard context.owner == hubRequestID,
+                  Rownd.emailChangeContinuation.validate(configuration: Rownd.emailChangeConfiguration),
+                  Rownd.emailChangeContinuation.ownsAuthentication(context) else { return false }
         }
         guard let permit else { return true }
         return authOperationPermits[operationID] == permit
@@ -500,6 +520,7 @@ class AppleSignUpCoordinator: NSObject {
         let previousHubRequestID = currentHubRequestID
         let operationID = UUID()
         currentOperationID = operationID
+        emailChangeContext = Rownd.activeEmailChangeSignInOwner.flatMap { Rownd.emailChangeContinuation.authenticationContext(owner: $0) }
         completionTask = nil
         currentHubRequestID = nil
         authorizationOperations.removeAll()
@@ -514,11 +535,13 @@ class AppleSignUpCoordinator: NSObject {
         controllerID: ObjectIdentifier,
         emitsSignInStarted: Bool = false
     ) -> UUID {
+        if emitsSignInStarted { Rownd.emailChangeContinuation.clear() }
         completionTask?.cancel()
         invalidateAuthOperationPermits()
         let previousHubRequestID = currentHubRequestID
         let operationID = UUID()
         currentOperationID = operationID
+        emailChangeContext = Rownd.activeEmailChangeSignInOwner.flatMap { Rownd.emailChangeContinuation.authenticationContext(owner: $0) }
         completionTask = nil
         currentHubRequestID = nil
         authorizationOperations.removeAll()
@@ -538,6 +561,7 @@ class AppleSignUpCoordinator: NSObject {
         let previousHubRequestID = currentHubRequestID
         completionTask = nil
         currentOperationID = nil
+        emailChangeContext = nil
         currentHubRequestID = nil
         authorizationOperations.removeAll()
         authOperationPermits.removeAll()
@@ -554,6 +578,11 @@ class AppleSignUpCoordinator: NSObject {
 
     @MainActor private func bindHubRequest(_ hubRequestID: UUID, to operationID: UUID) -> Bool {
         guard currentOperationID == operationID else { return false }
+        if let context = emailChangeContext {
+            guard Rownd.emailChangeContinuation.ownsAuthentication(context),
+                  Rownd.emailChangeContinuation.transfer(from: context.owner, to: hubRequestID) else { return false }
+            self.emailChangeContext = context.replacingOwner(hubRequestID)
+        }
         currentHubRequestID = hubRequestID
         return true
     }

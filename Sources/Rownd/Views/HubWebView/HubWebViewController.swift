@@ -550,6 +550,10 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
     private var nativeEmailVerificationRequestId: String?
     private var nativeEmailVerificationTask: Task<Void, Never>?
     private(set) var nativeEmailVerificationOwnsSessionReplacement = false
+    private(set) var emailChangeAuthenticationContext: EmailChangeContinuation.AuthenticationContext?
+    private(set) var isEmailChangePresentation = false
+    var beforeAuthenticationBootstrap: @Sendable () async -> Void = {}
+    private(set) var authenticationTask: Task<Void, Never>?
 
     init() {
         super.init(nibName: nil, bundle: nil)
@@ -563,6 +567,12 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
     }
 
     private func setup() {
+        if let hub = try? Rownd.config.baseUrl.asJsonString() {
+            userController.addUserScript(WKUserScript(
+                source: "if (location.origin === new URL(\(hub)).origin) { window.__rowndNativeEmailChangeContinuation = 2; }",
+                injectionTime: .atDocumentStart, forMainFrameOnly: true
+            ))
+        }
         userController.addUserScript(WKUserScript(
             source: "window.__rowndNativeEmailVerificationBridge = true;",
             injectionTime: .atDocumentStart,
@@ -584,6 +594,19 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
         if #available(iOS 16.4, *) {
             webView.isInspectable = true
         }
+    }
+
+    @MainActor func configureEmailChangeContinuation(owner: UUID, page: HubPageSelector) {
+        guard Rownd.emailChangeContinuation.validate(configuration: Rownd.emailChangeConfiguration),
+              Rownd.emailChangeContinuation.owner == owner else { return }
+        isEmailChangePresentation = true
+        guard (page == .signIn || page == .deepLink), Rownd.emailChangeContinuation.ownsSignIn(owner),
+              let hub = try? Rownd.config.baseUrl.asJsonString() else { return }
+        emailChangeAuthenticationContext = Rownd.emailChangeContinuation.authenticationContext(owner: owner)
+        userController.addUserScript(WKUserScript(
+            source: "if (location.origin === new URL(\(hub)).origin) { window.__rowndEmailChangeSignIn = true; }",
+            injectionTime: .atDocumentStart, forMainFrameOnly: true
+        ))
     }
 
     func setUrl(url: URL) {
@@ -634,6 +657,7 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
     func invalidate() {
         guard !isInvalidated else { return }
         isInvalidated = true
+        emailChangeAuthenticationContext = nil
         invalidateNativeEmailVerificationRequests()
         // Break the handler/owner cycles and retire the page's in-memory session.
         userController.removeScriptMessageHandler(forName: "rowndIosSDK")
@@ -662,9 +686,9 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
 
         webView.evaluateJavaScript(wrappedJs) { (result, error) in
             if error == nil {
-                logger.trace("JavaScript evaluation finished with result: \(String(describing: result))")
+                logger.trace("Hub JavaScript evaluation finished")
             } else {
-                logger.error("Hub JavaScript evaluation failed: \(String(describing: error))")
+                logger.error("Hub JavaScript evaluation failed")
             }
         }
     }
@@ -869,7 +893,16 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
             case .qrCode:
                 self.evaluateJavaScript(code: "rownd.generateQrCode(\(self.jsFunctionArgsAsJson))", webView: webView)
             case .manageAccount:
-                self.evaluateJavaScript(code: "rownd.user.manageAccount()", webView: webView)
+                var continuation = ""
+                if let controller = self.hubViewController as? HubViewController,
+                   let owner = controller.presentationRequestID, Rownd.isNativeHubRequestActive(owner),
+                   Rownd.emailChangeContinuation.validate(configuration: Rownd.emailChangeConfiguration),
+                   let descriptor = Rownd.emailChangeContinuation.takeResume(owner: owner),
+                   let json = try? descriptor.asJsonString(),
+                   let expectedURL = try? webView.url?.absoluteString.asJsonString() {
+                    continuation = "if (window.location.href !== \(expectedURL)) { return; } window.__rowndEmailChangeResume = \(json);"
+                }
+                self.evaluateJavaScript(code: "(() => { \(continuation) rownd.user.manageAccount(); return true; })()", webView: webView)
             case .deepLink:
                 break
             case .none:
@@ -916,8 +949,6 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
         // We can access properties through the message body, like this:
         guard let response = message.body as? String else { return }
 
-        logger.trace("Received message from hub: \(Redact.redactSensitiveKeys(in: response))")
-
         let store = Context.currentContext.store
 
         do {
@@ -934,6 +965,13 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
             logger.debug("Received message from hub with type: \(String(describing: hubMessage.type))")
 
             switch hubMessage.type {
+            case .signIn:
+                guard case .signIn(let payload) = hubMessage.payload,
+                      payload.wasUserInitiated == true, let descriptor = payload.emailChange,
+                      let controller = hubViewController as? HubViewController else { return }
+                if !Rownd.beginEmailChange(descriptor, source: controller) {
+                    rejectEmailChange(requestId: descriptor.requestId)
+                }
             case .authentication:
                 guard case .authentication(let authMessage) = hubMessage.payload else { return }
                 let targetPage = hubViewController?.targetPage
@@ -949,8 +987,17 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
                 self.authenticationGeneration &+= 1
                 let authenticationNavigationGeneration = self.navigationGeneration
                 let authenticationGeneration = self.authenticationGeneration
+                let continuationContext = emailChangeAuthenticationContext
+                if let continuationContext, !Rownd.ownsEmailChangeAuthentication(continuationContext) { return }
+                let beforeBootstrap = beforeAuthenticationBootstrap
 
-                Task.detached(priority: .userInitiated) { [weak self] in
+                authenticationTask = Task.detached(priority: .userInitiated) { [weak self] in
+                    await beforeBootstrap()
+                    let canBegin = await MainActor.run {
+                        guard let self, !self.isInvalidated else { return false }
+                        return continuationContext.map { Rownd.ownsEmailChangeAuthentication($0) } ?? true
+                    }
+                    guard canBegin else { return }
                     let sessionAdopted = SuperTokensSessionBridge.bootstrapSession(
                         accessToken: authMessage.accessToken,
                         refreshToken: authMessage.refreshToken,
@@ -958,21 +1005,43 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
                         antiCSRF: authMessage.antiCSRF,
                         permit: permit
                     )
+                    let currentIdentity = continuationContext != nil && sessionAdopted
+                        ? await SuperTokensSessionBridge.currentSessionIdentity() : nil
+                    let installedIdentity = currentIdentity?.stable == SuperTokensSessionBridge.stableSessionIdentity(from: authMessage.accessToken)
+                        ? currentIdentity : nil
                     await Self.completeAuthenticationAfterAdoption(
                         succeeded: sessionAdopted,
                         syncAuthState: {
                             await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens(
                                 afterTokenRead: {},
-                                commitIf: { SuperTokensSessionBridge.isAuthOperationPermitValid(permit) }
+                                commitIf: {
+                                    SuperTokensSessionBridge.isAuthOperationPermitValid(permit)
+                                        && (continuationContext.map { Rownd.ownsEmailChangeAuthentication($0) } ?? true)
+                                },
+                                expectedSessionIdentity: installedIdentity
                             )
                         },
                         syncFailure: { [weak self] in
+                            if let installedIdentity {
+                                _ = await SuperTokensSessionBridge.signOutIfCurrentSession(installedIdentity, expectedRowndAccessToken: authMessage.accessToken)
+                            }
                             await self?.showAuthenticationSyncFailure(
                                 navigationGeneration: authenticationNavigationGeneration,
                                 authenticationGeneration: authenticationGeneration
                             )
                         },
                         completion: {
+                            let shouldResume = await MainActor.run {
+                                continuationContext.map {
+                                    Rownd.ownsEmailChangeAuthentication($0) && Rownd.emailChangeAuthenticationAdopted(owner: $0.owner)
+                                } ?? false
+                            }
+                            if continuationContext != nil && !shouldResume {
+                                if let installedIdentity {
+                                    _ = await SuperTokensSessionBridge.signOutIfCurrentSession(installedIdentity, expectedRowndAccessToken: authMessage.accessToken)
+                                }
+                                return
+                            }
                             await Self.completeAuthentication(
                                 store: store,
                                 initialJsFunctionArgsAsJson: initialJsFunctionArgsAsJson,
@@ -987,8 +1056,14 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
                                 eventData: authMessage.signInCompletedEventData,
                                 shouldComplete: { SuperTokensSessionBridge.isAuthOperationPermitValid(permit) }
                             )
+                            if shouldResume, let continuationContext {
+                                await Rownd.resumeEmailChange(after: continuationContext.owner)
+                            }
                         }
                     )
+                    if continuationContext != nil, !SuperTokensSessionBridge.isAuthOperationPermitValid(permit), let installedIdentity {
+                        _ = await SuperTokensSessionBridge.signOutIfCurrentSession(installedIdentity, expectedRowndAccessToken: authMessage.accessToken)
+                    }
                 }
             case .closeHubViewController:
                 DispatchQueue.main.async {
@@ -1077,6 +1152,10 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
                 break
             case .authChallengeInitiated:
                 guard case .authChallengeInitiated(let authChallengeMessage) = hubMessage.payload else { return }
+                if let owner = (hubViewController as? HubViewController)?.presentationRequestID,
+                   Rownd.isNativeHubRequestActive(owner) {
+                    Rownd.emailChangeContinuation.registerChallenge(authChallengeMessage.challengeId, owner: owner)
+                }
                 DispatchQueue.main.async {
                     var newAuthState = Context.currentContext.store.state.auth
                     newAuthState.challengeId = authChallengeMessage.challengeId
@@ -1087,6 +1166,10 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
                 }
                 break
             case .authChallengeCleared:
+                if let owner = (hubViewController as? HubViewController)?.presentationRequestID,
+                   Rownd.isNativeHubRequestActive(owner) {
+                    Rownd.emailChangeContinuation.clearChallenge(owner: owner)
+                }
                 DispatchQueue.main.async {
                     var newAuthState = Context.currentContext.store.state.auth
                     newAuthState.challengeId = nil
@@ -1116,8 +1199,22 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
                 verifyEmail(requestId: request.requestId, requestedURL: requestedURL)
             }
         } catch {
-            logger.debug("Failed to decode incoming interop message: \(String(describing: error))")
+            logger.debug("Failed to decode incoming interop message")
+            if Self.canHandleHubMessage(message, webView: webView),
+               let object = (try? JSONSerialization.jsonObject(with: Data(response.utf8))) as? [String: Any],
+               object["type"] as? String == "sign_in",
+               let payload = object["payload"] as? [String: Any], let envelope = payload["email_change"] as? [String: Any],
+               let requestId = envelope["request_id"] as? String {
+                rejectEmailChange(requestId: requestId)
+            }
         }
+    }
+
+    private func rejectEmailChange(requestId: String) {
+        guard hubViewController?.targetPage == .manageAccount, EmailChangeDescriptor.validIdentifier(requestId, maximum: 128),
+              let detail = try? ["request_id": requestId, "status": "REJECTED"].asJsonString(),
+              let expectedURL = try? webView.url?.absoluteString.asJsonString() else { return }
+        webView.evaluateJavaScript("if (window.location.href === \(expectedURL)) { window.dispatchEvent(new CustomEvent('rownd:email-change-handoff', {detail: \(detail)})); }")
     }
 
     private func animateInContent() {

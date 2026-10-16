@@ -14,9 +14,26 @@ struct RowndHubInteropMessage: Decodable {
     var payload: MessagePayload?
 
     static func fromJson(message: String) throws -> RowndHubInteropMessage {
+        let data = Data(message.utf8)
+        if let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let type = object["type"] as? String,
+            type == "sign_in",
+           let payload = object["payload"] as? [String: Any] {
+            let allowed: Set<String> = ["was_user_initiated", "email_change"]
+            guard Set(payload.keys).isSubset(of: allowed) else { throw RowndError("Unexpected continuation field") }
+            if let descriptor = payload["email_change"] as? [String: Any] {
+                guard Set(descriptor.keys) == ["version", "request_id", "local_draft", "expires_at"],
+                      let draft = descriptor["local_draft"] as? [String: Any],
+                      Set(draft.keys) == ["owner_id", "tenant_id", "configuration", "changes"],
+                      let changes = draft["changes"] as? [String: Any], Set(changes.keys) == ["email"],
+                      try JSONSerialization.data(withJSONObject: descriptor).count <= 32 * 1024 else {
+                    throw RowndError("Invalid continuation descriptor")
+                }
+            }
+        }
         let decoder = JSONDecoder()
         decoder.userInfo[.messageType] = MessageTypeHolder()
-        let result = try decoder.decode(RowndHubInteropMessage.self, from: message.data(using: .utf8)!)
+        let result = try decoder.decode(RowndHubInteropMessage.self, from: data)
         return result
     }
 }
@@ -24,6 +41,7 @@ struct RowndHubInteropMessage: Decodable {
 enum MessageType: String, Codable {
     case authentication
     case signOut = "sign_out"
+    case signIn = "sign_in"
     case closeHubViewController = "close_hub_view_controller"
     case triggerSignInWithApple = "trigger_sign_in_with_apple"
     case triggerSignInWithGoogle = "trigger_sign_in_with_google"
@@ -57,6 +75,7 @@ enum MessagePayload: Decodable {
     case authentication(AuthenticationMessage)
     case userDataUpdate(UserDataUpdateMessage)
     case signOut(SignOutMessage)
+    case signIn(SignInMessage)
     case closeHubViewController
     case unknown
     case triggerSignInWithApple(TriggerSignInWithAppleMessage)
@@ -85,6 +104,8 @@ enum MessagePayload: Decodable {
         let objectContainer = try decoder.singleValueContainer()
 
         switch type {
+        case .signIn:
+            self = .signIn(try objectContainer.decode(SignInMessage.self))
         case .triggerSignInWithApple:
             let payload = try objectContainer.decode(TriggerSignInWithAppleMessage.self)
             self = .triggerSignInWithApple(payload)
@@ -203,6 +224,15 @@ enum MessagePayload: Decodable {
 
         enum CodingKeys: String, CodingKey {
             case wasUserInitiated = "was_user_initiated"
+        }
+    }
+
+    struct SignInMessage: Decodable {
+        let wasUserInitiated: Bool?
+        let emailChange: EmailChangeDescriptor?
+        enum CodingKeys: String, CodingKey {
+            case wasUserInitiated = "was_user_initiated"
+            case emailChange = "email_change"
         }
     }
 

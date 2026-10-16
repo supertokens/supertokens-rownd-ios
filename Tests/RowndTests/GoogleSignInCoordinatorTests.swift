@@ -28,7 +28,7 @@ import Testing
                 apiBasePath: "/auth",
                 session: URLSession(configuration: configuration)
             )
-            coordinator.signInWithGoogle = { try await client.signInWithGoogle(idToken: $0) }
+            coordinator.signInWithGoogle = { try await client.signInWithGoogle(idToken: $0, context: $1) }
             coordinator.syncAuthState = {
                 Issue.record("A refused signinup must not synchronize auth")
                 return true
@@ -77,7 +77,7 @@ import Testing
         try await withGoogleSignInHarness { coordinator, recorder in
             let releaseSigninup = GoogleSignInGate()
             let signinupStarted = GoogleSignInGate()
-            coordinator.signInWithGoogle = { _ in
+            coordinator.signInWithGoogle = { _, _ in
                 await signinupStarted.open()
                 await releaseSigninup.wait()
                 return SuperTokensThirdPartySignInResponse(status: "OK", createdNewRecipeUser: false)
@@ -111,7 +111,7 @@ import Testing
         try await withGoogleSignInHarness { coordinator, recorder in
             let releaseSigninup = GoogleSignInGate()
             let signinupStarted = GoogleSignInGate()
-            coordinator.signInWithGoogle = { _ in
+            coordinator.signInWithGoogle = { _, _ in
                 await signinupStarted.open()
                 await releaseSigninup.wait()
                 return SuperTokensThirdPartySignInResponse(status: "OK", createdNewRecipeUser: false)
@@ -144,7 +144,7 @@ import Testing
 
     @Test func currentWebViewSuccessReloadsWithRphInitAndLeavesCompletionToHub() async throws {
         try await withGoogleSignInHarness { coordinator, recorder in
-            coordinator.signInWithGoogle = { _ in
+            coordinator.signInWithGoogle = { _, _ in
                 SuperTokensThirdPartySignInResponse(status: "OK", createdNewRecipeUser: false)
             }
             coordinator.currentAccessToken = { Self.accessTokenJWT }
@@ -163,7 +163,7 @@ import Testing
         try await withGoogleSignInHarness { coordinator, recorder in
             let releaseSigninup = GoogleSignInGate()
             let signinupStarted = GoogleSignInGate()
-            coordinator.signInWithGoogle = { _ in
+            coordinator.signInWithGoogle = { _, _ in
                 await signinupStarted.open()
                 await releaseSigninup.wait()
                 return SuperTokensThirdPartySignInResponse(status: "OK", createdNewRecipeUser: true)
@@ -191,7 +191,7 @@ import Testing
         try await withGoogleSignInHarness { coordinator, recorder in
             let releaseSigninup = GoogleSignInGate()
             let signinupStarted = GoogleSignInGate()
-            coordinator.signInWithGoogle = { _ in
+            coordinator.signInWithGoogle = { _, _ in
                 await signinupStarted.open()
                 await releaseSigninup.wait()
                 throw Self.refusal
@@ -223,7 +223,7 @@ import Testing
         try await withGoogleSignInHarness { coordinator, recorder in
             let releaseSigninup = GoogleSignInGate()
             let signinupStarted = GoogleSignInGate()
-            coordinator.signInWithGoogle = { _ in
+            coordinator.signInWithGoogle = { _, _ in
                 await signinupStarted.open()
                 await releaseSigninup.wait()
                 throw Self.refusal
@@ -249,7 +249,7 @@ import Testing
                 .failure(Self.refusal),
                 .success(SuperTokensThirdPartySignInResponse(status: "OK", createdNewRecipeUser: false))
             ])
-            coordinator.signInWithGoogle = { _ in try responses.next() }
+            coordinator.signInWithGoogle = { _, _ in try responses.next() }
             coordinator.syncAuthState = { true }
             coordinator.currentAccessToken = { "google-access-token" }
 
@@ -272,6 +272,115 @@ import Testing
             _ = await coordinator.beginAttempt(emitsSignInStarted: true)
             #expect(recorder.events.map(\.event) == [.signInStarted])
             #expect(recorder.events.first?.data?["method"]??.value as? String == SignInType.google.rawValue)
+        }
+    }
+
+    @Test func ownedEmailChangeReturnsToProfileOnlyAfterGoogleSessionSync() async throws {
+        try await withGoogleSignInHarness { coordinator, recorder in
+            let originalConfig = Rownd.config
+            defer { Rownd.config = originalConfig }
+            Rownd.config.supertokens = RowndSuperTokensConfig(appName: "test", apiDomain: "https://api.example.test")
+            let originalAuth = await MainActor.run { Context.currentContext.store.state.auth }
+            let owner = UUID()
+            await MainActor.run {
+                Rownd.emailChangeContinuation.clear()
+                Rownd.requestSignInForNativeCompletion(jsFnOptions: nil, requestID: owner)
+                let descriptor = EmailChangeDescriptor(version: 2, requestId: "request-123456789", localDraft: emailChangeTestDraft,
+                    expiresAt: (Date().addingTimeInterval(600).timeIntervalSince1970 * 1000).rounded())
+                #expect(Rownd.emailChangeContinuation.begin(descriptor, configuration: Rownd.emailChangeConfiguration, owner: owner))
+                #expect(Rownd.emailChangeContinuation.cleaned(owner: owner))
+                Context.currentContext.store.dispatch(SetAuthState(payload: AuthState()))
+            }
+            coordinator.signInWithGoogle = { _, _ in
+                await MainActor.run { #expect(Rownd.emailChangeContinuation.record?.phase == .signingIn) }
+                return SuperTokensThirdPartySignInResponse(status: "OK", createdNewRecipeUser: false,
+                    sessionTokens: SuperTokensSessionTokens(accessToken: "adopted-sr", refreshToken: "refresh", frontToken: "front", antiCSRF: nil))
+            }
+            coordinator.adoptResponseSession = { tokens, _ in
+                SuperTokensSessionBridge.SessionIdentity(accessToken: tokens.accessToken, generation: 1,
+                    stable: SuperTokensSessionBridge.StableSessionIdentity(sessionHandle: "sr", userId: "user", tenantId: nil))
+            }
+            coordinator.syncContinuationAuthState = { _, commit in
+                await MainActor.run {
+                    #expect(commit())
+                    Context.currentContext.store.dispatch(SetAuthState(payload: AuthState(accessToken: "adopted-sr")))
+                }
+                return true
+            }
+            coordinator.currentAccessToken = { "adopted-sr" }
+            let attempt = await coordinator.beginAttempt(emitsSignInStarted: false)
+            await coordinator.completeSignIn(idToken: "provider-proof", intent: .signIn, attemptID: attempt)
+            await MainActor.run {
+                #expect(Rownd.emailChangeContinuation.record?.phase == .resume)
+                #expect(Rownd.emailChangeContinuation.owner != owner)
+                Rownd.emailChangeContinuation.clear()
+                Context.currentContext.store.dispatch(SetAuthState(payload: originalAuth))
+            }
+            #expect(recorder.events.map(\.event) == [.signInCompleted])
+        }
+    }
+
+    @Test func supersededEmailChangeGoogleAttemptCannotStartExchangeOrReopenProfile() async throws {
+        try await withGoogleSignInHarness { coordinator, recorder in
+            let originalConfig = Rownd.config
+            defer { Rownd.config = originalConfig }
+            Rownd.config.supertokens = RowndSuperTokensConfig(appName: "test", apiDomain: "https://api.example.test")
+            let owner = UUID()
+            await MainActor.run {
+                Rownd.emailChangeContinuation.clear()
+                Rownd.requestSignInForNativeCompletion(jsFnOptions: nil, requestID: owner)
+                let descriptor = EmailChangeDescriptor(version: 2, requestId: "request-123456789", localDraft: emailChangeTestDraft,
+                    expiresAt: (Date().addingTimeInterval(600).timeIntervalSince1970 * 1000).rounded())
+                #expect(Rownd.emailChangeContinuation.begin(descriptor, configuration: Rownd.emailChangeConfiguration, owner: owner))
+                #expect(Rownd.emailChangeContinuation.cleaned(owner: owner))
+            }
+            let attempt = await coordinator.beginAttempt(emitsSignInStarted: false)
+            await MainActor.run {
+                Rownd.requestSignInForNativeCompletion(jsFnOptions: nil, requestID: UUID())
+            }
+            coordinator.signInWithGoogle = { _, _ in
+                Issue.record("Superseded provider operation must not exchange credentials")
+                return SuperTokensThirdPartySignInResponse(status: "OK", createdNewRecipeUser: false)
+            }
+            await coordinator.completeSignIn(idToken: "provider-proof", intent: .signIn, attemptID: attempt)
+            await MainActor.run { #expect(Rownd.emailChangeContinuation.record == nil) }
+            #expect(recorder.events.isEmpty)
+        }
+    }
+
+    @Test func supersededInFlightEmailChangeGoogleResponseCannotAdopt() async throws {
+        try await withGoogleSignInHarness { coordinator, recorder in
+            let originalConfig = Rownd.config
+            defer { Rownd.config = originalConfig }
+            Rownd.config.supertokens = RowndSuperTokensConfig(appName: "test", apiDomain: "https://api.example.test")
+            let owner = UUID()
+            await MainActor.run {
+                Rownd.emailChangeContinuation.clear()
+                Rownd.requestSignInForNativeCompletion(jsFnOptions: nil, requestID: owner)
+                let descriptor = EmailChangeDescriptor(version: 2, requestId: "request-123456789", localDraft: emailChangeTestDraft,
+                    expiresAt: (Date().addingTimeInterval(600).timeIntervalSince1970 * 1000).rounded())
+                #expect(Rownd.emailChangeContinuation.begin(descriptor, configuration: Rownd.emailChangeConfiguration, owner: owner))
+                #expect(Rownd.emailChangeContinuation.cleaned(owner: owner))
+            }
+            let started = GoogleSignInGate()
+            let release = GoogleSignInGate()
+            coordinator.signInWithGoogle = { _, _ in
+                await started.open()
+                await release.wait()
+                return SuperTokensThirdPartySignInResponse(status: "OK", createdNewRecipeUser: false,
+                    sessionTokens: SuperTokensSessionTokens(accessToken: "stale-sr", refreshToken: "refresh", frontToken: "front", antiCSRF: nil))
+            }
+            coordinator.adoptResponseSession = { _, _ in
+                Issue.record("Superseded response must not install credentials")
+                return nil
+            }
+            let attempt = await coordinator.beginAttempt(emitsSignInStarted: false)
+            let completion = Task { await coordinator.completeSignIn(idToken: "proof", intent: .signIn, attemptID: attempt) }
+            _ = await started.waitUntilOpen()
+            await MainActor.run { Rownd.requestSignInForNativeCompletion(jsFnOptions: nil, requestID: UUID()) }
+            await release.open()
+            await completion.value
+            #expect(recorder.events.isEmpty)
         }
     }
 

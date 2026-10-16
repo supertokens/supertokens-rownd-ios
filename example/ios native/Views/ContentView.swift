@@ -25,8 +25,6 @@ struct ContentView: View {
     @State private var presentEditName = false
     @State private var firstName = ""
 
-    private let superTokensRefreshTokenStorageKey = "st-storage-item-st-refresh-token"
-
     private var isAuthenticated: Bool {
         authState.current.isAuthenticated
     }
@@ -347,22 +345,20 @@ struct ContentView: View {
         scenarioStatus = "refresh_test_requested"
         defer { isTestingRefresh = false }
 
-        let refreshTokenBefore = UserDefaults.standard.string(forKey: superTokensRefreshTokenStorageKey)
         let apiURL = E2ESupport.apiURL ?? ExampleAppConfig.apiURL
         let request = URLRequest(url: apiURL.appendingPathComponent("test/refresh"))
 
         do {
+            let accessTokenBefore = try await Rownd.getAccessToken()
             let (data, response) = try await URLSession.shared.data(for: request)
             let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
             let body = String(data: data, encoding: .utf8) ?? ""
-            let refreshTokenAfter = UserDefaults.standard.string(forKey: superTokensRefreshTokenStorageKey)
-            let refreshTokenChanged = refreshTokenBefore != nil
-                && refreshTokenAfter != nil
-                && refreshTokenBefore != refreshTokenAfter
+            let accessTokenAfter = try await Rownd.getAccessToken()
+            let accessTokenChanged = accessTokenBefore != accessTokenAfter
 
             refreshSimulationCompleted = true
-            protectedResult = "HTTP \(statusCode)\nRefresh token changed: \(refreshTokenChanged)\n\(body)"
-            scenarioStatus = (200..<300).contains(statusCode) && refreshTokenChanged
+            protectedResult = "HTTP \(statusCode)\nAccess token changed: \(accessTokenChanged)\n\(body)"
+            scenarioStatus = (200..<300).contains(statusCode) && accessTokenChanged
                 ? "refresh_test_passed"
                 : "refresh_test_failed"
         } catch {

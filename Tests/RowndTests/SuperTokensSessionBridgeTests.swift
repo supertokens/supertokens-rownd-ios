@@ -3710,7 +3710,7 @@ private final class SuperTokensSignOutURLProtocol: URLProtocol {
     override func stopLoading() {}
 }
 
-private final class LocalHTTPServer: @unchecked Sendable {
+final class LocalHTTPServer: @unchecked Sendable {
     struct CapturedRequest: Sendable {
         var path: String
         var headers: [String: String]

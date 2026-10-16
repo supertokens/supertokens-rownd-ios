@@ -42,6 +42,88 @@ public class Rownd: NSObject {
     private static var isConfigurationComplete = false
     private static var pendingSmartLinkUrls: [URL] = []
     internal static var displayHubHandler: ((HubPageSelector, Encodable?) -> Void)?
+    @MainActor internal static let emailChangeContinuation = EmailChangeContinuation(
+        invalidateAuthentication: SuperTokensSessionBridge.invalidateAuthOperationPermits
+    )
+    @MainActor internal static var emailChangeConfiguration: String {
+        guard let supertokens = try? config.requireSuperTokensConfig() else { return "" }
+        let values = [config.baseUrl, supertokens.apiDomain, supertokens.apiBasePath,
+                      config.appKey, config.appVariantId ?? "", config.deepLinkScheme]
+        return (try? String(data: JSONEncoder().encode(values), encoding: .utf8)) ?? ""
+    }
+
+    @MainActor internal static var activeEmailChangeSignInOwner: UUID? {
+        guard emailChangeContinuation.validate(configuration: emailChangeConfiguration),
+              let owner = emailChangeContinuation.owner,
+              emailChangeContinuation.ownsSignIn(owner), inst.activeHubRequestID == owner else { return nil }
+        return owner
+    }
+
+    @MainActor internal static func ownsEmailChangeAuthentication(_ context: EmailChangeContinuation.AuthenticationContext) -> Bool {
+        emailChangeContinuation.validate(configuration: emailChangeConfiguration)
+            && inst.activeHubRequestID == context.owner
+            && emailChangeContinuation.ownsAuthentication(context)
+    }
+
+    @MainActor @discardableResult internal static func beginEmailChange(_ descriptor: EmailChangeDescriptor, source: HubViewController) -> Bool {
+        guard source.targetPage == .manageAccount, let sourceID = source.presentationRequestID,
+              inst.activeHubRequestID == sourceID, Context.currentContext.store.state.auth.isAuthenticated else { return false }
+        _ = emailChangeContinuation.validate(configuration: emailChangeConfiguration)
+        guard emailChangeContinuation.begin(descriptor, configuration: emailChangeConfiguration, owner: sourceID) else { return false }
+        source.hubWebController.invalidate()
+        finishEmailChangeCleanup(sourceID: sourceID)
+        return true
+    }
+
+    @MainActor private static func finishEmailChangeCleanup(sourceID: UUID) {
+        let permitConfiguration = emailChangeConfiguration
+        beginSignOut()
+        Task { @MainActor in
+            defer { endSignOut() }
+            await prepareForSignOut(preservingEmailChange: true)
+            await performLocalSignOut()
+            do {
+                try await HubWebsiteDataCleaner.clearAuthentication(hubURL: config.baseUrl, apiURL: config.supertokens.apiDomain)
+                guard !(await SuperTokensSessionBridge.doesSessionExist()),
+                      SuperTokensSessionBridge.getRefreshToken() == nil,
+                      permitConfiguration == emailChangeConfiguration,
+                      emailChangeContinuation.validate(configuration: emailChangeConfiguration),
+                      emailChangeContinuation.owner == sourceID,
+                      emailChangeContinuation.record?.phase == .cleaning,
+                      inst.activeHubRequestID == nil || inst.activeHubRequestID == sourceID else {
+                    throw RowndError("Email change sign-in cleanup lost ownership")
+                }
+                Context.currentContext.store.dispatch(SetUserState(payload: UserState()))
+                Context.currentContext.store.dispatch(ResetSignInState())
+                guard Context.currentContext.store.state.saveImmediately(), emailChangeContinuation.cleaned(owner: sourceID) else {
+                    throw RowndError("Could not persist signed-out email change state")
+                }
+                let requestID = UUID()
+                _ = emailChangeContinuation.transfer(from: sourceID, to: requestID)
+                inst.displayHubOnMainActor(.signIn, jsFnOptions: RowndSignInJsOptions(loginStep: .initialize, intent: .signIn), requestID: requestID)
+            } catch {
+                emailChangeContinuation.clear()
+                logger.error("Email change sign-in stopped before login: \(error)")
+                RowndEventEmitter.emit(.signInFailed(method: .email, error: error))
+            }
+        }
+    }
+
+    @MainActor internal static func emailChangeAuthenticationAdopted(owner: UUID) -> Bool {
+        guard emailChangeContinuation.validate(configuration: emailChangeConfiguration),
+              inst.activeHubRequestID == nil || inst.activeHubRequestID == owner,
+              Context.currentContext.store.state.auth.isAuthenticated else { return false }
+        return emailChangeContinuation.adopted(owner: owner)
+    }
+
+    @MainActor internal static func resumeEmailChange(after owner: UUID) {
+        guard emailChangeContinuation.validate(configuration: emailChangeConfiguration),
+              emailChangeContinuation.owner == owner, emailChangeContinuation.record?.phase == .resume,
+              inst.activeHubRequestID == nil || inst.activeHubRequestID == owner else { return }
+        let next = UUID()
+        _ = emailChangeContinuation.bindResume(owner: next)
+        inst.displayHubOnMainActor(.manageAccount, jsFnOptions: nil, requestID: next)
+    }
 
     private struct HubPresentationRequest {
         let page: HubPageSelector
@@ -182,8 +264,10 @@ public class Rownd: NSObject {
         }
 
         await MainActor.run {
-            instantUsers = InstantUsers(context: Context.currentContext)
-            instantUsers?.tmpForceInstantUserConversionIfRequested()
+            if !emailChangeContinuation.validate(configuration: emailChangeConfiguration) {
+                instantUsers = InstantUsers(context: Context.currentContext)
+                instantUsers?.tmpForceInstantUserConversionIfRequested()
+            }
         }
 
         return Context.currentContext.store.state
@@ -406,7 +490,8 @@ public class Rownd: NSObject {
         return pendingSignOutCount > 0
     }
 
-    @MainActor private static func prepareForSignOut() async {
+    @MainActor private static func prepareForSignOut(preservingEmailChange: Bool = false) async {
+        if !preservingEmailChange { emailChangeContinuation.clear() }
         appleSignUpCoordinator.cancelCurrentOperation()
         guard let hubController = inst._bottomSheetController?.controller as? HubViewController else { return }
         hubController.hubWebController.invalidate()
@@ -721,6 +806,17 @@ public class Rownd: NSObject {
         requestID: UUID,
         deepLinkURL: URL? = nil
     ) {
+        if Self.emailChangeContinuation.validate(configuration: Self.emailChangeConfiguration),
+           Self.emailChangeContinuation.owner != requestID {
+            if page == .deepLink, let deepLinkURL,
+               Self.emailChangeContinuation.claimCallback(deepLinkURL, owner: requestID, hubURL: Self.config.baseUrl,
+                                                         apiDomain: Self.config.supertokens.apiDomain,
+                                                         apiBasePath: Self.config.supertokens.apiBasePath) {
+                // Only the locally recorded challenge can return to the saved operation.
+            } else {
+                Self.emailChangeContinuation.clear()
+            }
+        }
         activeHubRequestID = requestID
         if let displayHubHandler = Rownd.displayHubHandler {
             displayHubHandler(page, jsFnOptions)
@@ -742,11 +838,21 @@ public class Rownd: NSObject {
     }
 
     @MainActor private func presentHub(_ request: HubPresentationRequest) {
+        if let existing = _bottomSheetController?.controller as? HubViewController,
+           existing.presentationRequestID != request.requestID,
+           existing.hubWebController.isEmailChangePresentation {
+            // A document admitted as continuation-owned must never become an ordinary auth source.
+            existing.hubWebController.invalidate()
+            pendingHubRequest = request
+            existing.hide()
+            return
+        }
         presentedHubRequestID = request.requestID
         presentedHubDeepLinkURL = request.deepLinkURL
 
         let hubController = getHubViewController()
         hubController.presentationRequestID = request.requestID
+        hubController.hubWebController.configureEmailChangeContinuation(owner: request.requestID, page: request.page)
         hubController.onDismissalStarted = { [weak self] requestID in
             self?.hubDismissalStarted(requestID: requestID)
         }
@@ -765,6 +871,7 @@ public class Rownd: NSObject {
     }
 
     @MainActor private func hubDidDisappear(requestID: UUID) {
+        Self.emailChangeContinuation.dismissed(owner: requestID)
         if activeHubRequestID == requestID {
             activeHubRequestID = nil
         }

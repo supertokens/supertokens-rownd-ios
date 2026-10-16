@@ -4,6 +4,15 @@ import Foundation
 @testable import Rownd
 
 @Suite(.serialized) struct RowndHubInteropMessageTests {
+    @Test func ordinaryLargeProfileMessageRetainsProtocolCompatibility() throws {
+        let note = String(repeating: "a", count: 140000)
+        let message = try RowndHubInteropMessage.fromJson(message: "{\"type\":\"user_data_update\",\"payload\":{\"data\":{\"note\":\"\(note)\"}}}")
+        guard case .userDataUpdate(let payload) = message.payload else {
+            Issue.record("Expected profile message")
+            return
+        }
+        #expect(payload.data["note"]?.value as? String == note)
+    }
     @Test func authenticationMessageDecodesAntiCSRF() throws {
         let message = try RowndHubInteropMessage.fromJson(message: #"{"type":"authentication","payload":{"access_token":"access-token","refresh_token":"refresh-token","front_token":"front-token","anti_csrf":"anti-csrf-token"}}"#)
 

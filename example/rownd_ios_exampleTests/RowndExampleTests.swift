@@ -122,7 +122,8 @@ final class RowndExampleTests: XCTestCase {
                 Rownd.displayHubHandler = nil
                 store.dispatch(SetAppConfig(payload: Self.appleAppConfig()))
                 let coordinator = PostAppleCoordinator(Rownd.getInstance())
-                coordinator.signInWithApple = { authorizationCode, clientType in
+                coordinator.signInWithApple = { authorizationCode, clientType, context in
+                    XCTAssertTrue(context == .ordinary)
                     XCTAssertEqual(authorizationCode, "fake-apple-auth-code")
                     XCTAssertEqual(clientType, "native-apple-client")
                     return SuperTokensAppleSignInResponse(

@@ -5,6 +5,8 @@ struct SuperTokensThirdPartySignInRequest: Encodable {
     let clientType: String?
     let oAuthTokens: OAuthTokens?
     let redirectURIInfo: RedirectURIInfo?
+    var intent: String? = nil
+    var shouldTryLinkingWithSessionUser: Bool? = nil
 
     struct OAuthTokens: Encodable {
         let idToken: String
@@ -23,13 +25,16 @@ struct SuperTokensThirdPartySignInRequest: Encodable {
 struct SuperTokensThirdPartySignInResponse {
     let status: String?
     let createdNewRecipeUser: Bool?
+    let sessionTokens: SuperTokensSessionTokens?
 
     init(
         status: String?,
-        createdNewRecipeUser: Bool?
+        createdNewRecipeUser: Bool?,
+        sessionTokens: SuperTokensSessionTokens? = nil
     ) {
         self.status = status
         self.createdNewRecipeUser = createdNewRecipeUser
+        self.sessionTokens = sessionTokens
     }
 
     var userType: UserType {
@@ -64,6 +69,7 @@ struct SuperTokensAppleSignInResponse {
 }
 
 struct SuperTokensThirdPartySignInClient {
+    enum ExchangeContext: Sendable { case ordinary, emailChange }
     private let apiDomainOverride: String?
     private let apiBasePathOverride: String?
     private let session: URLSession
@@ -88,24 +94,28 @@ struct SuperTokensThirdPartySignInClient {
         return URLSession(configuration: configuration)
     }
 
-    func signInWithGoogle(idToken: String) async throws -> SuperTokensThirdPartySignInResponse {
+    func signInWithGoogle(idToken: String, context: ExchangeContext = .ordinary) async throws -> SuperTokensThirdPartySignInResponse {
+        let continuingEmailChange = context == .emailChange
         let result = try await signIn(
             SuperTokensThirdPartySignInRequest(
                 thirdPartyId: "google",
                 clientType: nil,
                 oAuthTokens: .init(idToken: idToken),
-                redirectURIInfo: nil
+                redirectURIInfo: nil,
+                intent: continuingEmailChange ? "sign_in" : nil,
+                shouldTryLinkingWithSessionUser: continuingEmailChange ? false : nil
             ),
-            using: session,
-            usesHeaderAuthMode: false
+            using: continuingEmailChange ? appleSession : session,
+            usesHeaderAuthMode: continuingEmailChange
         )
         return SuperTokensThirdPartySignInResponse(
             status: result.body.status,
-            createdNewRecipeUser: result.body.createdNewRecipeUser
+            createdNewRecipeUser: result.body.createdNewRecipeUser,
+            sessionTokens: continuingEmailChange ? try Self.sessionTokens(from: result.response) : nil
         )
     }
 
-    func signInWithApple(authorizationCode: String, clientType: String) async throws -> SuperTokensAppleSignInResponse {
+    func signInWithApple(authorizationCode: String, clientType: String, context: ExchangeContext = .ordinary) async throws -> SuperTokensAppleSignInResponse {
         let clientType = clientType.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clientType.isEmpty else {
             throw RowndError("Apple sign-in requires a non-empty clientType")
@@ -119,7 +129,9 @@ struct SuperTokensThirdPartySignInClient {
                 redirectURIInfo: .init(
                     redirectURIOnProviderDashboard: "",
                     redirectURIQueryParams: ["code": authorizationCode]
-                )
+                ),
+                intent: context == .emailChange ? "sign_in" : nil,
+                shouldTryLinkingWithSessionUser: context == .emailChange ? false : nil
             ),
             using: appleSession,
             usesHeaderAuthMode: true

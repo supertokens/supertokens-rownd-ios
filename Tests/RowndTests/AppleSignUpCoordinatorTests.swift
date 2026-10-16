@@ -22,6 +22,62 @@ import Testing
         )
     )
 
+    @Test func emailChangeAppleReturnWaitsForNormalAdoptionAndSync() async throws {
+        try await withGlobalTestLock {
+            let originalConfig = Rownd.config
+            let originalHandler = Rownd.displayHubHandler
+            defer { Rownd.config = originalConfig; Rownd.displayHubHandler = originalHandler }
+            let (store, originalAppConfig, originalAuth) = await MainActor.run {
+                let store = Context.currentContext.store
+                return (store, store.state.appConfig, store.state.auth)
+            }
+            let recorder = AppleSignInStepRecorder()
+            Rownd.config.supertokens = RowndSuperTokensConfig(appName: "test", apiDomain: "https://api.example.test")
+            Rownd.displayHubHandler = { page, _ in
+                if page == .manageAccount { recorder.append("profile-resume") }
+            }
+            let owner = UUID()
+            await MainActor.run {
+                store.dispatch(SetAppConfig(payload: Self.appConfig(iosClientType: "ios")))
+                store.dispatch(SetAuthState(payload: AuthState()))
+                Rownd.emailChangeContinuation.clear()
+                Rownd.requestSignInForNativeCompletion(jsFnOptions: nil, requestID: owner)
+                let descriptor = EmailChangeDescriptor(version: 2, requestId: "request-123456789", localDraft: emailChangeTestDraft,
+                    expiresAt: (Date().addingTimeInterval(600).timeIntervalSince1970 * 1000).rounded())
+                #expect(Rownd.emailChangeContinuation.begin(descriptor, configuration: Rownd.emailChangeConfiguration, owner: owner))
+                #expect(Rownd.emailChangeContinuation.cleaned(owner: owner))
+            }
+            let coordinator = TestAppleSignUpCoordinator(Rownd.getInstance())
+            coordinator.signInWithApple = { _, _, _ in
+                SuperTokensAppleSignInResponse(status: "OK", createdNewRecipeUser: false, sessionTokens: Self.appleSessionTokens)
+            }
+            coordinator.onAdopt = { recorder.append("adopt") }
+            coordinator.syncAuthState = { _, commit in
+                await MainActor.run {
+                    guard commit() else { return false }
+                    #expect(Rownd.emailChangeContinuation.record?.phase == .signingIn)
+                    store.dispatch(SetAuthState(payload: AuthState(accessToken: "adopted-sr")))
+                    recorder.append("sync")
+                    return true
+                }
+            }
+            coordinator.waitBeforeCompletion = {}
+            coordinator.dismissHub = { request in
+                await MainActor.run { Rownd.emailChangeContinuation.dismissed(owner: request) }
+            }
+            coordinator.emitEvent = { _ in }
+            coordinator.onUpdateUserData = { _ in }
+            await coordinator.completeSignIn(authorizationCode: "proof", fullName: nil, email: nil, intent: .signIn, hubRequestID: owner)
+            #expect(recorder.steps == ["adopt", "sync", "profile-resume"])
+            await MainActor.run {
+                #expect(Rownd.emailChangeContinuation.record?.phase == .resume)
+                Rownd.emailChangeContinuation.clear()
+                store.dispatch(SetAppConfig(payload: originalAppConfig))
+                store.dispatch(SetAuthState(payload: originalAuth))
+            }
+        }
+    }
+
     @Test func syncPersistenceFailureDiscardsSessionBeforeFallback() async throws {
         try await withGlobalTestLock {
             let recorder = AppleSignInStepRecorder()
@@ -47,7 +103,7 @@ import Testing
             }
 
             let coordinator = TestAppleSignUpCoordinator(Rownd.getInstance())
-            coordinator.signInWithApple = { _, _ in
+            coordinator.signInWithApple = { _, _, _ in
                 recorder.append("exchange")
                 return SuperTokensAppleSignInResponse(
                     status: "OK",
@@ -138,7 +194,7 @@ import Testing
                 recorder.append("permit-captured")
                 return SuperTokensSessionBridge.captureAuthOperationPermit()
             }
-            coordinator.signInWithApple = { authorizationCode, clientType in
+            coordinator.signInWithApple = { authorizationCode, clientType, _ in
                 #expect(authorizationCode == "apple-auth-code")
                 #expect(clientType == "native-apple-client")
                 recorder.append("exchange")
@@ -246,7 +302,7 @@ import Testing
             }
 
             let coordinator = TestAppleSignUpCoordinator(Rownd.getInstance())
-            coordinator.signInWithApple = { _, _ in
+            coordinator.signInWithApple = { _, _, _ in
                 SuperTokensAppleSignInResponse(
                     status: "OK",
                     createdNewRecipeUser: false,
@@ -315,7 +371,7 @@ import Testing
             }
 
             let coordinator = TestAppleSignUpCoordinator(Rownd.getInstance())
-            coordinator.signInWithApple = { _, _ in
+            coordinator.signInWithApple = { _, _, _ in
                 throw SuperTokensSignInUpRefusedError(
                     status: "SIGN_IN_UP_NOT_ALLOWED",
                     reason: "Cannot sign in / up due to security reasons."
@@ -690,7 +746,7 @@ import Testing
             }
 
             let coordinator = TestAppleSignUpCoordinator(Rownd.getInstance())
-            coordinator.signInWithApple = { _, _ in
+            coordinator.signInWithApple = { _, _, _ in
                 SuperTokensAppleSignInResponse(
                     status: "OK",
                     createdNewRecipeUser: false,
@@ -768,7 +824,7 @@ import Testing
             }
 
             let coordinator = TestAppleSignUpCoordinator(Rownd.getInstance())
-            coordinator.signInWithApple = { _, _ in
+            coordinator.signInWithApple = { _, _, _ in
                 SuperTokensAppleSignInResponse(
                     status: "OK",
                     createdNewRecipeUser: false,
@@ -849,7 +905,7 @@ import Testing
             }
 
             let coordinator = TestAppleSignUpCoordinator(Rownd.getInstance())
-            coordinator.signInWithApple = { _, _ in
+            coordinator.signInWithApple = { _, _, _ in
                 SuperTokensAppleSignInResponse(
                     status: "OK",
                     createdNewRecipeUser: false,
@@ -941,7 +997,7 @@ import Testing
             }
 
             let coordinator = TestAppleSignUpCoordinator(Rownd.getInstance())
-            coordinator.signInWithApple = { _, _ in
+            coordinator.signInWithApple = { _, _, _ in
                 recorder.append("exchange-start")
                 await exchangeStarted.open()
                 await finishExchange.wait()
@@ -1019,7 +1075,7 @@ import Testing
             }
 
             let coordinator = TestAppleSignUpCoordinator(Rownd.getInstance())
-            coordinator.signInWithApple = { _, _ in
+            coordinator.signInWithApple = { _, _, _ in
                 recorder.append("exchange")
                 return SuperTokensAppleSignInResponse(
                     status: "OK",
@@ -1108,7 +1164,7 @@ import Testing
             }
 
             let coordinator = TestAppleSignUpCoordinator(Rownd.getInstance())
-            coordinator.signInWithApple = { _, _ in
+            coordinator.signInWithApple = { _, _, _ in
                 SuperTokensAppleSignInResponse(
                     status: "OK",
                     createdNewRecipeUser: false,
@@ -1201,7 +1257,7 @@ import Testing
                 recorder.append("permit-captured")
                 return SuperTokensSessionBridge.captureAuthOperationPermit()
             }
-            coordinator.signInWithApple = { authorizationCode, _ in
+            coordinator.signInWithApple = { authorizationCode, _, _ in
                 recorder.append("exchange-\(authorizationCode)")
                 if authorizationCode == "first" {
                     await firstExchangeStarted.open()
@@ -1297,7 +1353,7 @@ import Testing
             }
 
             let coordinator = TestAppleSignUpCoordinator(Rownd.getInstance())
-            coordinator.signInWithApple = { authorizationCode, _ in
+            coordinator.signInWithApple = { authorizationCode, _, _ in
                 recorder.append("exchange-\(authorizationCode)")
                 if authorizationCode == "second" {
                     await secondExchangeStarted.open()
@@ -1389,7 +1445,7 @@ import Testing
             }
 
             let coordinator = TestAppleSignUpCoordinator(Rownd.getInstance())
-            coordinator.signInWithApple = { _, _ in
+            coordinator.signInWithApple = { _, _, _ in
                 SuperTokensAppleSignInResponse(
                     status: "OK",
                     createdNewRecipeUser: false,
@@ -1467,7 +1523,7 @@ import Testing
             }
 
             let coordinator = TestAppleSignUpCoordinator(Rownd.getInstance())
-            coordinator.signInWithApple = { _, _ in
+            coordinator.signInWithApple = { _, _, _ in
                 SuperTokensAppleSignInResponse(
                     status: "OK",
                     createdNewRecipeUser: false,
@@ -1661,7 +1717,7 @@ import Testing
 
             let recorder = AppleSignInStepRecorder()
             let coordinator = TestAppleSignUpCoordinator(Rownd.getInstance())
-            coordinator.signInWithApple = { _, _ in
+            coordinator.signInWithApple = { _, _, _ in
                 recorder.append("exchange")
                 return SuperTokensAppleSignInResponse(
                     status: "OK",
@@ -1723,7 +1779,7 @@ import Testing
 
             let recorder = AppleSignInStepRecorder()
             let coordinator = TestAppleSignUpCoordinator(Rownd.getInstance())
-            coordinator.signInWithApple = { authorizationCode, clientType in
+            coordinator.signInWithApple = { authorizationCode, clientType, _ in
                 #expect(authorizationCode == "apple-auth-code")
                 #expect(clientType == "refreshed-native-client")
                 recorder.append("exchange")
@@ -1855,7 +1911,7 @@ import Testing
                 await finishFetch.wait()
                 return AppConfigResponse(app: Self.appConfig(iosClientType: "stale-client"))
             }
-            coordinator.signInWithApple = { _, clientType in
+            coordinator.signInWithApple = { _, clientType, _ in
                 recorder.append(clientType)
                 return SuperTokensAppleSignInResponse(
                     status: "OK",
@@ -1924,7 +1980,7 @@ import Testing
                 await finishFetch.wait()
                 return AppConfigResponse(app: Self.appConfig(iosClientType: "stale-client"))
             }
-            coordinator.signInWithApple = { _, _ in
+            coordinator.signInWithApple = { _, _, _ in
                 recorder.append("exchange")
                 return SuperTokensAppleSignInResponse(
                     status: "OK",
@@ -1990,7 +2046,7 @@ import Testing
                 await finishFetch.wait()
                 return AppConfigResponse(app: Self.appConfig(iosClientType: "fetched-client"))
             }
-            coordinator.signInWithApple = { _, clientType in
+            coordinator.signInWithApple = { _, clientType, _ in
                 recorder.append(clientType)
                 return SuperTokensAppleSignInResponse(
                     status: "OK",
@@ -2307,7 +2363,7 @@ import Testing
             }
 
             let coordinator = TestAppleSignUpCoordinator(Rownd.getInstance())
-            coordinator.signInWithApple = { _, _ in
+            coordinator.signInWithApple = { _, _, _ in
                 SuperTokensAppleSignInResponse(
                     status: "OK",
                     createdNewRecipeUser: false,

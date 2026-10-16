@@ -12,6 +12,40 @@ import Testing
         "anti-csrf": "apple-anti-csrf"
     ]
 
+    @Test(arguments: ["google", "apple"])
+    func continuationProviderExchangeRequestsExistingAccountWithoutLinking(_ provider: String) async throws {
+        try await withGlobalTestLock {
+            let originalConfig = Rownd.config
+            let originalHandler = Rownd.displayHubHandler
+            defer { Rownd.config = originalConfig; Rownd.displayHubHandler = originalHandler }
+            Rownd.config.supertokens = RowndSuperTokensConfig(appName: "test", apiDomain: "https://auth.example.com")
+            Rownd.displayHubHandler = { _, _ in }
+            await MainActor.run {
+                Rownd.emailChangeContinuation.clear()
+                let owner = UUID()
+                Rownd.requestSignInForNativeCompletion(jsFnOptions: nil, requestID: owner)
+                let descriptor = EmailChangeDescriptor(version: 2, requestId: "request-123456789", localDraft: emailChangeTestDraft,
+                    expiresAt: (Date().addingTimeInterval(600).timeIntervalSince1970 * 1000).rounded())
+                #expect(Rownd.emailChangeContinuation.begin(descriptor, configuration: Rownd.emailChangeConfiguration, owner: owner))
+                #expect(Rownd.emailChangeContinuation.cleaned(owner: owner))
+            }
+            ThirdPartySignInURLProtocol.reset()
+            ThirdPartySignInURLProtocol.responseBody = #"{"status":"OK","createdNewRecipeUser":false}"#.data(using: .utf8)!
+            ThirdPartySignInURLProtocol.responseHeaders = Self.appleSessionHeaders
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.protocolClasses = [ThirdPartySignInURLProtocol.self]
+            let session = URLSession(configuration: configuration)
+            let client = SuperTokensThirdPartySignInClient(apiDomain: "https://auth.example.com", apiBasePath: "/auth", session: session, appleSession: session)
+            if provider == "google" { _ = try await client.signInWithGoogle(idToken: "proof", context: .emailChange) }
+            else { _ = try await client.signInWithApple(authorizationCode: "proof", clientType: "ios", context: .emailChange) }
+            await MainActor.run { Rownd.emailChangeContinuation.clear() }
+            let body = try #require(ThirdPartySignInURLProtocol.lastRequestBody)
+            let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+            #expect(json["intent"] as? String == "sign_in")
+            #expect(json["shouldTryLinkingWithSessionUser"] as? Bool == false)
+        }
+    }
+
     @Test func googleExchangePostsSigninupPayload() async throws {
         try await withGlobalTestLock {
             let originalConfig = Rownd.config
