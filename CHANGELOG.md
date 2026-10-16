@@ -1,5 +1,9 @@
 # Changelog
 
+## <small>0.2.9 (2026-10-16)</small>
+
+* fix: resume email changes after owned native sign-in ([1488af9](https://github.com/supertokens/supertokens-rownd-ios/commit/1488af9))
+
 ## <small>0.2.8 (2026-10-05)</small>
 
 * fix: fail closed when thirdparty signinup returns a non-OK status ([acd43fa](https://github.com/supertokens/supertokens-rownd-ios/commit/acd43fa))
