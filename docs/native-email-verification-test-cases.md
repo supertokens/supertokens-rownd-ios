@@ -87,13 +87,13 @@ Expected: relaunch reaches a defined recovery state and never resurrects S0.
 
 Close, swipe-dismiss, or programmatically hide the Hub while verification is running.
 
-Expected: cancellation is handled without publishing stale authentication or partially persisted state.
+Expected: the verification request and replacement-session adoption keep running, so the app converges on S1 (or signs out if S0 was revoked and S1 could not be obtained). Only the result event to the dismissed Hub is dropped and logged.
 
 ### 12. Hub navigation during verification
 
 Navigate to another Hub page while verification or replacement synchronization is running.
 
-Expected: stale completion cannot mutate session or UI state after navigation ownership changes.
+Expected: session adoption completes as in case 11, but the result event is delivered only to the Hub page that requested it; a reloaded verification page with the same parameters joins the running request instead of replaying it.
 
 ## Competing User Actions
 

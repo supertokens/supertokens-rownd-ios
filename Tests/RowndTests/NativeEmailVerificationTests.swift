@@ -1261,6 +1261,307 @@ import Testing
         #expect(Redact.urlForLogging(url) == "https://hub.example.com/account/verify-email")
     }
 
+    @Test func verificationRequestAllowsSlowServerCommit() throws {
+        let request = try HubWebViewController.nativeEmailVerificationRequest(
+            parameters: .init(token: "email-token", pendingVerificationId: "pending-123"),
+            apiDomain: "https://api.example.com",
+            apiBasePath: "/auth"
+        )
+        #expect(request.timeoutInterval == 45)
+    }
+
+    @Test func verificationKeepsRunningWhenItsRequesterIsCancelled() async {
+        let coordinator = NativeEmailVerificationCoordinator()
+        let started = NativeVerificationGate()
+        let release = NativeVerificationGate()
+        let finished = NativeVerificationGate()
+        let parameters = HubWebViewController.NativeEmailVerificationParameters(
+            token: "email-token",
+            pendingVerificationId: "pending-123"
+        )
+        let requester = Task {
+            await coordinator.verify(parameters) {
+                await started.open()
+                await release.wait()
+                #expect(!Task.isCancelled)
+                await finished.open()
+                return .verified
+            }
+        }
+        guard await waitForCondition(condition: { await started.isOpen }) else {
+            Issue.record("Verification did not start")
+            await release.open()
+            return
+        }
+
+        requester.cancel()
+        await release.open()
+
+        #expect(await waitForCondition(condition: { await finished.isOpen }))
+        #expect(await requester.value == .verified)
+    }
+
+    @Test func concurrentRequestsForTheSameVerificationShareOneServerCall() async {
+        let coordinator = NativeEmailVerificationCoordinator()
+        let attempts = NativeVerificationAttemptRecorder()
+        let release = NativeVerificationGate()
+        let parameters = HubWebViewController.NativeEmailVerificationParameters(
+            token: "email-token",
+            pendingVerificationId: "pending-123"
+        )
+        let operation: @Sendable () async -> NativeEmailVerificationCoordinator.Outcome = {
+            await attempts.record()
+            await release.wait()
+            return .failed(.signedOut)
+        }
+
+        let first = Task { await coordinator.verify(parameters, operation: operation) }
+        guard await waitForCondition(condition: { await attempts.count == 1 }) else {
+            Issue.record("Verification did not start")
+            await release.open()
+            return
+        }
+        let second = Task { await coordinator.verify(parameters, operation: operation) }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        await release.open()
+
+        #expect(await first.value == .failed(.signedOut))
+        #expect(await second.value == .failed(.signedOut))
+        #expect(await attempts.count == 1)
+
+        _ = await coordinator.verify(parameters, operation: operation)
+        #expect(await attempts.count == 2)
+    }
+
+    @Test func failedVerificationRecoversFromTheSessionThatStartedIt() async {
+        let s0AccessToken = generateJwt(
+            expires: Date(timeIntervalSinceNow: 1800).timeIntervalSince1970,
+            sessionHandle: "run-s0"
+        )
+        var recoveredFrom: String?
+        let failed = await HubWebViewController.runNativeEmailVerification(
+            request: URLRequest(url: URL(string: "https://api.example.com/auth/user/email/verify")!),
+            getAccessToken: { s0AccessToken },
+            perform: { _ in throw URLError(.timedOut) },
+            recover: {
+                recoveredFrom = $0
+                return .signedOut
+            }
+        )
+        #expect(failed == .failed(.signedOut))
+        #expect(recoveredFrom == s0AccessToken)
+
+        let verified = await HubWebViewController.runNativeEmailVerification(
+            request: URLRequest(url: URL(string: "https://api.example.com/auth/user/email/verify")!),
+            getAccessToken: { s0AccessToken },
+            perform: { _ in },
+            recover: { _ in
+                Issue.record("A successful verification must not run failure recovery")
+                return .unresolved
+            }
+        )
+        #expect(verified == .verified)
+    }
+
+    @Test func failureRecoveryKeepsTheSessionWhenTheServerIsUnreachable() async {
+        let s0AccessToken = generateJwt(
+            expires: Date(timeIntervalSinceNow: 1800).timeIntervalSince1970,
+            sessionHandle: "unreachable-s0"
+        )
+        let recovery = await HubWebViewController.recoverFromFailedNativeEmailVerification(
+            previousAccessToken: s0AccessToken,
+            validateSession: { .indeterminate },
+            getAccessToken: { s0AccessToken },
+            rowndAccessToken: { s0AccessToken },
+            adoptReplacement: { _, _ in
+                Issue.record("An unreachable server must not trigger adoption")
+                return .profileSynchronized
+            },
+            clearRevokedSession: { _ in
+                Issue.record("An unreachable server must not sign out")
+                return true
+            }
+        )
+        #expect(recovery == .unresolved)
+    }
+
+    @Test func failureRecoverySignsOutWhenTheServerRevokedTheSession() async {
+        let s0AccessToken = generateJwt(
+            expires: Date(timeIntervalSinceNow: 1800).timeIntervalSince1970,
+            sessionHandle: "revoked-s0"
+        )
+        var clearedSession: String?
+        let recovery = await HubWebViewController.recoverFromFailedNativeEmailVerification(
+            previousAccessToken: s0AccessToken,
+            validateSession: { .revoked },
+            getAccessToken: { nil },
+            rowndAccessToken: { s0AccessToken },
+            clearRevokedSession: {
+                clearedSession = $0
+                return true
+            }
+        )
+        #expect(recovery == .signedOut)
+        #expect(clearedSession == s0AccessToken)
+    }
+
+    @Test func failureRecoveryRetainsAStillValidSession() async {
+        let s0AccessToken = generateJwt(
+            expires: Date(timeIntervalSinceNow: 1800).timeIntervalSince1970,
+            sessionHandle: "valid-s0"
+        )
+        let rotatedS0AccessToken = generateJwt(
+            expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+            sessionHandle: "valid-s0"
+        )
+        let recovery = await HubWebViewController.recoverFromFailedNativeEmailVerification(
+            previousAccessToken: s0AccessToken,
+            validateSession: { .valid },
+            getAccessToken: { rotatedS0AccessToken },
+            rowndAccessToken: { s0AccessToken },
+            adoptReplacement: { _, _ in
+                Issue.record("An unchanged session must not be adopted as a replacement")
+                return .profileSynchronized
+            }
+        )
+        #expect(recovery == .sessionRetained)
+    }
+
+    @Test func failureRecoveryAdoptsAReplacementTheTransportAlreadyStored() async {
+        let s0AccessToken = generateJwt(
+            expires: Date(timeIntervalSinceNow: 1800).timeIntervalSince1970,
+            sessionHandle: "stored-s0"
+        )
+        let s1AccessToken = generateJwt(
+            expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+            sessionHandle: "stored-s1"
+        )
+        var adopted: (String, String?)?
+        var scheduledIdentity: SuperTokensSessionBridge.StableSessionIdentity?
+        let recovery = await HubWebViewController.recoverFromFailedNativeEmailVerification(
+            previousAccessToken: s0AccessToken,
+            validateSession: { .valid },
+            getAccessToken: { s1AccessToken },
+            rowndAccessToken: { s0AccessToken },
+            adoptReplacement: {
+                adopted = ($0, $1)
+                return .profileUnavailable
+            },
+            scheduleProfileRetry: { scheduledIdentity = $0 }
+        )
+        #expect(recovery == .replacementAdopted)
+        #expect(adopted?.0 == s1AccessToken)
+        #expect(adopted?.1 == s0AccessToken)
+        #expect(scheduledIdentity == SuperTokensSessionBridge.stableSessionIdentity(from: s1AccessToken))
+    }
+
+    @Test func failureRecoveryIgnoresAnUnrelatedSignIn() async {
+        let s0AccessToken = generateJwt(
+            expires: Date(timeIntervalSinceNow: 1800).timeIntervalSince1970,
+            sessionHandle: "unrelated-s0"
+        )
+        let otherUserAccessToken = generateJwt(
+            expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+            sessionHandle: "unrelated-other",
+            userId: "another-user"
+        )
+        let recovery = await HubWebViewController.recoverFromFailedNativeEmailVerification(
+            previousAccessToken: s0AccessToken,
+            validateSession: { .valid },
+            getAccessToken: { otherUserAccessToken },
+            rowndAccessToken: { s0AccessToken },
+            adoptReplacement: { _, _ in
+                Issue.record("Another user's session must not be adopted")
+                return .profileSynchronized
+            }
+        )
+        #expect(recovery == .superseded)
+    }
+
+    @Test func serverValidationDistinguishesRevocationFromNetworkFailure() async throws {
+        try await withNativeSessionHarness {
+            let originalContext = Context.currentContext
+            let store = createStore()
+            _ = Context(store)
+            defer { Context.currentContext = originalContext }
+            let s0AccessToken = generateJwt(
+                expires: Date(timeIntervalSinceNow: 1800).timeIntervalSince1970,
+                sessionHandle: "validation-s0"
+            )
+            _ = try #require(await SuperTokensSessionBridge.adoptResponseSession(
+                SuperTokensSessionTokens(
+                    accessToken: s0AccessToken,
+                    refreshToken: "s0-refresh-token",
+                    frontToken: SuperTokensSessionBridge.buildFrontToken(from: s0AccessToken),
+                    antiCSRF: nil
+                ),
+                permit: SuperTokensSessionBridge.captureAuthOperationPermit()
+            ))
+            await MainActor.run {
+                store.dispatch(SetAuthState(payload: AuthState(accessToken: s0AccessToken)))
+            }
+
+            #expect(await SuperTokensSessionBridge.validateSessionWithServer(
+                refreshSession: { throw URLError(.notConnectedToInternet) }
+            ) == .indeterminate)
+            #expect(await SuperTokensSessionBridge.getAccessToken() == s0AccessToken)
+            #expect(await !SuperTokensSessionBridge.clearRowndSessionRevokedOnServer(
+                revokedAccessToken: s0AccessToken,
+                persistState: { _ in true }
+            ))
+
+            #expect(await SuperTokensSessionBridge.validateSessionWithServer(
+                refreshSession: { true }
+            ) == .valid)
+
+            // SuperTokens drops the local session when the server rejects its refresh.
+            #expect(await SuperTokensSessionBridge.validateSessionWithServer(
+                refreshSession: {
+                    _ = SuperTokens.clearSessionLocally()
+                    return false
+                }
+            ) == .revoked)
+            #expect(await !SuperTokensSessionBridge.doesSessionExist())
+
+            #expect(await SuperTokensSessionBridge.clearRowndSessionRevokedOnServer(
+                revokedAccessToken: s0AccessToken,
+                persistState: { _ in true }
+            ))
+            await MainActor.run {
+                #expect(store.state.auth.accessToken == nil)
+                #expect(!store.state.auth.isAuthenticated)
+            }
+        }
+    }
+
+    @Test func revocationCleanupLeavesANewerRowndSessionAlone() async throws {
+        try await withNativeSessionHarness {
+            let originalContext = Context.currentContext
+            let store = createStore()
+            _ = Context(store)
+            defer { Context.currentContext = originalContext }
+            let s0AccessToken = generateJwt(
+                expires: Date(timeIntervalSinceNow: 1800).timeIntervalSince1970,
+                sessionHandle: "cleanup-s0"
+            )
+            let s1AccessToken = generateJwt(
+                expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+                sessionHandle: "cleanup-s1"
+            )
+            await MainActor.run {
+                store.dispatch(SetAuthState(payload: AuthState(accessToken: s1AccessToken)))
+            }
+
+            #expect(await !SuperTokensSessionBridge.clearRowndSessionRevokedOnServer(
+                revokedAccessToken: s0AccessToken,
+                persistState: { _ in true }
+            ))
+            await MainActor.run {
+                #expect(store.state.auth.accessToken == s1AccessToken)
+            }
+        }
+    }
+
     private func withNativeSessionHarness(
         _ operation: @escaping () async throws -> Void
     ) async throws {

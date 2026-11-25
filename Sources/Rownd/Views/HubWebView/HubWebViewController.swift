@@ -80,6 +80,7 @@ extension WKWebView {
 
 public class HubWebViewController: UIViewController, WKUIDelegate {
     static let nativeEmailVerificationEventName = "rownd:native-email-verification"
+    static let nativeEmailVerificationTimeout: TimeInterval = 45
     private static let offlinePageURL = URL(string: "rownd-offline://retry/")!
 
     struct HubLoadFailure: Equatable {
@@ -96,7 +97,7 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
         }
     }
 
-    struct NativeEmailVerificationParameters: Equatable {
+    struct NativeEmailVerificationParameters: Hashable, Sendable {
         let token: String
         let pendingVerificationId: String
     }
@@ -449,7 +450,10 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.timeoutInterval = 10
+        // The server commits the email change and issues the replacement session before
+        // responding, which can take several seconds. Timing out early loses that
+        // session while the server has already revoked the current one.
+        request.timeoutInterval = nativeEmailVerificationTimeout
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: [
             "method": "token",
@@ -537,6 +541,98 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
         return (result.0, response)
     }
 
+    static func runNativeEmailVerification(
+        request: URLRequest,
+        getAccessToken: () async -> String? = SuperTokensSessionBridge.getAccessToken,
+        perform: (URLRequest) async throws -> Void = {
+            _ = try await performNativeEmailVerification(
+                request: $0,
+                session: nativeEmailVerificationSession()
+            )
+        },
+        recover: (String?) async -> NativeEmailVerificationCoordinator.FailureRecovery = {
+            await recoverFromFailedNativeEmailVerification(previousAccessToken: $0)
+        }
+    ) async -> NativeEmailVerificationCoordinator.Outcome {
+        let previousAccessToken = await getAccessToken()
+        do {
+            try await perform(request)
+            return .verified
+        } catch {
+            logger.warning("Native email verification failed: \(String(describing: error))")
+            let recovery = await recover(previousAccessToken)
+            logger.warning("Native email verification failure recovery: \(String(describing: recovery))")
+            return .failed(recovery)
+        }
+    }
+
+    /// A failed verification may still have committed on the server, which then revoked
+    /// the initiating session. Asks the server which session survived and converges on it.
+    static func recoverFromFailedNativeEmailVerification(
+        previousAccessToken: String?,
+        validateSession: () async -> SuperTokensSessionBridge.ServerSessionValidation = {
+            await SuperTokensSessionBridge.validateSessionWithServer()
+        },
+        getAccessToken: () async -> String? = SuperTokensSessionBridge.getAccessToken,
+        rowndAccessToken: @MainActor () -> String? = {
+            Context.currentContext.store.state.auth.accessToken
+        },
+        adoptReplacement: (String, String?) async throws -> SuperTokensSessionBridge.ReplacementRowndStateSyncResult = {
+            try await SuperTokensSessionBridge.syncReplacementRowndStateFromSuperTokens(
+                expectedAccessToken: $0,
+                expectedPreviousRowndAccessToken: $1
+            )
+        },
+        scheduleProfileRetry: (SuperTokensSessionBridge.StableSessionIdentity) async -> Void = {
+            await UserData.scheduleProfileHydrationRetry(for: $0)
+        },
+        clearRevokedSession: (String) async -> Bool = {
+            await SuperTokensSessionBridge.clearRowndSessionRevokedOnServer(revokedAccessToken: $0)
+        }
+    ) async -> NativeEmailVerificationCoordinator.FailureRecovery {
+        guard let previousAccessToken,
+              let previousIdentity = SuperTokensSessionBridge.stableSessionIdentity(from: previousAccessToken) else {
+            return .superseded
+        }
+
+        switch await validateSession() {
+        case .indeterminate:
+            return .unresolved
+        case .revoked:
+            return await clearRevokedSession(previousAccessToken) ? .signedOut : .superseded
+        case .valid:
+            break
+        }
+
+        guard let currentAccessToken = await getAccessToken(),
+              let currentIdentity = SuperTokensSessionBridge.stableSessionIdentity(from: currentAccessToken) else {
+            return .superseded
+        }
+        if currentIdentity == previousIdentity {
+            return .sessionRetained
+        }
+
+        // The transport stored the replacement session, but its adoption did not finish.
+        // The user must match: a different user means an unrelated sign-in happened.
+        let rowndStillOnPreviousSession = await MainActor.run {
+            SuperTokensSessionBridge.tokensBelongToSameSession(rowndAccessToken(), previousAccessToken)
+        }
+        guard rowndStillOnPreviousSession,
+              currentIdentity.userId == previousIdentity.userId,
+              currentIdentity.tenantId == previousIdentity.tenantId else {
+            return .superseded
+        }
+        do {
+            if try await adoptReplacement(currentAccessToken, previousAccessToken) == .profileUnavailable {
+                await scheduleProfileRetry(currentIdentity)
+            }
+            return .replacementAdopted
+        } catch {
+            logger.error("Could not adopt the session replaced by email verification: \(String(describing: error))")
+            return .superseded
+        }
+    }
+
     let webConfiguration = WKWebViewConfiguration()
     let userController = WKUserContentController()
     lazy var webView: WKWebView = WKWebView(frame: .zero, configuration: webConfiguration)
@@ -548,7 +644,6 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
     private var authenticationGeneration = 0
     private var isInvalidated = false
     private var nativeEmailVerificationRequestId: String?
-    private var nativeEmailVerificationTask: Task<Void, Never>?
     private(set) var nativeEmailVerificationOwnsSessionReplacement = false
     private(set) var emailChangeAuthenticationContext: EmailChangeContinuation.AuthenticationContext?
     private(set) var isEmailChangePresentation = false
@@ -693,17 +788,17 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
         }
     }
 
+    /// Detaches the Hub page from pending verifications. The verifications themselves keep
+    /// running (see `NativeEmailVerificationCoordinator`); only their outcome is no longer
+    /// delivered to this page.
     func invalidateNativeEmailVerificationRequests() {
         navigationGeneration &+= 1
-        nativeEmailVerificationTask?.cancel()
-        nativeEmailVerificationTask = nil
         nativeEmailVerificationRequestId = nil
         nativeEmailVerificationOwnsSessionReplacement = false
     }
 
     private func verifyEmail(requestId: String, requestedURL: URL) {
         let requestedNavigationGeneration = navigationGeneration
-        nativeEmailVerificationTask?.cancel()
         nativeEmailVerificationRequestId = requestId
 
         guard let parameters = claimNativeEmailVerificationOwnership(for: requestedURL) else {
@@ -716,34 +811,39 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
             return
         }
 
-        nativeEmailVerificationTask = Task { [weak self] in
-            do {
-                let request = try Self.nativeEmailVerificationRequest(
-                    parameters: parameters,
-                    apiDomain: Rownd.config.supertokens.apiDomain,
-                    apiBasePath: Rownd.config.supertokens.apiBasePath
-                )
-                _ = try await Self.performNativeEmailVerification(
-                    request: request,
-                    session: Self.nativeEmailVerificationSession()
-                )
-                guard !Task.isCancelled else { return }
-                self?.sendNativeEmailVerificationResponse(
-                    requestId: requestId,
-                    requestedURL: requestedURL,
-                    requestedNavigationGeneration: requestedNavigationGeneration,
-                    status: "OK"
-                )
-            } catch {
-                guard !Task.isCancelled else { return }
-                logger.warning("Native email verification failed: \(String(describing: error))")
-                self?.sendNativeEmailVerificationResponse(
-                    requestId: requestId,
-                    requestedURL: requestedURL,
-                    requestedNavigationGeneration: requestedNavigationGeneration,
-                    error: "Email verification failed"
-                )
+        let request: URLRequest
+        do {
+            request = try Self.nativeEmailVerificationRequest(
+                parameters: parameters,
+                apiDomain: Rownd.config.supertokens.apiDomain,
+                apiBasePath: Rownd.config.supertokens.apiBasePath
+            )
+        } catch {
+            logger.warning("Native email verification request could not be built: \(String(describing: error))")
+            sendNativeEmailVerificationResponse(
+                requestId: requestId,
+                requestedURL: requestedURL,
+                requestedNavigationGeneration: requestedNavigationGeneration,
+                error: "Email verification failed"
+            )
+            return
+        }
+
+        Task { [weak self] in
+            let outcome = await NativeEmailVerificationCoordinator.shared.verify(parameters) {
+                await Self.runNativeEmailVerification(request: request)
             }
+            guard let self else {
+                logger.info("Native email verification finished after its Hub page was released; outcome not delivered: \(String(describing: outcome))")
+                return
+            }
+            self.sendNativeEmailVerificationResponse(
+                requestId: requestId,
+                requestedURL: requestedURL,
+                requestedNavigationGeneration: requestedNavigationGeneration,
+                status: outcome == .verified ? "OK" : nil,
+                error: outcome == .verified ? nil : "Email verification failed"
+            )
         }
     }
 
@@ -784,10 +884,10 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
                 status: status,
                 error: error
               ) else {
+            logger.info("Native email verification outcome not delivered: its Hub page was dismissed, navigated, or superseded (status=\(status ?? "nil"), error=\(error ?? "nil"))")
             return
         }
         evaluateJavaScript(code: script, webView: webView)
-        nativeEmailVerificationTask = nil
         nativeEmailVerificationRequestId = nil
     }
 

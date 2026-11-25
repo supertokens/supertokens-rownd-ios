@@ -44,6 +44,13 @@ internal enum SuperTokensSessionBridge {
         case profileUnavailable
     }
 
+    enum ServerSessionValidation: Equatable, Sendable {
+        case valid
+        case revoked
+        /// The server could not be reached, so the local session must be kept as is.
+        case indeterminate
+    }
+
     private static let adoptionLock = NSLock()
     private static let authOperationLock = NSLock()
     private static var authOperationGeneration: UInt64 = 0
@@ -246,6 +253,58 @@ internal enum SuperTokensSessionBridge {
                 sessionGeneration &+= 1
             }
             return refreshSucceeded && SuperTokens.doesSessionExist()
+        }
+    }
+
+    /// A refresh is the only way to ask the server whether the local session survived:
+    /// SuperTokens rejects it once the session is revoked, and throws when the server
+    /// is unreachable.
+    static func validateSessionWithServer(
+        refreshSession: @escaping () throws -> Bool = SuperTokens.attemptRefreshingSession
+    ) async -> ServerSessionValidation {
+        await onSessionQueue {
+            let previousStableIdentity = SuperTokens.getAccessToken().flatMap(stableSessionIdentity)
+            if SuperTokens.doesSessionExist() {
+                do {
+                    _ = try refreshSession()
+                } catch {
+                    return .indeterminate
+                }
+            }
+            if SuperTokens.doesSessionExist() {
+                if SuperTokens.getAccessToken().flatMap(stableSessionIdentity) != previousStableIdentity {
+                    sessionGeneration &+= 1
+                }
+                return .valid
+            }
+            sessionGeneration &+= 1
+            _ = SuperTokens.clearSessionLocally()
+            return .revoked
+        }
+    }
+
+    /// Clears Rownd's auth state after the server revoked `revokedAccessToken`'s session,
+    /// unless Rownd has meanwhile moved to another session.
+    @discardableResult
+    static func clearRowndSessionRevokedOnServer(
+        revokedAccessToken: String,
+        persistState: @escaping @MainActor (RowndState) -> Bool = { $0.saveImmediately() }
+    ) async -> Bool {
+        guard await onSessionQueue({ !SuperTokens.doesSessionExist() }) else { return false }
+        return await MainActor.run {
+            let store = Context.currentContext.store
+            guard let rowndAccessToken = store.state.auth.accessToken,
+                  tokensBelongToSameSession(rowndAccessToken, revokedAccessToken),
+                  commitRowndSessionState(
+                    accessToken: nil,
+                    stableIdentity: nil,
+                    replacing: rowndAccessToken,
+                    persistState: persistState
+                  ) else {
+                return false
+            }
+            RowndEventEmitter.emit(RowndEvent(event: .signOut))
+            return true
         }
     }
 
