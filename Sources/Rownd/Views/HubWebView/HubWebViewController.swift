@@ -426,27 +426,42 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
             currentURL?.path == "/account/verify-email"
     }
 
-    static func nativeEmailVerificationRequest(
-        parameters: NativeEmailVerificationParameters,
+    private static func nativeAuthURL(
         apiDomain: String,
-        apiBasePath: String
-    ) throws -> URLRequest {
+        apiBasePath: String,
+        path: String,
+        queryItems: [URLQueryItem]? = nil
+    ) throws -> URL {
         guard isAllowedNativeEmailVerificationTransport(apiDomain),
               var components = URLComponents(string: apiDomain) else {
             throw RowndError("Invalid native email verification URL")
         }
         let domainPath = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let basePath = normalizedApiBasePath(apiBasePath).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        components.path = "/" + [domainPath, basePath, "user/email/verify"]
+        components.path = "/" + [domainPath, basePath, path]
             .filter { !$0.isEmpty }
             .joined(separator: "/")
-        components.queryItems = [
-            URLQueryItem(name: "rowndPendingVerificationId", value: parameters.pendingVerificationId)
-        ]
+        components.queryItems = queryItems
         guard let url = components.url,
               isAllowedNativeEmailVerificationTransport(url) else {
             throw RowndError("Invalid native email verification URL")
         }
+        return url
+    }
+
+    static func nativeEmailVerificationRequest(
+        parameters: NativeEmailVerificationParameters,
+        apiDomain: String,
+        apiBasePath: String
+    ) throws -> URLRequest {
+        let url = try nativeAuthURL(
+            apiDomain: apiDomain,
+            apiBasePath: apiBasePath,
+            path: "user/email/verify",
+            queryItems: [
+                URLQueryItem(name: "rowndPendingVerificationId", value: parameters.pendingVerificationId)
+            ]
+        )
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -462,13 +477,72 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
         return request
     }
 
-    static func nativeEmailVerificationSession() -> URLSession {
+    private static let sharedNativeEmailVerificationSession: URLSession = {
         let configuration = URLSessionConfiguration.default
         var protocolClasses = configuration.protocolClasses ?? []
         protocolClasses.removeAll { $0 == SuperTokensURLProtocol.self }
         protocolClasses.insert(SuperTokensURLProtocol.self, at: 0)
         configuration.protocolClasses = protocolClasses
         return URLSession(configuration: configuration)
+    }()
+
+    static func nativeEmailVerificationSession() -> URLSession {
+        sharedNativeEmailVerificationSession
+    }
+
+    // Revocation authenticates with the issued session explicitly, so it must bypass
+    // SuperTokensURLProtocol, which would attach (or refresh) whatever session the SDK holds.
+    private static let issuedSessionRevocationSession: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = (configuration.protocolClasses ?? []).filter {
+            $0 != SuperTokensURLProtocol.self
+        }
+        return URLSession(configuration: configuration)
+    }()
+
+    static func issuedSessionRevocationRequest(
+        issuedAccessToken: String,
+        apiDomain: String,
+        apiBasePath: String
+    ) throws -> URLRequest {
+        var request = URLRequest(url: try nativeAuthURL(
+            apiDomain: apiDomain,
+            apiBasePath: apiBasePath,
+            path: "signout"
+        ))
+        request.httpMethod = "POST"
+        request.timeoutInterval = nativeEmailVerificationTimeout
+        request.setValue("Bearer \(issuedAccessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("header", forHTTPHeaderField: "st-auth-mode")
+        request.setValue("session", forHTTPHeaderField: "rid")
+        return request
+    }
+
+    static func revokeIssuedSession(
+        issuedAccessToken: String,
+        apiDomain: String = Rownd.config.supertokens.apiDomain,
+        apiBasePath: String = Rownd.config.supertokens.apiBasePath,
+        session: URLSession = issuedSessionRevocationSession
+    ) async {
+        do {
+            let request = try issuedSessionRevocationRequest(
+                issuedAccessToken: issuedAccessToken,
+                apiDomain: apiDomain,
+                apiBasePath: apiBasePath
+            )
+            let statusCode: Int = try await withCheckedThrowingContinuation { continuation in
+                session.dataTask(with: request) { _, response, error in
+                    if let error {
+                        continuation.resume(throwing: error)
+                    } else {
+                        continuation.resume(returning: (response as? HTTPURLResponse)?.statusCode ?? -1)
+                    }
+                }.resume()
+            }
+            logger.info("Revoked the unadopted email verification session (status=\(statusCode))")
+        } catch {
+            logger.warning("Could not revoke the unadopted email verification session: \(String(describing: error))")
+        }
     }
 
     static func performNativeEmailVerification(
@@ -509,36 +583,45 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
             cancellation.cancel()
         }
 
-        guard let response = result.1 as? HTTPURLResponse,
-              (200...299).contains(response.statusCode),
-              let payload = try JSONSerialization.jsonObject(with: result.0) as? [String: Any],
-              payload["status"] as? String == "OK" else {
-            throw RowndError("Email verification failed")
-        }
+        let issuedAccessToken = (result.1 as? HTTPURLResponse)?
+            .value(forHTTPHeaderField: "st-access-token")
+            .flatMap { $0.isEmpty || $0 == previousAccessToken ? nil : $0 }
+        do {
+            guard let response = result.1 as? HTTPURLResponse,
+                  (200...299).contains(response.statusCode),
+                  let payload = try JSONSerialization.jsonObject(with: result.0) as? [String: Any],
+                  payload["status"] as? String == "OK" else {
+                throw RowndError("Email verification failed")
+            }
 
-        guard let replacementAccessToken = response.value(forHTTPHeaderField: "st-access-token"),
-              !replacementAccessToken.isEmpty,
-              replacementAccessToken != previousAccessToken,
-              let replacementStableIdentity = SuperTokensSessionBridge.stableSessionIdentity(
-                from: replacementAccessToken
-              ),
-              let currentAccessToken = await getAccessToken(),
-              SuperTokensSessionBridge.stableSessionIdentity(from: currentAccessToken)
-                == replacementStableIdentity,
-              let refreshToken = getRefreshToken(),
-              !refreshToken.isEmpty,
-              let frontToken = getFrontToken(),
-              !frontToken.isEmpty else {
-            throw RowndError("Email verification did not establish a replacement session")
+            guard let replacementAccessToken = issuedAccessToken,
+                  let replacementStableIdentity = SuperTokensSessionBridge.stableSessionIdentity(
+                    from: replacementAccessToken
+                  ),
+                  let currentAccessToken = await getAccessToken(),
+                  SuperTokensSessionBridge.stableSessionIdentity(from: currentAccessToken)
+                    == replacementStableIdentity,
+                  let refreshToken = getRefreshToken(),
+                  !refreshToken.isEmpty,
+                  let frontToken = getFrontToken(),
+                  !frontToken.isEmpty else {
+                throw RowndError("Email verification did not establish a replacement session")
+            }
+            let syncResult = try await syncReplacementState(
+                replacementAccessToken,
+                previousAccessToken
+            )
+            if syncResult == .profileUnavailable {
+                await scheduleProfileRetry(replacementStableIdentity)
+            }
+            return (result.0, response)
+        } catch {
+            guard let issuedAccessToken else { throw error }
+            throw NativeEmailVerificationUnadoptedSessionError(
+                issuedAccessToken: issuedAccessToken,
+                underlying: error
+            )
         }
-        let syncResult = try await syncReplacementState(
-            replacementAccessToken,
-            previousAccessToken
-        )
-        if syncResult == .profileUnavailable {
-            await scheduleProfileRetry(replacementStableIdentity)
-        }
-        return (result.0, response)
     }
 
     static func runNativeEmailVerification(
@@ -552,18 +635,64 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
         },
         recover: (String?) async -> NativeEmailVerificationCoordinator.FailureRecovery = {
             await recoverFromFailedNativeEmailVerification(previousAccessToken: $0)
+        },
+        captureAuthPermit: () -> SuperTokensSessionBridge.AuthOperationPermit = {
+            SuperTokensSessionBridge.captureAuthOperationPermit()
+        },
+        isAuthPermitValid: (SuperTokensSessionBridge.AuthOperationPermit) -> Bool = {
+            SuperTokensSessionBridge.isAuthOperationPermitValid($0)
+        },
+        rowndAccessToken: @MainActor () -> String? = {
+            Context.currentContext.store.state.auth.accessToken
+        },
+        discardIssuedSession: (String) async -> Void = {
+            await discardUnadoptedIssuedSession(issuedAccessToken: $0)
         }
     ) async -> NativeEmailVerificationCoordinator.Outcome {
+        // Sign-out invalidates auth-operation permits as soon as it starts.
+        let permit = captureAuthPermit()
         let previousAccessToken = await getAccessToken()
         do {
             try await perform(request)
             return .verified
         } catch {
             logger.warning("Native email verification failed: \(String(describing: error))")
+            if let unadopted = error as? NativeEmailVerificationUnadoptedSessionError {
+                let rowndToken = await MainActor.run(body: rowndAccessToken)
+                let rowndFollowsVerification =
+                    SuperTokensSessionBridge.tokensBelongToSameSession(rowndToken, previousAccessToken)
+                    || SuperTokensSessionBridge.tokensBelongToSameSession(rowndToken, unadopted.issuedAccessToken)
+                if !isAuthPermitValid(permit) || !rowndFollowsVerification {
+                    // The user signed out or moved to another session while the server issued
+                    // this one. Nobody will adopt it, so it must not survive in the SDK or server.
+                    logger.warning("Discarding the session issued by a superseded email verification")
+                    await discardIssuedSession(unadopted.issuedAccessToken)
+                    return .failed(.superseded)
+                }
+            }
             let recovery = await recover(previousAccessToken)
             logger.warning("Native email verification failure recovery: \(String(describing: recovery))")
             return .failed(recovery)
         }
+    }
+
+    static func discardUnadoptedIssuedSession(
+        issuedAccessToken: String,
+        clearLocalSession: (String) async -> Bool = {
+            await SuperTokensSessionBridge.clearLocalSessionIfIssued(accessToken: $0)
+        },
+        clearUnbackedRowndSession: () async -> Void = {
+            await SuperTokensSessionBridge.clearRowndSessionWithoutSuperTokensSession()
+        },
+        revoke: (String) async -> Void = { await revokeIssuedSession(issuedAccessToken: $0) }
+    ) async {
+        // Only clear locally when the SDK holds the issued session; a newer session
+        // (for example, the user signing back in) must survive untouched.
+        if await clearLocalSession(issuedAccessToken) {
+            // The issued session overwrote whatever Rownd shows, so Rownd has no SDK session left.
+            await clearUnbackedRowndSession()
+        }
+        await revoke(issuedAccessToken)
     }
 
     /// A failed verification may still have committed on the server, which then revoked
@@ -794,6 +923,9 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
     func invalidateNativeEmailVerificationRequests() {
         navigationGeneration &+= 1
         nativeEmailVerificationRequestId = nil
+        // Releasing ownership lets a later sign-in page on this controller install its own
+        // session. That cannot race the running adoption: adoption only claims the issued
+        // session while the SDK still holds it, and otherwise discards and revokes it.
         nativeEmailVerificationOwnsSessionReplacement = false
     }
 

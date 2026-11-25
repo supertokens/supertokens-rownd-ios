@@ -1271,7 +1271,7 @@ import Testing
     }
 
     @Test func verificationKeepsRunningWhenItsRequesterIsCancelled() async {
-        let coordinator = NativeEmailVerificationCoordinator()
+        let coordinator = NativeEmailVerificationCoordinator(beginBackgroundExecution: { {} })
         let started = NativeVerificationGate()
         let release = NativeVerificationGate()
         let finished = NativeVerificationGate()
@@ -1302,7 +1302,7 @@ import Testing
     }
 
     @Test func concurrentRequestsForTheSameVerificationShareOneServerCall() async {
-        let coordinator = NativeEmailVerificationCoordinator()
+        let coordinator = NativeEmailVerificationCoordinator(beginBackgroundExecution: { {} })
         let attempts = NativeVerificationAttemptRecorder()
         let release = NativeVerificationGate()
         let parameters = HubWebViewController.NativeEmailVerificationParameters(
@@ -1534,6 +1534,84 @@ import Testing
         }
     }
 
+    @Test func verificationKeepsTheAppRunningUntilItFinishes() async {
+        let coordinator = NativeEmailVerificationCoordinator(beginBackgroundExecution: {
+            BackgroundExecutionRecorder.shared.begin()
+            return { BackgroundExecutionRecorder.shared.end() }
+        })
+        BackgroundExecutionRecorder.shared.reset()
+        let parameters = HubWebViewController.NativeEmailVerificationParameters(
+            token: "email-token",
+            pendingVerificationId: "pending-background"
+        )
+        let outcome = await coordinator.verify(parameters) {
+            #expect(BackgroundExecutionRecorder.shared.snapshot == (begun: 1, ended: 0))
+            return .verified
+        }
+        #expect(outcome == .verified)
+        #expect(BackgroundExecutionRecorder.shared.snapshot == (begun: 1, ended: 1))
+    }
+
+    @Test func verificationReusesOneURLSession() {
+        #expect(
+            HubWebViewController.nativeEmailVerificationSession()
+                === HubWebViewController.nativeEmailVerificationSession()
+        )
+    }
+
+    @Test func issuedSessionRevocationAuthenticatesWithTheIssuedSession() throws {
+        let request = try HubWebViewController.issuedSessionRevocationRequest(
+            issuedAccessToken: "issued-access-token",
+            apiDomain: "https://api.example.com",
+            apiBasePath: "/auth"
+        )
+        #expect(request.url?.absoluteString == "https://api.example.com/auth/signout")
+        #expect(request.httpMethod == "POST")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer issued-access-token")
+        #expect(request.value(forHTTPHeaderField: "st-auth-mode") == "header")
+    }
+
+    @Test func signOutDuringVerificationDiscardsAndRevokesTheIssuedSession() async throws {
+        let scenario = try await runVerificationInterruptedBy { s1, _ in
+            // Sign-out completes, then the transport stores the session the server issued.
+            SuperTokensSessionBridge.invalidateAuthOperationPermits()
+            SuperTokensSessionBridge.clearLocalSessionArtifacts()
+            Self.installSession(s1)
+        } rowndAfterInterruption: { _ in nil }
+
+        #expect(scenario.outcome == .failed(.superseded))
+        #expect(scenario.revoked == [scenario.s1])
+        #expect(!scenario.sdkHasSession)
+        #expect(scenario.rowndAccessToken == nil)
+    }
+
+    @Test func signInAsAnotherUserDuringVerificationKeepsTheirSession() async throws {
+        let scenario = try await runVerificationInterruptedBy { s1, otherUser in
+            // The issued session is stored first; the other user's sign-in then replaces it.
+            Self.installSession(s1)
+            Self.installSession(otherUser)
+        } rowndAfterInterruption: { otherUser in otherUser }
+
+        #expect(scenario.outcome == .failed(.superseded))
+        #expect(scenario.revoked == [scenario.s1])
+        #expect(scenario.sdkAccessToken == scenario.otherUser)
+        #expect(scenario.rowndAccessToken == scenario.otherUser)
+    }
+
+    @Test func issuedSessionOverwritingAnotherUsersSignInIsDiscarded() async throws {
+        let scenario = try await runVerificationInterruptedBy { s1, otherUser in
+            // The other user signs in first, then the late transport write overwrites them.
+            Self.installSession(otherUser)
+            Self.installSession(s1)
+        } rowndAfterInterruption: { otherUser in otherUser }
+
+        #expect(scenario.outcome == .failed(.superseded))
+        #expect(scenario.revoked == [scenario.s1])
+        #expect(!scenario.sdkHasSession)
+        // The other user's tokens were overwritten, so Rownd must not claim they are signed in.
+        #expect(scenario.rowndAccessToken == nil)
+    }
+
     @Test func revocationCleanupLeavesANewerRowndSessionAlone() async throws {
         try await withNativeSessionHarness {
             let originalContext = Context.currentContext
@@ -1560,6 +1638,117 @@ import Testing
                 #expect(store.state.auth.accessToken == s1AccessToken)
             }
         }
+    }
+
+    private struct InterruptedVerification {
+        let s1: String
+        let otherUser: String
+        let outcome: NativeEmailVerificationCoordinator.Outcome
+        let revoked: [String]
+        let sdkHasSession: Bool
+        let sdkAccessToken: String?
+        let rowndAccessToken: String?
+    }
+
+    private static func installSession(_ accessToken: String) {
+        _ = SuperTokens.installSession(
+            accessToken: accessToken,
+            refreshToken: "refresh-\(accessToken.suffix(8))",
+            frontToken: SuperTokensSessionBridge.buildFrontToken(from: accessToken)
+        )
+    }
+
+    /// Runs a verification for S0 whose server response issues S1, with `interruption`
+    /// applied to the SDK while the request is in flight.
+    private func runVerificationInterruptedBy(
+        _ interruption: @escaping (_ s1: String, _ otherUser: String) -> Void,
+        rowndAfterInterruption: @escaping (_ otherUser: String) -> String?
+    ) async throws -> InterruptedVerification {
+        var scenario: InterruptedVerification?
+        try await withNativeSessionHarness {
+            let originalContext = Context.currentContext
+            let store = createStore()
+            _ = Context(store)
+            defer {
+                InterruptingEmailVerificationURLProtocol.interruption = nil
+                Context.currentContext = originalContext
+            }
+            let s0 = generateJwt(
+                expires: Date(timeIntervalSinceNow: 1800).timeIntervalSince1970,
+                sessionHandle: "interrupted-s0"
+            )
+            let s1 = generateJwt(
+                expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+                sessionHandle: "interrupted-s1"
+            )
+            let otherUser = generateJwt(
+                expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
+                sessionHandle: "interrupted-other",
+                userId: "another-user"
+            )
+            Self.installSession(s0)
+            await MainActor.run {
+                store.dispatch(SetAuthState(payload: AuthState(accessToken: s0)))
+            }
+            let rowndAfter = rowndAfterInterruption(otherUser)
+            InterruptingEmailVerificationURLProtocol.issuedAccessToken = s1
+            InterruptingEmailVerificationURLProtocol.interruption = {
+                interruption(s1, otherUser)
+                DispatchQueue.main.sync {
+                    store.dispatch(SetAuthState(payload: AuthState(accessToken: rowndAfter)))
+                }
+            }
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.protocolClasses = [InterruptingEmailVerificationURLProtocol.self]
+            let session = URLSession(configuration: configuration)
+
+            var revoked: [String] = []
+            let outcome = await HubWebViewController.runNativeEmailVerification(
+                request: URLRequest(url: URL(string: "https://api.example.com/auth/user/email/verify")!),
+                perform: {
+                    _ = try await HubWebViewController.performNativeEmailVerification(
+                        request: $0,
+                        session: session,
+                        syncReplacementState: { expected, previous in
+                            try await SuperTokensSessionBridge.syncReplacementRowndStateFromSuperTokens(
+                                expectedAccessToken: expected,
+                                expectedPreviousRowndAccessToken: previous,
+                                fetchUserData: { _ in
+                                    Issue.record("A superseded verification must not fetch a profile")
+                                    return nil
+                                },
+                                persistState: { _ in true }
+                            )
+                        }
+                    )
+                },
+                recover: { _ in
+                    Issue.record("A superseded verification must not run failure recovery")
+                    return .unresolved
+                },
+                discardIssuedSession: {
+                    await HubWebViewController.discardUnadoptedIssuedSession(
+                        issuedAccessToken: $0,
+                        clearUnbackedRowndSession: {
+                            await SuperTokensSessionBridge.clearRowndSessionWithoutSuperTokensSession(
+                                persistState: { _ in true }
+                            )
+                        },
+                        revoke: { revoked.append($0) }
+                    )
+                }
+            )
+            scenario = InterruptedVerification(
+                s1: s1,
+                otherUser: otherUser,
+                outcome: outcome,
+                revoked: revoked,
+                sdkHasSession: await SuperTokensSessionBridge.doesSessionExist(),
+                sdkAccessToken: await SuperTokensSessionBridge.getAccessToken(),
+                rowndAccessToken: await MainActor.run { store.state.auth.accessToken }
+            )
+        }
+        return try #require(scenario)
     }
 
     private func withNativeSessionHarness(
@@ -1825,4 +2014,63 @@ private final class NativeVerificationFailureURLProtocol: URLProtocol {
     }
 
     override func stopLoading() {}
+}
+
+/// Responds with an issued session after running `interruption`, which stands in for
+/// app activity (sign-out, sign-in) that lands while the request is in flight.
+private final class InterruptingEmailVerificationURLProtocol: URLProtocol {
+    static var issuedAccessToken: String?
+    static var interruption: (() -> Void)?
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        Self.interruption?()
+        var headerFields = ["Content-Type": "application/json"]
+        headerFields["st-access-token"] = Self.issuedAccessToken
+        let response = HTTPURLResponse(
+            url: request.url!,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: headerFields
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(#"{"status":"OK"}"#.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+private final class BackgroundExecutionRecorder: @unchecked Sendable {
+    static let shared = BackgroundExecutionRecorder()
+    private let lock = NSLock()
+    private var begun = 0
+    private var ended = 0
+
+    var snapshot: (begun: Int, ended: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (begun, ended)
+    }
+
+    func reset() {
+        lock.lock()
+        begun = 0
+        ended = 0
+        lock.unlock()
+    }
+
+    func begin() {
+        lock.lock()
+        begun += 1
+        lock.unlock()
+    }
+
+    func end() {
+        lock.lock()
+        ended += 1
+        lock.unlock()
+    }
 }

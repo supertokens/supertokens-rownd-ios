@@ -308,6 +308,42 @@ internal enum SuperTokensSessionBridge {
         }
     }
 
+    /// Clears the local session only if it is (a token version of) `accessToken`'s session.
+    @discardableResult
+    static func clearLocalSessionIfIssued(accessToken: String) async -> Bool {
+        guard let issuedIdentity = stableSessionIdentity(from: accessToken) else { return false }
+        return await onSessionQueue {
+            guard let currentAccessToken = SuperTokens.getAccessToken(),
+                  stableSessionIdentity(from: currentAccessToken) == issuedIdentity else {
+                return false
+            }
+            sessionGeneration &+= 1
+            return SuperTokens.clearSessionLocally()
+        }
+    }
+
+    /// Signs Rownd out when SuperTokens holds no session to back its auth state.
+    @discardableResult
+    static func clearRowndSessionWithoutSuperTokensSession(
+        persistState: @escaping @MainActor (RowndState) -> Bool = { $0.saveImmediately() }
+    ) async -> Bool {
+        guard await onSessionQueue({ !SuperTokens.doesSessionExist() }) else { return false }
+        return await MainActor.run {
+            let store = Context.currentContext.store
+            guard let rowndAccessToken = store.state.auth.accessToken,
+                  commitRowndSessionState(
+                    accessToken: nil,
+                    stableIdentity: nil,
+                    replacing: rowndAccessToken,
+                    persistState: persistState
+                  ) else {
+                return false
+            }
+            RowndEventEmitter.emit(RowndEvent(event: .signOut))
+            return true
+        }
+    }
+
     static func signOut() async {
         await onSessionQueue { signOutOnSessionQueue() }
     }

@@ -1,4 +1,16 @@
 import Foundation
+import UIKit
+
+/// The server issued a session in the verification response, but it was not adopted.
+struct NativeEmailVerificationUnadoptedSessionError: Error, CustomStringConvertible {
+    let issuedAccessToken: String
+    let underlying: Error
+
+    // Keeps the issued token out of logs.
+    var description: String {
+        "Issued session was not adopted: \(String(describing: underlying))"
+    }
+}
 
 /// Runs native email verifications independently of the Hub page that requested them.
 ///
@@ -25,9 +37,31 @@ actor NativeEmailVerificationCoordinator {
         case unresolved
     }
 
+    /// Starts keeping the app running and returns the closure that releases it.
+    typealias BeginBackgroundExecution = @MainActor @Sendable () -> @Sendable () -> Void
+
     static let shared = NativeEmailVerificationCoordinator()
 
     private var inFlight: [HubWebViewController.NativeEmailVerificationParameters: Task<Outcome, Never>] = [:]
+    private let beginBackgroundExecution: BeginBackgroundExecution
+
+    init(beginBackgroundExecution: @escaping BeginBackgroundExecution = NativeEmailVerificationCoordinator.beginApplicationBackgroundTask) {
+        self.beginBackgroundExecution = beginBackgroundExecution
+    }
+
+    /// Backgrounding the app must not suspend a verification whose response carries
+    /// the only copy of the replacement session.
+    @MainActor static func beginApplicationBackgroundTask() -> @Sendable () -> Void {
+        let release = BackgroundTaskRelease()
+        let identifier = UIApplication.shared.beginBackgroundTask(withName: "Rownd email verification") {
+            release.run()
+        }
+        guard identifier != .invalid else { return {} }
+        release.set {
+            DispatchQueue.main.async { UIApplication.shared.endBackgroundTask(identifier) }
+        }
+        return { release.run() }
+    }
 
     /// A Hub page reloaded during a verification asks again with the same parameters;
     /// it joins the running request instead of replaying it with a session the first
@@ -39,10 +73,39 @@ actor NativeEmailVerificationCoordinator {
         if let running = inFlight[parameters] {
             return await running.value
         }
-        let task = Task.detached(priority: .userInitiated, operation: operation)
+        let beginBackgroundExecution = beginBackgroundExecution
+        let task = Task.detached(priority: .userInitiated) { () -> Outcome in
+            let endBackgroundExecution = await beginBackgroundExecution()
+            defer { endBackgroundExecution() }
+            return await operation()
+        }
         inFlight[parameters] = task
         let outcome = await task.value
         inFlight[parameters] = nil
         return outcome
+    }
+}
+
+/// Ends a background task exactly once, whether it finishes or its time expires first.
+private final class BackgroundTaskRelease: @unchecked Sendable {
+    private let lock = NSLock()
+    private var action: (() -> Void)?
+    private var hasRun = false
+
+    func set(_ action: @escaping () -> Void) {
+        lock.lock()
+        let alreadyRan = hasRun
+        if !alreadyRan { self.action = action }
+        lock.unlock()
+        if alreadyRan { action() }
+    }
+
+    func run() {
+        lock.lock()
+        let action = self.action
+        self.action = nil
+        hasRun = true
+        lock.unlock()
+        action?()
     }
 }
