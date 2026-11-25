@@ -284,17 +284,20 @@ internal enum SuperTokensSessionBridge {
     }
 
     /// Clears Rownd's auth state after the server revoked `revokedAccessToken`'s session,
-    /// unless Rownd has meanwhile moved to another session.
+    /// unless Rownd has meanwhile moved to another session. A store that has not moved
+    /// since `start` is cleared too, even if it never caught up with the revoked session.
     @discardableResult
     static func clearRowndSessionRevokedOnServer(
         revokedAccessToken: String,
+        start: NativeEmailVerificationStart? = nil,
         persistState: @escaping @MainActor (RowndState) -> Bool = { $0.saveImmediately() }
     ) async -> Bool {
         guard await onSessionQueue({ !SuperTokens.doesSessionExist() }) else { return false }
         return await MainActor.run {
             let store = Context.currentContext.store
             guard let rowndAccessToken = store.state.auth.accessToken,
-                  tokensBelongToSameSession(rowndAccessToken, revokedAccessToken),
+                  tokensBelongToSameSession(rowndAccessToken, revokedAccessToken)
+                    || start?.storeFollowsVerification(rowndAccessToken, issuedAccessToken: nil) == true,
                   commitRowndSessionState(
                     accessToken: nil,
                     stableIdentity: nil,
@@ -629,20 +632,23 @@ internal enum SuperTokensSessionBridge {
         fetchUserData: @escaping (RowndState) async throws -> UserStateResponse? = UserData.fetchReplacementUserData,
         persistState: @escaping @MainActor (RowndState) -> Bool = { $0.saveImmediately() },
         beforeInitialAuthSync: () async -> Void = {},
-        afterInitialAuthDispatch: (Int) async -> Void = { _ in }
+        afterInitialAuthDispatch: (Int) async -> Void = { _ in },
+        start: NativeEmailVerificationStart? = nil
     ) async throws -> ReplacementRowndStateSyncResult {
         guard let expectedStableIdentity = stableSessionIdentity(from: expectedAccessToken) else {
             throw RowndError("Email verification replacement session was invalid")
         }
-        let rowndRelationship = await MainActor.run {
-            let rowndAccessToken = Context.currentContext.store.state.auth.accessToken
-            return rowndAccessToken == expectedPreviousRowndAccessToken
+        let followsVerification: @MainActor (String?) -> Bool = { rowndAccessToken in
+            rowndAccessToken == expectedPreviousRowndAccessToken
                 || rowndAccessToken == expectedAccessToken
-                || tokensBelongToSameSession(
-                    rowndAccessToken,
-                    expectedPreviousRowndAccessToken
-                )
+                || tokensBelongToSameSession(rowndAccessToken, expectedPreviousRowndAccessToken)
                 || tokensBelongToSameSession(rowndAccessToken, expectedAccessToken)
+                || start?.storeFollowsVerification(rowndAccessToken, issuedAccessToken: expectedAccessToken) == true
+        }
+        // Sign-out invalidates the permit; nothing may be committed for this session afterwards.
+        let mayCommit: @MainActor () -> Bool = { start?.isPermitValid ?? true }
+        let rowndRelationship = await MainActor.run {
+            mayCommit() && followsVerification(Context.currentContext.store.state.auth.accessToken)
         }
         guard rowndRelationship,
               let sessionIdentity = await claimCurrentSession(matching: expectedStableIdentity),
@@ -658,9 +664,10 @@ internal enum SuperTokensSessionBridge {
         let synchronizedIdentity = try await synchronizeInitialReplacementAuth(
             sessionIdentity,
             responseAccessToken: expectedAccessToken,
-            previousRowndAccessToken: expectedPreviousRowndAccessToken,
             ticket: ticket,
             persistState: persistState,
+            followsVerification: followsVerification,
+            mayCommit: mayCommit,
             afterDispatch: afterInitialAuthDispatch
         )
 
@@ -706,6 +713,7 @@ internal enum SuperTokensSessionBridge {
         let didPersistCanonicalUser = await MainActor.run {
             let store = Context.currentContext.store
             guard let state = store.state,
+                  mayCommit(),
                   UserData.fetchCoordinator.isCurrent(ticket),
                   state.auth.accessToken == profileCommitIdentity.accessToken else {
                 return false
@@ -756,9 +764,10 @@ internal enum SuperTokensSessionBridge {
     private static func synchronizeInitialReplacementAuth(
         _ sessionIdentity: SessionIdentity,
         responseAccessToken: String,
-        previousRowndAccessToken: String?,
         ticket: UserProfileFetchCoordinator.Ticket,
         persistState: @escaping @MainActor (RowndState) -> Bool,
+        followsVerification: @MainActor (String?) -> Bool,
+        mayCommit: @MainActor () -> Bool,
         afterDispatch: (Int) async -> Void
     ) async throws -> SessionIdentity {
         for attempt in 0..<4 {
@@ -770,15 +779,13 @@ internal enum SuperTokensSessionBridge {
             let didPersist = await MainActor.run {
                 let store = Context.currentContext.store
                 guard let state = store.state,
+                      mayCommit(),
                       UserData.fetchCoordinator.isCurrent(ticket) else {
                     return false
                 }
                 let rowndAccessToken = state.auth.accessToken
-                guard
-                      rowndAccessToken == previousRowndAccessToken
-                        || rowndAccessToken == responseAccessToken
-                        || tokensBelongToSameSession(rowndAccessToken, previousRowndAccessToken)
-                        || tokensBelongToSameSession(rowndAccessToken, responseAccessToken) else {
+                // After the first commit the store is on the response session, which still follows.
+                guard followsVerification(rowndAccessToken) else {
                     return false
                 }
 

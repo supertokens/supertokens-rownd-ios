@@ -1,6 +1,30 @@
 import Foundation
 import UIKit
 
+/// What the app held when a native verification started.
+///
+/// The Rownd store can legitimately lag the SDK (a soft-failed startup reconcile, a failed
+/// persist, or state reloaded from a shared keychain). Comparing against this snapshot
+/// keeps a store that merely never caught up from being mistaken for a newer session.
+struct NativeEmailVerificationStart: Sendable {
+    let permit: SuperTokensSessionBridge.AuthOperationPermit
+    let previousAccessToken: String?
+    let rowndAccessToken: String?
+
+    var isPermitValid: Bool {
+        SuperTokensSessionBridge.isAuthOperationPermitValid(permit)
+    }
+
+    /// The store still follows this verification: it is on S0 or S1, or it has not moved
+    /// since the request started.
+    func storeFollowsVerification(_ rowndAccessToken: String?, issuedAccessToken: String?) -> Bool {
+        rowndAccessToken == self.rowndAccessToken
+            || SuperTokensSessionBridge.tokensBelongToSameSession(rowndAccessToken, self.rowndAccessToken)
+            || SuperTokensSessionBridge.tokensBelongToSameSession(rowndAccessToken, previousAccessToken)
+            || SuperTokensSessionBridge.tokensBelongToSameSession(rowndAccessToken, issuedAccessToken)
+    }
+}
+
 /// The server issued a session in the verification response, but it was not adopted.
 struct NativeEmailVerificationUnadoptedSessionError: Error, CustomStringConvertible {
     let issuedAccessToken: String

@@ -627,14 +627,21 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
     static func runNativeEmailVerification(
         request: URLRequest,
         getAccessToken: () async -> String? = SuperTokensSessionBridge.getAccessToken,
-        perform: (URLRequest) async throws -> Void = {
+        perform: (URLRequest, NativeEmailVerificationStart) async throws -> Void = { request, start in
             _ = try await performNativeEmailVerification(
-                request: $0,
-                session: nativeEmailVerificationSession()
+                request: request,
+                session: nativeEmailVerificationSession(),
+                syncReplacementState: {
+                    try await SuperTokensSessionBridge.syncReplacementRowndStateFromSuperTokens(
+                        expectedAccessToken: $0,
+                        expectedPreviousRowndAccessToken: $1,
+                        start: start
+                    )
+                }
             )
         },
-        recover: (String?) async -> NativeEmailVerificationCoordinator.FailureRecovery = {
-            await recoverFromFailedNativeEmailVerification(previousAccessToken: $0)
+        recover: (NativeEmailVerificationStart) async -> NativeEmailVerificationCoordinator.FailureRecovery = {
+            await recoverFromFailedNativeEmailVerification(start: $0)
         },
         captureAuthPermit: () -> SuperTokensSessionBridge.AuthOperationPermit = {
             SuperTokensSessionBridge.captureAuthOperationPermit()
@@ -650,30 +657,53 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
         }
     ) async -> NativeEmailVerificationCoordinator.Outcome {
         // Sign-out invalidates auth-operation permits as soon as it starts.
-        let permit = captureAuthPermit()
-        let previousAccessToken = await getAccessToken()
+        let start = NativeEmailVerificationStart(
+            permit: captureAuthPermit(),
+            previousAccessToken: await getAccessToken(),
+            rowndAccessToken: await MainActor.run(body: rowndAccessToken)
+        )
         do {
-            try await perform(request)
+            try await perform(request, start)
             return .verified
         } catch {
             logger.warning("Native email verification failed: \(String(describing: error))")
-            if let unadopted = error as? NativeEmailVerificationUnadoptedSessionError {
-                let rowndToken = await MainActor.run(body: rowndAccessToken)
-                let rowndFollowsVerification =
-                    SuperTokensSessionBridge.tokensBelongToSameSession(rowndToken, previousAccessToken)
-                    || SuperTokensSessionBridge.tokensBelongToSameSession(rowndToken, unadopted.issuedAccessToken)
-                if !isAuthPermitValid(permit) || !rowndFollowsVerification {
-                    // The user signed out or moved to another session while the server issued
-                    // this one. Nobody will adopt it, so it must not survive in the SDK or server.
-                    logger.warning("Discarding the session issued by a superseded email verification")
-                    await discardIssuedSession(unadopted.issuedAccessToken)
-                    return .failed(.superseded)
-                }
+            if let unadopted = error as? NativeEmailVerificationUnadoptedSessionError,
+               await isSupersededDuringRequest(
+                start,
+                issuedAccessToken: unadopted.issuedAccessToken,
+                isPermitValid: isAuthPermitValid(start.permit),
+                sdkAccessToken: await getAccessToken(),
+                rowndAccessToken: await MainActor.run(body: rowndAccessToken)
+               ) {
+                // Nobody will adopt this session, so it must not survive in the SDK or server.
+                logger.warning("Discarding the session issued by a superseded email verification")
+                await discardIssuedSession(unadopted.issuedAccessToken)
+                return .failed(.superseded)
             }
-            let recovery = await recover(previousAccessToken)
+            let recovery = await recover(start)
             logger.warning("Native email verification failure recovery: \(String(describing: recovery))")
             return .failed(recovery)
         }
+    }
+
+    /// Only activity observed during the request supersedes it: a sign-out, the SDK moving to
+    /// a third session, or the store moving to one. A store that was already empty or stale
+    /// when the request started has not caught up yet and must not cost the user S1.
+    static func isSupersededDuringRequest(
+        _ start: NativeEmailVerificationStart,
+        issuedAccessToken: String,
+        isPermitValid: Bool,
+        sdkAccessToken: String?,
+        rowndAccessToken: String?
+    ) -> Bool {
+        let isVerificationSession = { (token: String?) in
+            SuperTokensSessionBridge.tokensBelongToSameSession(token, start.previousAccessToken)
+                || SuperTokensSessionBridge.tokensBelongToSameSession(token, issuedAccessToken)
+        }
+        let sdkHoldsThirdSession = sdkAccessToken != nil && !isVerificationSession(sdkAccessToken)
+        return !isPermitValid
+            || sdkHoldsThirdSession
+            || !start.storeFollowsVerification(rowndAccessToken, issuedAccessToken: issuedAccessToken)
     }
 
     static func discardUnadoptedIssuedSession(
@@ -698,7 +728,7 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
     /// A failed verification may still have committed on the server, which then revoked
     /// the initiating session. Asks the server which session survived and converges on it.
     static func recoverFromFailedNativeEmailVerification(
-        previousAccessToken: String?,
+        start: NativeEmailVerificationStart,
         validateSession: () async -> SuperTokensSessionBridge.ServerSessionValidation = {
             await SuperTokensSessionBridge.validateSessionWithServer()
         },
@@ -706,20 +736,21 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
         rowndAccessToken: @MainActor () -> String? = {
             Context.currentContext.store.state.auth.accessToken
         },
-        adoptReplacement: (String, String?) async throws -> SuperTokensSessionBridge.ReplacementRowndStateSyncResult = {
+        adoptReplacement: (String, NativeEmailVerificationStart) async throws -> SuperTokensSessionBridge.ReplacementRowndStateSyncResult = {
             try await SuperTokensSessionBridge.syncReplacementRowndStateFromSuperTokens(
                 expectedAccessToken: $0,
-                expectedPreviousRowndAccessToken: $1
+                expectedPreviousRowndAccessToken: $1.previousAccessToken,
+                start: $1
             )
         },
         scheduleProfileRetry: (SuperTokensSessionBridge.StableSessionIdentity) async -> Void = {
             await UserData.scheduleProfileHydrationRetry(for: $0)
         },
-        clearRevokedSession: (String) async -> Bool = {
-            await SuperTokensSessionBridge.clearRowndSessionRevokedOnServer(revokedAccessToken: $0)
+        clearRevokedSession: (String, NativeEmailVerificationStart) async -> Bool = {
+            await SuperTokensSessionBridge.clearRowndSessionRevokedOnServer(revokedAccessToken: $0, start: $1)
         }
     ) async -> NativeEmailVerificationCoordinator.FailureRecovery {
-        guard let previousAccessToken,
+        guard let previousAccessToken = start.previousAccessToken,
               let previousIdentity = SuperTokensSessionBridge.stableSessionIdentity(from: previousAccessToken) else {
             return .superseded
         }
@@ -728,7 +759,7 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
         case .indeterminate:
             return .unresolved
         case .revoked:
-            return await clearRevokedSession(previousAccessToken) ? .signedOut : .superseded
+            return await clearRevokedSession(previousAccessToken, start) ? .signedOut : .superseded
         case .valid:
             break
         }
@@ -743,16 +774,17 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
 
         // The transport stored the replacement session, but its adoption did not finish.
         // The user must match: a different user means an unrelated sign-in happened.
-        let rowndStillOnPreviousSession = await MainActor.run {
-            SuperTokensSessionBridge.tokensBelongToSameSession(rowndAccessToken(), previousAccessToken)
+        let storeFollowsVerification = await MainActor.run {
+            start.storeFollowsVerification(rowndAccessToken(), issuedAccessToken: currentAccessToken)
         }
-        guard rowndStillOnPreviousSession,
+        guard start.isPermitValid,
+              storeFollowsVerification,
               currentIdentity.userId == previousIdentity.userId,
               currentIdentity.tenantId == previousIdentity.tenantId else {
             return .superseded
         }
         do {
-            if try await adoptReplacement(currentAccessToken, previousAccessToken) == .profileUnavailable {
+            if try await adoptReplacement(currentAccessToken, start) == .profileUnavailable {
                 await scheduleProfileRetry(currentIdentity)
             }
             return .replacementAdopted
