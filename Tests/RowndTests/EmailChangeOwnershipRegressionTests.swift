@@ -394,7 +394,8 @@ import WebKit
             #expect(Rownd.emailChangeContinuation.record == nil)
             // This fixture has no UIKit presenter to drive a hide completion.
             source.hostController = nil
-            Rownd.beginEmailChange(saved, source: source)
+            try #require(!Rownd.isSigningOut)
+            try #require(Rownd.beginEmailChange(saved, source: source))
             Rownd.getInstance().bottomSheetController.viewDidDisappear(false)
             for _ in 0..<500 where Rownd.isSigningOut { try await Task.sleep(nanoseconds: 10_000_000) }
             #expect(!Rownd.isSigningOut)
