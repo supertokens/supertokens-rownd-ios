@@ -219,15 +219,13 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
     static func nativeEmailVerificationEventScript(
         requestId: String,
         expectedURL: URL,
-        status: String? = nil,
-        error: String? = nil
+        outcome: NativeEmailVerificationCoordinator.Outcome
     ) -> String? {
         var detail = ["request_id": requestId]
-        if let status {
-            detail["status"] = status
-        }
-        if let error {
-            detail["error"] = error
+        switch outcome {
+        case .invalidRequest: detail["error"] = "Invalid email verification request"
+        case .verified: detail["status"] = "OK"
+        case .failed: detail["error"] = "Email verification failed"
         }
 
         guard let data = try? JSONSerialization.data(withJSONObject: detail),
@@ -600,8 +598,7 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
             )
         }
     ) async -> NativeEmailVerificationCoordinator.Outcome {
-        var issuedAccessToken: String?
-        var issuedAntiCSRF: String?
+        var issued: SuperTokensSessionTokens?
         var installed: SuperTokensSessionBridge.SessionIdentity?
         do {
             let request = try nativeEmailVerificationRequest(
@@ -613,27 +610,26 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
             let (data, response) = try await sendNativeAuthRequest(request, session: nativeEmailVerificationSession()) {
                 SuperTokensSessionBridge.canSendVerification(start)
             }
-            let responseAccessToken = response.headerValue(named: "st-access-token")
-            if let token = responseAccessToken,
-               let owner = SuperTokensSessionBridge.stableSessionIdentity(from: token),
-               owner != start.owner {
-                issuedAccessToken = token
-                issuedAntiCSRF = response.headerValue(named: "anti-csrf")
-            }
-            guard (200...299).contains(response.statusCode),
-                  let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  payload["status"] as? String == "OK",
-                  let accessToken = issuedAccessToken,
+            guard let accessToken = response.headerValue(named: "st-access-token"),
                   let refreshToken = response.headerValue(named: "st-refresh-token"), !refreshToken.isEmpty,
                   let frontToken = response.headerValue(named: "front-token"), !frontToken.isEmpty else {
                 throw RowndError("Email verification did not return a replacement session")
             }
             let tokens = SuperTokensSessionTokens(
-                accessToken: accessToken, refreshToken: refreshToken, frontToken: frontToken, antiCSRF: issuedAntiCSRF
+                accessToken: accessToken, refreshToken: refreshToken, frontToken: frontToken,
+                antiCSRF: response.headerValue(named: "anti-csrf")
             )
-            guard let identity = await SuperTokensSessionBridge.installVerificationReplacement(tokens, replacing: start) else {
+            let identity: SuperTokensSessionBridge.SessionIdentity
+            switch await SuperTokensSessionBridge.installVerificationReplacement(tokens, replacing: start) {
+            case .rejected:
                 throw RowndError("Email verification could not install the replacement session")
+            case .superseded:
+                issued = tokens
+                throw RowndError("Email verification replacement session was superseded")
+            case .installed(let replacement):
+                identity = replacement
             }
+            issued = tokens
             installed = identity
             if try await syncReplacementState(identity, start) == .profileUnavailable {
                 await UserData.scheduleProfileHydrationRetry(for: identity.stable)
@@ -641,15 +637,21 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
             guard start.mayCommit(issuedAccessToken: accessToken) else {
                 throw RowndError("Email verification replacement session was superseded")
             }
+            // The server can restore a usable session after revoking S0 even when the email change fails.
+            let payload = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            guard (200...299).contains(response.statusCode), payload?["status"] as? String == "OK" else {
+                logger.warning("Native email verification failed; retained its replacement session")
+                return .failed(.sessionRetained)
+            }
             return .verified
         } catch is NativeVerificationSuperseded {
             return .failed(.superseded)
         } catch {
             logger.warning("Native email verification did not complete")
-            if let issuedAccessToken {
+            if let issued {
                 if let installed,
                    await SuperTokensSessionBridge.isInstalledVerificationSession(installed, endpoint: start.endpoint),
-                   start.mayCommit(issuedAccessToken: issuedAccessToken) {
+                    start.mayCommit(issuedAccessToken: issued.accessToken) {
                     // Persistence can fail after installation. Keep S1 for startup reconciliation.
                     return .failed(.unresolved)
                 }
@@ -657,8 +659,8 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
                     await SuperTokensSessionBridge.discardSessionIfCurrent(installed, endpoint: start.endpoint)
                 }
                 _ = await revokeIssuedSession(
-                    issuedAccessToken: issuedAccessToken,
-                    antiCSRF: issuedAntiCSRF,
+                    issuedAccessToken: issued.accessToken,
+                    antiCSRF: issued.antiCSRF,
                     endpoint: start.endpoint
                 )
             }
@@ -857,7 +859,7 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
                 requestId: requestId,
                 requestedURL: requestedURL,
                 requestedNavigationGeneration: requestedNavigationGeneration,
-                error: "Invalid email verification request"
+                outcome: .invalidRequest
             )
             return
         }
@@ -894,8 +896,7 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
                 requestId: requestId,
                 requestedURL: requestedURL,
                 requestedNavigationGeneration: requestedNavigationGeneration,
-                status: outcome == .verified ? "OK" : nil,
-                error: outcome == .verified ? nil : "Email verification failed"
+                outcome: outcome
             )
         }
     }
@@ -919,8 +920,7 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
         requestId: String,
         requestedURL: URL,
         requestedNavigationGeneration: Int,
-        status: String? = nil,
-        error: String? = nil
+        outcome: NativeEmailVerificationCoordinator.Outcome
     ) {
         guard nativeEmailVerificationRequestId == requestId,
               Self.canDeliverNativeEmailVerificationResponse(
@@ -934,10 +934,9 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
               let script = Self.nativeEmailVerificationEventScript(
                 requestId: requestId,
                 expectedURL: requestedURL,
-                status: status,
-                error: error
+                outcome: outcome
               ) else {
-            logger.info("Native email verification outcome not delivered: its Hub page was dismissed, navigated, or superseded (status=\(status ?? "nil"), error=\(error ?? "nil"))")
+            logger.info("Native email verification outcome not delivered: its Hub page was dismissed, navigated, or superseded (outcome=\(String(describing: outcome)))")
             return
         }
         evaluateJavaScript(code: script, webView: webView)

@@ -34,7 +34,7 @@ import Testing
         let script = try #require(HubWebViewController.nativeEmailVerificationEventScript(
             requestId: "request-123",
             expectedURL: URL(string: "https://hub.example.com/account/verify-email")!,
-            status: "OK"
+            outcome: .verified
         ))
 
         #expect(script.contains(HubWebViewController.nativeEmailVerificationEventName))
@@ -917,8 +917,78 @@ import Testing
         token: "email-token", pendingVerificationId: "pending-123"
     )
 
+    private enum ReplacementResponse: CaseIterable {
+        case verified, restored, unrelatedUser, unrelatedTenant
+    }
+
+    @Test(arguments: ReplacementResponse.allCases)
+    private func verificationAdmitsOnlySameUserAndTenantRegardlessOfOutcome(_ scenario: ReplacementResponse) async throws {
+        let s0 = Self.token("s0", tenantID: "tenant")
+        let s1 = Self.token(
+            "s1",
+            userID: scenario == .unrelatedUser ? "other-user" : "user",
+            tenantID: scenario == .unrelatedTenant ? "other-tenant" : "tenant"
+        )
+        let adopt = scenario == .verified || scenario == .restored
+        let response = Self.verificationResponse(
+            replacement: s1,
+            body: scenario == .verified ? #"{"status":"OK"}"# : #"{"status":"GENERAL_ERROR"}"#
+        )
+        let profile = UserStateResponse(data: ["email": AnyCodable("current@example.com")])
+        let profileBody = String(decoding: try JSONEncoder().encode(profile), as: UTF8.self)
+        let server = try await LocalHTTPServer.start { request in
+            switch request.path {
+            case "/auth/plugin/rownd/user": return .init(headers: [:], body: profileBody)
+            case "/auth/session/refresh": return .init(statusCode: adopt ? 401 : 200, headers: [:])
+            case "/auth/signout": return .init()
+            default: return response
+            }
+        }
+        defer { server.stop() }
+        try await withNativeSessionHarness(apiDomain: server.baseURL.absoluteString) {
+            let (start, store) = try await self.captureVerification(s0, storeToken: s0)
+            let outcome = await HubWebViewController.runNativeEmailVerification(
+                parameters: Self.verificationParameters, start: start,
+                syncReplacementState: { identity, start in
+                    try await SuperTokensSessionBridge.syncReplacementRowndStateFromSuperTokens(
+                        expectedAccessToken: identity.accessToken,
+                        expectedPreviousRowndAccessToken: start.previousAccessToken,
+                        persistState: { _ in true },
+                        start: start,
+                        installedIdentity: identity
+                    )
+                }
+            )
+            #expect(outcome == (scenario == .verified ? .verified : .failed(.sessionRetained)))
+            let hubScript = try #require(HubWebViewController.nativeEmailVerificationEventScript(
+                requestId: "request-123",
+                expectedURL: server.baseURL.appendingPathComponent("account/verify-email"),
+                outcome: outcome
+            ))
+            #expect(hubScript.contains(#""status":"OK""#) == (scenario == .verified))
+            #expect(hubScript.contains(#""error":"Email verification failed""#) == (scenario != .verified))
+            #expect(await SuperTokensSessionBridge.getAccessToken() == (adopt ? s1 : s0))
+            #expect(SuperTokens.getRefreshToken() == (adopt ? "issued-refresh" : "refresh-s0"))
+            if adopt {
+                #expect(SuperTokens.getFrontToken() == response.headers["Front-Token"])
+            }
+            await MainActor.run {
+                #expect(store.state.auth.isAuthenticated)
+                #expect(store.state.auth.accessToken == (adopt ? s1 : s0))
+                #expect(store.state.user.data["email"]?.value as? String == (adopt ? "current@example.com" : nil))
+            }
+            let verification = try await server.nextRequest()
+            #expect(verification.path.hasPrefix("/auth/user/email/verify?"))
+            #expect(verification.headers["authorization"] == "Bearer \(s0)")
+            let followUp = try await server.nextRequest()
+            #expect(followUp.path == (adopt ? "/auth/plugin/rownd/user" : "/auth/session/refresh"))
+            #expect(followUp.headers["authorization"] == (adopt ? "Bearer \(s1)" : "Bearer refresh-s0"))
+            #expect(try await server.nextRequestIfAvailable() == nil)
+        }
+    }
+
     private enum Interruption: CaseIterable {
-        case refresh401, signOut, signIn, signInThenSDKEmpty, hydrate, staleStore
+        case refresh401, signOut, signOutWithErrorResponse, signIn, signInThenSDKEmpty, hydrate, staleStore
     }
 
     @Test(arguments: Interruption.allCases)
@@ -926,7 +996,10 @@ import Testing
         let s0 = Self.token("s0")
         let s1 = Self.token("s1")
         let b = Self.token("b", userID: "other-user")
-        let verificationResponse = Self.verificationResponse(replacement: s1)
+        let verificationResponse = Self.verificationResponse(
+            replacement: s1,
+            body: interruption == .signOutWithErrorResponse ? #"{"status":"GENERAL_ERROR"}"# : #"{"status":"OK"}"#
+        )
         let releaseVerification = NativeVerificationGate()
         let server = try await LocalHTTPServer.start { request in
             switch request.path {
@@ -987,7 +1060,7 @@ import Testing
                         parameters: Self.verificationParameters, endpoint: start.endpoint,
                         owner: start.owner, ownership: start.ownership, storeID: start.storeID
                     ))
-                case .signOut:
+                case .signOut, .signOutWithErrorResponse:
                     SuperTokensSessionBridge.invalidateForSignOut()
                     _ = SuperTokensSessionBridge.clearLocalSessionArtifacts()
                     await MainActor.run { store.dispatch(SetAuthState(payload: AuthState())) }
@@ -1128,11 +1201,14 @@ import Testing
             let s1 = Self.token("s1")
             let rotated = Self.token("s1", expiry: 1800)
             let (start, store) = try await self.captureVerification(s0, storeToken: s0)
-            let installed = try #require(await SuperTokensSessionBridge.installVerificationReplacement(
+            guard case .installed(let installed) = await SuperTokensSessionBridge.installVerificationReplacement(
                 .init(accessToken: s1, refreshToken: "issued-refresh",
                       frontToken: SuperTokensSessionBridge.buildFrontToken(from: s1), antiCSRF: nil),
                 replacing: start
-            ))
+            ) else {
+                Issue.record("S1 could not be installed")
+                return
+            }
             await #expect(throws: RowndError.self) {
                 try await SuperTokensSessionBridge.syncReplacementRowndStateFromSuperTokens(
                     expectedAccessToken: s1,
@@ -1188,17 +1264,24 @@ import Testing
         }
     }
 
-    private static func token(_ handle: String, expiry: TimeInterval = 3600, userID: String = "user") -> String {
-        generateJwt(expires: Date(timeIntervalSinceNow: expiry).timeIntervalSince1970, sessionHandle: handle, userId: userID)
+    private static func token(
+        _ handle: String, expiry: TimeInterval = 3600, userID: String = "user", tenantID: String? = nil
+    ) -> String {
+        generateJwt(
+            expires: Date(timeIntervalSinceNow: expiry).timeIntervalSince1970,
+            sessionHandle: handle, userId: userID, tenantId: tenantID
+        )
     }
 
-    private static func verificationResponse(replacement: String) -> LocalHTTPServer.Response {
+    private static func verificationResponse(
+        replacement: String, body: String = #"{"status":"OK"}"#
+    ) -> LocalHTTPServer.Response {
         .init(headers: [
             "St-Access-Token": replacement,
             "St-Refresh-Token": "issued-refresh",
             "Front-Token": SuperTokensSessionBridge.buildFrontToken(from: replacement),
             "Anti-Csrf": "issued-csrf"
-        ])
+        ], body: body)
     }
 
     private func signIn(_ accessToken: String) async throws {

@@ -51,12 +51,13 @@ struct NativeEmailVerificationStart: Sendable {
 /// outcome back to the Hub depends on the requesting page still being current.
 actor NativeEmailVerificationCoordinator {
     enum Outcome: Equatable, Sendable {
+        case invalidRequest
         case verified
         case failed(FailureRecovery)
     }
 
     enum FailureRecovery: Equatable, Sendable {
-        /// The server still accepts the session that started the verification.
+        /// The initiating session is still usable, or the server returned a usable replacement.
         case sessionRetained
         /// The server revoked the initiating session, so Rownd signed out.
         case signedOut

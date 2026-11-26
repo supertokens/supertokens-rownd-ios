@@ -8,6 +8,10 @@ internal enum SuperTokensSessionBridge {
         let sessionHandle: String
         let userId: String
         let tenantId: String?
+
+        func isReplacement(for owner: Self) -> Bool {
+            sessionHandle != owner.sessionHandle && userId == owner.userId && tenantId == owner.tenantId
+        }
     }
 
     struct SessionIdentity: Equatable, Sendable {
@@ -266,25 +270,40 @@ internal enum SuperTokensSessionBridge {
             && storedAccessToken(start.endpoint).flatMap(stableSessionIdentity) == start.owner
     }
 
+    enum VerificationReplacementInstallation {
+        case installed(SessionIdentity)
+        case rejected
+        case superseded
+    }
+
     static func installVerificationReplacement(
         _ tokens: SuperTokensSessionTokens,
         replacing start: NativeEmailVerificationStart
-    ) async -> SessionIdentity? {
-        guard await start.mayCommit() else { return nil }
+    ) async -> VerificationReplacementInstallation {
+        guard let stable = stableSessionIdentity(from: tokens.accessToken) else { return .rejected }
+        guard stable.isReplacement(for: start.owner) else {
+            if stable.userId != start.owner.userId || stable.tenantId != start.owner.tenantId {
+                logger.warning("Ignoring email verification session for a different user or tenant")
+            }
+            return .rejected
+        }
+        guard !tokens.refreshToken.isEmpty,
+              validatedUserId(accessToken: tokens.accessToken, frontToken: tokens.frontToken) != nil else {
+            return .rejected
+        }
+        guard await start.mayCommit() else { return .superseded }
         return await onSessionQueue {
             let currentOwner = storedAccessToken(start.endpoint).flatMap(stableSessionIdentity)
             guard currentOwner == start.owner || !hasStoredCredentials(start.endpoint),
-                  let stable = stableSessionIdentity(from: tokens.accessToken), stable != start.owner,
-                  validatedUserId(accessToken: tokens.accessToken, frontToken: tokens.frontToken) != nil,
-                  ownsVerification(start.ownership),
-                  installResponseSession(tokens) else { return nil }
+                  ownsVerification(start.ownership) else { return .superseded }
+            guard installResponseSession(tokens) else { return .rejected }
             sessionGeneration &+= 1
             let identity = SessionIdentity(accessToken: tokens.accessToken, generation: sessionGeneration, stable: stable)
             guard ownsVerification(start.ownership) else {
                 _ = discardSessionIfCurrentOnQueue(identity, endpoint: start.endpoint)
-                return nil
+                return .superseded
             }
-            return identity
+            return .installed(identity)
         }
     }
 
