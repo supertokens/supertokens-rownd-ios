@@ -3722,6 +3722,8 @@ final class LocalHTTPServer: @unchecked Sendable {
     private let queue = DispatchQueue(label: "io.rownd.tests.local-http-server")
     private let requests: AsyncStream<CapturedRequest>
     private let requestContinuation: AsyncStream<CapturedRequest>.Continuation
+    private var connections: [ObjectIdentifier: NWConnection] = [:]
+    private var isStopped = false
 
     private init(listener: NWListener) {
         self.listener = listener
@@ -3738,39 +3740,52 @@ final class LocalHTTPServer: @unchecked Sendable {
         return try await withCheckedThrowingContinuation { continuation in
             var hasResumed = false
 
-            listener.newConnectionHandler = { connection in
+            listener.newConnectionHandler = { [weak server] connection in
+                guard let server, !server.isStopped else {
+                    connection.cancel()
+                    return
+                }
                 server.handle(connection)
             }
 
             listener.stateUpdateHandler = { state in
                 guard !hasResumed else { return }
-
                 switch state {
                 case .ready:
+                    hasResumed = true
+                    listener.stateUpdateHandler = nil
                     guard let port = listener.port else {
-                        hasResumed = true
+                        listener.cancel()
                         continuation.resume(throwing: RowndError("Local test server started without a port"))
                         return
                     }
 
                     server.baseURL = URL(string: "http://127.0.0.1:\(port.rawValue)")!
-                    hasResumed = true
                     continuation.resume(returning: server)
                 case .failed(let error):
                     hasResumed = true
+                    listener.stateUpdateHandler = nil
+                    listener.cancel()
                     continuation.resume(throwing: error)
                 default:
                     break
                 }
             }
 
-            listener.start(queue: DispatchQueue(label: "io.rownd.tests.local-http-listener"))
+            listener.start(queue: server.queue)
         }
     }
 
     func stop() {
-        listener.cancel()
-        requestContinuation.finish()
+        queue.sync {
+            isStopped = true
+            listener.stateUpdateHandler = nil
+            listener.newConnectionHandler = nil
+            listener.cancel()
+            connections.values.forEach { $0.cancel() }
+            connections.removeAll()
+            requestContinuation.finish()
+        }
     }
 
     func nextRequest(timeout: TimeInterval = 2) async throws -> CapturedRequest {
@@ -3814,15 +3829,21 @@ final class LocalHTTPServer: @unchecked Sendable {
     }
 
     private func handle(_ connection: NWConnection) {
+        connections[ObjectIdentifier(connection)] = connection
         connection.start(queue: queue)
         receive(on: connection, buffer: Data())
     }
 
+    private func close(_ connection: NWConnection) {
+        connections.removeValue(forKey: ObjectIdentifier(connection))
+        connection.cancel()
+    }
+
     private func receive(on connection: NWConnection, buffer: Data) {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { [weak self] data, _, _, error in
-            guard let self else { return }
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { [weak self] data, _, isComplete, error in
+            guard let self, !self.isStopped else { return }
             guard error == nil else {
-                connection.cancel()
+                self.close(connection)
                 return
             }
 
@@ -3832,7 +3853,11 @@ final class LocalHTTPServer: @unchecked Sendable {
             }
 
             guard String(data: nextBuffer, encoding: .utf8)?.contains("\r\n\r\n") == true else {
-                self.receive(on: connection, buffer: nextBuffer)
+                if isComplete {
+                    self.close(connection)
+                } else {
+                    self.receive(on: connection, buffer: nextBuffer)
+                }
                 return
             }
 
@@ -3847,14 +3872,15 @@ final class LocalHTTPServer: @unchecked Sendable {
             HTTP/1.1 200 OK\r
             Content-Type: application/json\r
             Content-Length: \(body.utf8.count)\r
+            Cache-Control: no-store\r
             front-token: remove\r
             Connection: close\r
             \r
             \(body)
             """
 
-        connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in
-            connection.cancel()
+        connection.send(content: Data(response.utf8), completion: .contentProcessed { [weak self] _ in
+            self?.close(connection)
         })
     }
 

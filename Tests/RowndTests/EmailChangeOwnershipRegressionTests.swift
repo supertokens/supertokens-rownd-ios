@@ -93,6 +93,13 @@ import WebKit
             session: URLSession(configuration: ordinary), appleSession: URLSession(configuration: isolated))
     }
 
+    private static func loadFixturePage(in hub: HubViewController, server: LocalHTTPServer) async throws {
+        // Loading the parent view would start a second, SDK-owned navigation.
+        hub.hubWebController.hubViewController = hub
+        let loader = OwnershipPageLoader()
+        try await loader.load(hub.hubWebController.webView, url: server.baseURL.appendingPathComponent("mobile_app"))
+    }
+
     @Test func googleOwnedAttemptCannotBecomeOrdinaryAfterNewDirectAttempt() async throws {
         try await withSession {
             _ = Self.presentOwnedSignIn()
@@ -213,14 +220,12 @@ import WebKit
             Rownd.config.baseUrl = server.baseURL.absoluteString
             _ = Self.presentOwnedSignIn()
             let source = try #require(Rownd.getInstance().bottomSheetController.controller as? HubViewController)
-            source.loadViewIfNeeded()
             let webController = source.hubWebController
             let gate = OwnershipGate()
             let release = OwnershipGate()
             defer { Task { await release.open() } }
             webController.beforeAuthenticationBootstrap = { await gate.open(); await release.wait() }
-            let loader = OwnershipPageLoader()
-            try await loader.load(webController.webView, url: server.baseURL.appendingPathComponent("mobile_app"))
+            try await Self.loadFixturePage(in: source, server: server)
             let message = try MessagePayload.AuthenticationMessage(accessToken: Self.tokens.accessToken,
                 refreshToken: Self.tokens.refreshToken, frontToken: Self.tokens.frontToken).asJsonString()
             _ = try await webController.webView.evaluateJavaScript("window.webkit.messageHandlers.rowndIosSDK.postMessage(JSON.stringify({type:'authentication',payload:\(message)})); true;")
@@ -247,10 +252,8 @@ import WebKit
             Rownd.getInstance().bottomSheetController.viewDidDisappear(false)
             Rownd.resumeEmailChange(after: owner)
             let source = try #require(Rownd.getInstance().bottomSheetController.controller as? HubViewController)
-            source.loadViewIfNeeded()
             let web = source.hubWebController.webView
-            let loader = OwnershipPageLoader()
-            try await loader.load(web, url: server.baseURL.appendingPathComponent("mobile_app"))
+            try await Self.loadFixturePage(in: source, server: server)
             let wrong = EmailChangeDescriptor(version: 2, requestId: "wrong-request", localDraft: emailChangeTestDraft, expiresAt: Self.descriptor.expiresAt)
             let json = try wrong.asJsonString()
             _ = try await web.evaluateJavaScript("window.addEventListener('rownd:email-change-handoff', e => window.reply = e.detail); window.webkit.messageHandlers.rowndIosSDK.postMessage(JSON.stringify({type:'sign_in',payload:{was_user_initiated:true,email_change:\(json)}})); true;")
@@ -299,10 +302,8 @@ import WebKit
             Rownd.getInstance().bottomSheetController.viewDidDisappear(false)
             Rownd.resumeEmailChange(after: owner)
             let source = try #require(Rownd.getInstance().bottomSheetController.controller as? HubViewController)
-            source.loadViewIfNeeded()
             let controller = source.hubWebController
-            let loader = OwnershipPageLoader()
-            try await loader.load(controller.webView, url: server.baseURL.appendingPathComponent("mobile_app"))
+            try await Self.loadFixturePage(in: source, server: server)
             _ = try await controller.webView.evaluateJavaScript("window.deliveries = []; window.rownd = {user:{manageAccount(){ if(window.__rowndEmailChangeResume) deliveries.push(window.__rowndEmailChangeResume); delete window.__rowndEmailChangeResume; }}}; true")
             controller.webViewOnLoad(webView: controller.webView, targetPage: .manageAccount, jsFnOptions: nil)
             for _ in 0..<100 {
@@ -339,10 +340,8 @@ import WebKit
             Rownd.getInstance().bottomSheetController.viewDidDisappear(false)
             Rownd.resumeEmailChange(after: owner)
             let source = try #require(Rownd.getInstance().bottomSheetController.controller as? HubViewController)
-            source.loadViewIfNeeded()
             let web = source.hubWebController.webView
-            let loader = OwnershipPageLoader()
-            try await loader.load(web, url: server.baseURL.appendingPathComponent("mobile_app"))
+            try await Self.loadFixturePage(in: source, server: server)
             let saved = try #require(Rownd.emailChangeContinuation.record?.descriptor)
             let json = try saved.asJsonString()
             _ = try await web.evaluateJavaScript("window.addEventListener('rownd:email-change-handoff', e => window.rejection = e.detail.status); true")
@@ -380,10 +379,8 @@ import WebKit
             Rownd.resumeEmailChange(after: owner)
             let source = try #require(Rownd.getInstance().bottomSheetController.controller as? HubViewController)
             let saved = try #require(Rownd.emailChangeContinuation.record?.descriptor)
-            source.loadViewIfNeeded()
             let web = source.hubWebController.webView
-            let loader = OwnershipPageLoader()
-            try await loader.load(web, url: server.baseURL.appendingPathComponent("mobile_app"))
+            try await Self.loadFixturePage(in: source, server: server)
             _ = try await web.evaluateJavaScript("window.rownd = {user:{manageAccount(){}}}; true")
             source.hubWebController.webViewOnLoad(webView: web, targetPage: .manageAccount, jsFnOptions: nil)
             for _ in 0..<100 {
@@ -394,7 +391,8 @@ import WebKit
             #expect(Rownd.emailChangeContinuation.record == nil)
             // This fixture has no UIKit presenter to drive a hide completion.
             source.hostController = nil
-            Rownd.beginEmailChange(saved, source: source)
+            try #require(!Rownd.isSigningOut)
+            try #require(Rownd.beginEmailChange(saved, source: source))
             Rownd.getInstance().bottomSheetController.viewDidDisappear(false)
             for _ in 0..<500 where Rownd.isSigningOut { try await Task.sleep(nanoseconds: 10_000_000) }
             #expect(!Rownd.isSigningOut)
