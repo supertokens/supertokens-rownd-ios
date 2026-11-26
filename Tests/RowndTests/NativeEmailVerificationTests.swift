@@ -919,10 +919,11 @@ import Testing
 
     private enum ReplacementResponse: CaseIterable {
         case verified, restored, unrelatedUser, unrelatedTenant
+        case incompleteSuccess, incompleteError, installFailure
     }
 
     @Test(arguments: ReplacementResponse.allCases)
-    private func verificationAdmitsOnlySameUserAndTenantRegardlessOfOutcome(_ scenario: ReplacementResponse) async throws {
+    private func verificationAdoptsOrRevokesOnlySameOwnerReplacements(_ scenario: ReplacementResponse) async throws {
         let s0 = Self.token("s0", tenantID: "tenant")
         let s1 = Self.token(
             "s1",
@@ -930,10 +931,25 @@ import Testing
             tenantID: scenario == .unrelatedTenant ? "other-tenant" : "tenant"
         )
         let adopt = scenario == .verified || scenario == .restored
-        let response = Self.verificationResponse(
+        let reportSuccess = scenario == .verified || scenario == .incompleteSuccess || scenario == .installFailure
+        let revoke = scenario == .incompleteSuccess || scenario == .incompleteError || scenario == .installFailure
+        var issuedResponse = Self.verificationResponse(
             replacement: s1,
-            body: scenario == .verified ? #"{"status":"OK"}"# : #"{"status":"GENERAL_ERROR"}"#
+            body: reportSuccess ? #"{"status":"OK"}"# : #"{"status":"GENERAL_ERROR"}"#
         )
+        switch scenario {
+        case .incompleteSuccess:
+            issuedResponse.headers.removeValue(forKey: "St-Refresh-Token")
+        case .incompleteError:
+            issuedResponse.headers.removeValue(forKey: "Front-Token")
+        case .installFailure:
+            // Without `up`, the front token passes bridge identity checks but the SDK rejects it.
+            let expiry = Int64(Date(timeIntervalSinceNow: 3600).timeIntervalSince1970 * 1000)
+            issuedResponse.headers["Front-Token"] = Data(#"{"uid":"user","ate":\#(expiry)}"#.utf8).base64EncodedString()
+        default:
+            break
+        }
+        let response = issuedResponse
         let profile = UserStateResponse(data: ["email": AnyCodable("current@example.com")])
         let profileBody = String(decoding: try JSONEncoder().encode(profile), as: UTF8.self)
         let server = try await LocalHTTPServer.start { request in
@@ -980,6 +996,12 @@ import Testing
             let verification = try await server.nextRequest()
             #expect(verification.path.hasPrefix("/auth/user/email/verify?"))
             #expect(verification.headers["authorization"] == "Bearer \(s0)")
+            if revoke {
+                let signOut = try await server.nextRequest()
+                try #require(signOut.path == "/auth/signout")
+                #expect(signOut.headers["authorization"] == "Bearer \(s1)")
+                #expect(signOut.headers["anti-csrf"] == "issued-csrf")
+            }
             let followUp = try await server.nextRequest()
             #expect(followUp.path == (adopt ? "/auth/plugin/rownd/user" : "/auth/session/refresh"))
             #expect(followUp.headers["authorization"] == (adopt ? "Bearer \(s1)" : "Bearer refresh-s0"))
@@ -1202,8 +1224,10 @@ import Testing
             let rotated = Self.token("s1", expiry: 1800)
             let (start, store) = try await self.captureVerification(s0, storeToken: s0)
             guard case .installed(let installed) = await SuperTokensSessionBridge.installVerificationReplacement(
-                .init(accessToken: s1, refreshToken: "issued-refresh",
-                      frontToken: SuperTokensSessionBridge.buildFrontToken(from: s1), antiCSRF: nil),
+                accessToken: s1,
+                refreshToken: "issued-refresh",
+                frontToken: SuperTokensSessionBridge.buildFrontToken(from: s1),
+                antiCSRF: nil,
                 replacing: start
             ) else {
                 Issue.record("S1 could not be installed")

@@ -598,7 +598,7 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
             )
         }
     ) async -> NativeEmailVerificationCoordinator.Outcome {
-        var issued: SuperTokensSessionTokens?
+        var issued: (accessToken: String, antiCSRF: String?)?
         var installed: SuperTokensSessionBridge.SessionIdentity?
         do {
             let request = try nativeEmailVerificationRequest(
@@ -610,26 +610,25 @@ public class HubWebViewController: UIViewController, WKUIDelegate {
             let (data, response) = try await sendNativeAuthRequest(request, session: nativeEmailVerificationSession()) {
                 SuperTokensSessionBridge.canSendVerification(start)
             }
-            guard let accessToken = response.headerValue(named: "st-access-token"),
-                  let refreshToken = response.headerValue(named: "st-refresh-token"), !refreshToken.isEmpty,
-                  let frontToken = response.headerValue(named: "front-token"), !frontToken.isEmpty else {
+            guard let accessToken = response.headerValue(named: "st-access-token") else {
                 throw RowndError("Email verification did not return a replacement session")
             }
-            let tokens = SuperTokensSessionTokens(
-                accessToken: accessToken, refreshToken: refreshToken, frontToken: frontToken,
-                antiCSRF: response.headerValue(named: "anti-csrf")
+            let antiCSRF = response.headerValue(named: "anti-csrf")
+            let installation = await SuperTokensSessionBridge.installVerificationReplacement(
+                accessToken: accessToken,
+                refreshToken: response.headerValue(named: "st-refresh-token"),
+                frontToken: response.headerValue(named: "front-token"),
+                antiCSRF: antiCSRF,
+                replacing: start
             )
-            let identity: SuperTokensSessionBridge.SessionIdentity
-            switch await SuperTokensSessionBridge.installVerificationReplacement(tokens, replacing: start) {
-            case .rejected:
-                throw RowndError("Email verification could not install the replacement session")
-            case .superseded:
-                issued = tokens
-                throw RowndError("Email verification replacement session was superseded")
-            case .installed(let replacement):
-                identity = replacement
+            if case .notReplacement = installation {
+                throw RowndError("Email verification did not return a replacement session")
             }
-            issued = tokens
+            // Revoke only proven replacements we cannot keep, regardless of verification status.
+            issued = (accessToken, antiCSRF)
+            guard case .installed(let identity) = installation else {
+                throw RowndError("Email verification could not install the replacement session")
+            }
             installed = identity
             if try await syncReplacementState(identity, start) == .profileUnavailable {
                 await UserData.scheduleProfileHydrationRetry(for: identity.stable)
