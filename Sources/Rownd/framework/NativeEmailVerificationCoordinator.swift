@@ -1,38 +1,45 @@
 import Foundation
 import UIKit
 
-/// What the app held when a native verification started.
-///
-/// The Rownd store can legitimately lag the SDK (a soft-failed startup reconcile, a failed
-/// persist, or state reloaded from a shared keychain). Comparing against this snapshot
-/// keeps a store that merely never caught up from being mistaken for a newer session.
-struct NativeEmailVerificationStart: Sendable {
-    let permit: SuperTokensSessionBridge.AuthOperationPermit
-    let previousAccessToken: String?
-    let rowndAccessToken: String?
+struct NativeEmailVerificationEndpoint: Hashable, Sendable {
+    let apiDomain: String
+    let apiBasePath: String
+    let keychainAccessGroup: String?
 
-    var isPermitValid: Bool {
-        SuperTokensSessionBridge.isAuthOperationPermitValid(permit)
-    }
-
-    /// The store still follows this verification: it is on S0 or S1, or it has not moved
-    /// since the request started.
-    func storeFollowsVerification(_ rowndAccessToken: String?, issuedAccessToken: String?) -> Bool {
-        rowndAccessToken == self.rowndAccessToken
-            || SuperTokensSessionBridge.tokensBelongToSameSession(rowndAccessToken, self.rowndAccessToken)
-            || SuperTokensSessionBridge.tokensBelongToSameSession(rowndAccessToken, previousAccessToken)
-            || SuperTokensSessionBridge.tokensBelongToSameSession(rowndAccessToken, issuedAccessToken)
+    init(_ config: RowndSuperTokensConfig) {
+        apiDomain = config.apiDomain
+        apiBasePath = config.apiBasePath
+        keychainAccessGroup = config.keychainAccessGroup
     }
 }
 
-/// The server issued a session in the verification response, but it was not adopted.
-struct NativeEmailVerificationUnadoptedSessionError: Error, CustomStringConvertible {
-    let issuedAccessToken: String
-    let underlying: Error
+struct NativeEmailVerificationStart: Sendable {
+    let ownership: SuperTokensSessionBridge.VerificationOwnership
+    let tokens: SuperTokensSessionTokens
+    let owner: SuperTokensSessionBridge.StableSessionIdentity
+    let storeID: ObjectIdentifier
+    let rowndAccessToken: String?
+    let endpoint: NativeEmailVerificationEndpoint
 
-    // Keeps the issued token out of logs.
-    var description: String {
-        "Issued session was not adopted: \(String(describing: underlying))"
+    var previousAccessToken: String { tokens.accessToken }
+
+    @MainActor func mayCommit(issuedAccessToken: String? = nil) -> Bool {
+        let store = Context.currentContext.store
+        let currentToken = store.state.auth.accessToken
+        return !Rownd.isSigningOut
+            && SuperTokensSessionBridge.ownsVerification(ownership)
+            && endpoint == NativeEmailVerificationEndpoint(Rownd.config.supertokens)
+            && ObjectIdentifier(store) == storeID
+            && storeFollowsVerification(currentToken, issuedAccessToken: issuedAccessToken)
+    }
+
+    private func storeFollowsVerification(_ rowndAccessToken: String?, issuedAccessToken: String?) -> Bool {
+        // Startup reconciliation can hydrate S0 or clear its revoked credentials without a sign-in/out.
+        rowndAccessToken == nil
+            || rowndAccessToken == self.rowndAccessToken
+            || SuperTokensSessionBridge.tokensBelongToSameSession(rowndAccessToken, self.rowndAccessToken)
+            || SuperTokensSessionBridge.tokensBelongToSameSession(rowndAccessToken, previousAccessToken)
+            || SuperTokensSessionBridge.tokensBelongToSameSession(rowndAccessToken, issuedAccessToken)
     }
 }
 
@@ -51,8 +58,6 @@ actor NativeEmailVerificationCoordinator {
     enum FailureRecovery: Equatable, Sendable {
         /// The server still accepts the session that started the verification.
         case sessionRetained
-        /// The verification committed and its replacement session was adopted.
-        case replacementAdopted
         /// The server revoked the initiating session, so Rownd signed out.
         case signedOut
         /// The local session changed for unrelated reasons; nothing was touched.
@@ -66,10 +71,18 @@ actor NativeEmailVerificationCoordinator {
 
     static let shared = NativeEmailVerificationCoordinator()
 
-    private var inFlight: [HubWebViewController.NativeEmailVerificationParameters: Task<Outcome, Never>] = [:]
+    struct Key: Hashable, Sendable {
+        let parameters: HubWebViewController.NativeEmailVerificationParameters
+        let endpoint: NativeEmailVerificationEndpoint
+        let owner: SuperTokensSessionBridge.StableSessionIdentity
+        let ownership: SuperTokensSessionBridge.VerificationOwnership
+        let storeID: ObjectIdentifier
+    }
+
+    private var inFlight: [Key: Task<Outcome, Never>] = [:]
     private let beginBackgroundExecution: BeginBackgroundExecution
 
-    init(beginBackgroundExecution: @escaping BeginBackgroundExecution = NativeEmailVerificationCoordinator.beginApplicationBackgroundTask) {
+    init(beginBackgroundExecution: @escaping BeginBackgroundExecution = { beginApplicationBackgroundTask() }) {
         self.beginBackgroundExecution = beginBackgroundExecution
     }
 
@@ -91,10 +104,10 @@ actor NativeEmailVerificationCoordinator {
     /// it joins the running request instead of replaying it with a session the first
     /// request may already have revoked.
     func verify(
-        _ parameters: HubWebViewController.NativeEmailVerificationParameters,
+        _ key: Key,
         operation: @escaping @Sendable () async -> Outcome
     ) async -> Outcome {
-        if let running = inFlight[parameters] {
+        if let running = inFlight[key] {
             return await running.value
         }
         let beginBackgroundExecution = beginBackgroundExecution
@@ -103,10 +116,14 @@ actor NativeEmailVerificationCoordinator {
             defer { endBackgroundExecution() }
             return await operation()
         }
-        inFlight[parameters] = task
-        let outcome = await task.value
-        inFlight[parameters] = nil
-        return outcome
+        inFlight[key] = task
+        defer { inFlight[key] = nil }
+        return await task.value
+    }
+
+    func join(_ key: Key) async -> Outcome {
+        guard let running = inFlight[key] else { return .failed(.superseded) }
+        return await running.value
     }
 }
 

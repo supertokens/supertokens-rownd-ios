@@ -1,5 +1,6 @@
 import Foundation
 import AnyCodable
+import ReSwift
 @testable import SuperTokensIOS
 import Testing
 
@@ -184,155 +185,6 @@ import Testing
         }
     }
 
-    @Test func verificationSessionTraversesSuperTokensURLProtocol() {
-        let session = HubWebViewController.nativeEmailVerificationSession()
-        #expect(session.configuration.protocolClasses?.first == SuperTokensURLProtocol.self)
-    }
-
-    @Test func verificationRequiresOKResponseStatus() async throws {
-        let request = URLRequest(url: URL(string: "https://api.example.com/auth/user/email/verify")!)
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.protocolClasses = [EmailVerificationResponseURLProtocol.self]
-        let session = URLSession(configuration: configuration)
-
-        let oldAccessToken = generateJwt(
-            expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
-            sessionHandle: "old-session"
-        )
-        let newAccessToken = generateJwt(
-            expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
-            sessionHandle: "new-session"
-        )
-        EmailVerificationResponseURLProtocol.responseBody = #"{"status":"OK"}"#.data(using: .utf8)!
-        EmailVerificationResponseURLProtocol.replacementAccessToken = newAccessToken
-        _ = try await HubWebViewController.performNativeEmailVerification(
-            request: request,
-            session: session,
-            getAccessToken: accessTokenSequence(oldAccessToken, newAccessToken),
-            getRefreshToken: { "new-refresh-token" },
-            getFrontToken: { "new-front-token" },
-            syncReplacementState: { expectedAccessToken, previousAccessToken in
-                #expect(expectedAccessToken == newAccessToken)
-                #expect(previousAccessToken == oldAccessToken)
-                return .profileSynchronized
-            }
-        )
-
-        EmailVerificationResponseURLProtocol.responseBody = #"{"status":"EMAIL_VERIFICATION_INVALID_TOKEN_ERROR"}"#.data(using: .utf8)!
-        await #expect(throws: (any Error).self) {
-            try await HubWebViewController.performNativeEmailVerification(request: request, session: session)
-        }
-    }
-
-    @Test func verificationRejectsUnchangedOrMissingReplacementSession() async throws {
-        let request = URLRequest(url: URL(string: "https://api.example.com/auth/user/email/verify")!)
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.protocolClasses = [EmailVerificationResponseURLProtocol.self]
-        let session = URLSession(configuration: configuration)
-        EmailVerificationResponseURLProtocol.responseBody = #"{"status":"OK"}"#.data(using: .utf8)!
-
-        let sameAccessToken = generateJwt(
-            expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
-            sessionHandle: "same-session"
-        )
-        let oldAccessToken = generateJwt(
-            expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
-            sessionHandle: "old-session"
-        )
-        let newAccessToken = generateJwt(
-            expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
-            sessionHandle: "new-session"
-        )
-
-        EmailVerificationResponseURLProtocol.replacementAccessToken = sameAccessToken
-        await #expect(throws: (any Error).self) {
-            try await HubWebViewController.performNativeEmailVerification(
-                request: request,
-                session: session,
-                getAccessToken: accessTokenSequence(sameAccessToken, sameAccessToken),
-                getRefreshToken: { "refresh-token" },
-                getFrontToken: { "front-token" },
-                syncReplacementState: { _, _ in .profileSynchronized }
-            )
-        }
-        EmailVerificationResponseURLProtocol.replacementAccessToken = newAccessToken
-        await #expect(throws: (any Error).self) {
-            try await HubWebViewController.performNativeEmailVerification(
-                request: request,
-                session: session,
-                getAccessToken: accessTokenSequence(oldAccessToken, nil),
-                getRefreshToken: { "refresh-token" },
-                getFrontToken: { "front-token" },
-                syncReplacementState: { _, _ in .profileSynchronized }
-            )
-        }
-        await #expect(throws: (any Error).self) {
-            try await HubWebViewController.performNativeEmailVerification(
-                request: request,
-                session: session,
-                getAccessToken: accessTokenSequence(oldAccessToken, newAccessToken),
-                getRefreshToken: { nil },
-                getFrontToken: { "front-token" },
-                syncReplacementState: { _, _ in .profileSynchronized }
-            )
-        }
-        await #expect(throws: (any Error).self) {
-            try await HubWebViewController.performNativeEmailVerification(
-                request: request,
-                session: session,
-                getAccessToken: accessTokenSequence(oldAccessToken, newAccessToken),
-                getRefreshToken: { "refresh-token" },
-                getFrontToken: { "" },
-                syncReplacementState: { _, _ in .profileSynchronized }
-            )
-        }
-        await #expect(throws: (any Error).self) {
-            try await HubWebViewController.performNativeEmailVerification(
-                request: request,
-                session: session,
-                getAccessToken: accessTokenSequence(oldAccessToken, newAccessToken),
-                getRefreshToken: { "refresh-token" },
-                getFrontToken: { "front-token" },
-                syncReplacementState: { _, _ in
-                    throw RowndError("Replacement auth persistence failed")
-                }
-            )
-        }
-    }
-
-    @Test func verificationStillCompletesWhenReplacementProfileIsUnavailable() async throws {
-        let request = URLRequest(url: URL(string: "https://api.example.com/auth/user/email/verify")!)
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.protocolClasses = [EmailVerificationResponseURLProtocol.self]
-        let session = URLSession(configuration: configuration)
-        let oldAccessToken = generateJwt(
-            expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
-            sessionHandle: "old-session"
-        )
-        let newAccessToken = generateJwt(
-            expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
-            sessionHandle: "new-session"
-        )
-        EmailVerificationResponseURLProtocol.responseBody = #"{"status":"OK"}"#.data(using: .utf8)!
-        EmailVerificationResponseURLProtocol.replacementAccessToken = newAccessToken
-
-        var scheduledIdentity: SuperTokensSessionBridge.StableSessionIdentity?
-        let (_, response) = try await HubWebViewController.performNativeEmailVerification(
-            request: request,
-            session: session,
-            getAccessToken: accessTokenSequence(oldAccessToken, newAccessToken),
-            getRefreshToken: { "refresh-token" },
-            getFrontToken: { "front-token" },
-            syncReplacementState: { _, _ in .profileUnavailable },
-            scheduleProfileRetry: { scheduledIdentity = $0 }
-        )
-
-        #expect(response.statusCode == 200)
-        #expect(scheduledIdentity == SuperTokensSessionBridge.stableSessionIdentity(
-            from: newAccessToken
-        ))
-    }
-
     @Test(arguments: NativeVerificationFailure.allCases)
     func replacementProfileFailuresRetainS1(_ failure: NativeVerificationFailure) async throws {
         try await withNativeSessionHarness {
@@ -396,65 +248,6 @@ import Testing
                         == SuperTokensSessionBridge.stableSessionIdentity(from: s1AccessToken)
                 )
                 #expect(store.state.user.data.isEmpty)
-            }
-        }
-    }
-
-    @Test(arguments: NativeVerificationFailure.allCases)
-    func verificationTransportFailuresCannotClearExistingS1(
-        _ failure: NativeVerificationFailure
-    ) async throws {
-        try await withNativeSessionHarness {
-            let originalContext = Context.currentContext
-            let store = createStore()
-            _ = Context(store)
-            defer { Context.currentContext = originalContext }
-
-            let s1AccessToken = generateJwt(
-                expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
-                sessionHandle: "verification-failure-s1"
-            )
-            _ = try #require(await SuperTokensSessionBridge.adoptResponseSession(
-                SuperTokensSessionTokens(
-                    accessToken: s1AccessToken,
-                    refreshToken: "s1-refresh-token",
-                    frontToken: SuperTokensSessionBridge.buildFrontToken(from: s1AccessToken),
-                    antiCSRF: nil
-                ),
-                permit: SuperTokensSessionBridge.captureAuthOperationPermit()
-            ))
-            await MainActor.run {
-                store.dispatch(SetAuthState(payload: AuthState(accessToken: s1AccessToken)))
-                store.dispatch(SetUserState(payload: UserState(data: [
-                    "email": AnyCodable("verified-s1@example.com")
-                ])))
-            }
-            NativeVerificationFailureURLProtocol.failure = failure
-            defer { NativeVerificationFailureURLProtocol.failure = nil }
-            let configuration = URLSessionConfiguration.ephemeral
-            configuration.protocolClasses = [NativeVerificationFailureURLProtocol.self]
-            let session = URLSession(configuration: configuration)
-
-            await #expect(throws: (any Error).self) {
-                try await HubWebViewController.performNativeEmailVerification(
-                    request: URLRequest(
-                        url: URL(string: "https://api.example.com/auth/user/email/verify")!
-                    ),
-                    session: session,
-                    syncReplacementState: { _, _ in
-                        Issue.record("Failed verification must not synchronize replacement state")
-                        return .profileSynchronized
-                    }
-                )
-            }
-
-            #expect(await SuperTokensSessionBridge.getAccessToken() == s1AccessToken)
-            await MainActor.run {
-                #expect(store.state.auth.accessToken == s1AccessToken)
-                #expect(
-                    store.state.user.data["email"]?.value as? String
-                        == "verified-s1@example.com"
-                )
             }
         }
     }
@@ -880,46 +673,6 @@ import Testing
         }
     }
 
-    @Test func case11CancellationStopsVerificationTransportBeforeSynchronization() async throws {
-        CancellableEmailVerificationURLProtocol.reset()
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.protocolClasses = [CancellableEmailVerificationURLProtocol.self]
-        let session = URLSession(configuration: configuration)
-        let request = URLRequest(
-            url: URL(string: "https://api.example.com/auth/user/email/verify")!
-        )
-        let verification = Task {
-            try await HubWebViewController.performNativeEmailVerification(
-                request: request,
-                session: session,
-                getAccessToken: { "s0-access-token" },
-                syncReplacementState: { _, _ in
-                    Issue.record("Cancelled verification must not synchronize replacement state")
-                    return .profileSynchronized
-                }
-            )
-        }
-        guard await waitForSignal(
-            CancellableEmailVerificationURLProtocol.started,
-            timeout: 2
-        ) else {
-            verification.cancel()
-            _ = try? await verification.value
-            Issue.record("Verification transport did not start")
-            return
-        }
-
-        verification.cancel()
-
-        await #expect(throws: (any Error).self) {
-            try await verification.value
-        }
-        #expect(await waitForSignal(
-            CancellableEmailVerificationURLProtocol.stopped,
-            timeout: 2
-        ))
-    }
-
     @Test func backgroundThenForegroundKeepS1WhileBlockedReplacementFinishesStale() async throws {
         try await withNativeSessionHarness {
             UserData.fetchCoordinator.cancelCurrent()
@@ -1012,211 +765,6 @@ import Testing
         }
     }
 
-    @Test func cancellationAfterHeadersLetsOwnedReplacementSynchronizationFinish() async throws {
-        try await withNativeSessionHarness {
-            let originalContext = Context.currentContext
-            let store = createStore()
-            _ = Context(store)
-            defer { Context.currentContext = originalContext }
-            let s0AccessToken = generateJwt(
-                expires: Date(timeIntervalSinceNow: 1800).timeIntervalSince1970,
-                sessionHandle: "cancel-after-headers-s0"
-            )
-            let s1AccessToken = generateJwt(
-                expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
-                sessionHandle: "cancel-after-headers-s1"
-            )
-            await MainActor.run {
-                store.dispatch(SetAuthState(payload: AuthState(accessToken: s0AccessToken)))
-            }
-            _ = try #require(await SuperTokensSessionBridge.adoptResponseSession(
-                SuperTokensSessionTokens(
-                    accessToken: s1AccessToken,
-                    refreshToken: "s1-refresh-token",
-                    frontToken: SuperTokensSessionBridge.buildFrontToken(from: s1AccessToken),
-                    antiCSRF: nil
-                ),
-                permit: SuperTokensSessionBridge.captureAuthOperationPermit()
-            ))
-            EmailVerificationResponseURLProtocol.responseBody = #"{"status":"OK"}"#.data(using: .utf8)!
-            EmailVerificationResponseURLProtocol.replacementAccessToken = s1AccessToken
-            let configuration = URLSessionConfiguration.ephemeral
-            configuration.protocolClasses = [EmailVerificationResponseURLProtocol.self]
-            let session = URLSession(configuration: configuration)
-            let profileFetchStarted = NativeVerificationGate()
-            let releaseProfileFetch = NativeVerificationGate()
-            let verification = Task {
-                try await HubWebViewController.performNativeEmailVerification(
-                    request: URLRequest(
-                        url: URL(string: "https://api.example.com/auth/user/email/verify")!
-                    ),
-                    session: session,
-                    getAccessToken: accessTokenSequence(s0AccessToken, s1AccessToken),
-                    getRefreshToken: { "s1-refresh-token" },
-                    getFrontToken: { "s1-front-token" },
-                    syncReplacementState: { expected, previous in
-                        try await SuperTokensSessionBridge.syncReplacementRowndStateFromSuperTokens(
-                            expectedAccessToken: expected,
-                            expectedPreviousRowndAccessToken: previous,
-                            fetchUserData: { _ in
-                                await profileFetchStarted.open()
-                                await releaseProfileFetch.wait()
-                                return UserStateResponse(data: [
-                                    "email": AnyCodable("verified-s1@example.com")
-                                ])
-                            },
-                            persistState: { _ in true }
-                        )
-                    }
-                )
-            }
-            guard await waitForCondition(condition: { await profileFetchStarted.isOpen }) else {
-                await releaseProfileFetch.open()
-                verification.cancel()
-                _ = try? await verification.value
-                Issue.record("Replacement synchronization did not reach profile hydration")
-                return
-            }
-
-            verification.cancel()
-            await releaseProfileFetch.open()
-
-            _ = try await verification.value
-            #expect(await SuperTokensSessionBridge.getAccessToken() == s1AccessToken)
-            await MainActor.run {
-                #expect(store.state.auth.accessToken == s1AccessToken)
-                #expect(
-                    store.state.user.data["email"]?.value as? String
-                        == "verified-s1@example.com"
-                )
-            }
-        }
-    }
-
-    @Test func replayedSuccessfulVerificationCannotClearExistingS1() async throws {
-        try await withNativeSessionHarness {
-            let originalContext = Context.currentContext
-            let store = createStore()
-            _ = Context(store)
-            defer { Context.currentContext = originalContext }
-            let s1AccessToken = generateJwt(
-                expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
-                sessionHandle: "replayed-verification-s1"
-            )
-            _ = try #require(await SuperTokensSessionBridge.adoptResponseSession(
-                SuperTokensSessionTokens(
-                    accessToken: s1AccessToken,
-                    refreshToken: "s1-refresh-token",
-                    frontToken: SuperTokensSessionBridge.buildFrontToken(from: s1AccessToken),
-                    antiCSRF: nil
-                ),
-                permit: SuperTokensSessionBridge.captureAuthOperationPermit()
-            ))
-            await MainActor.run {
-                store.dispatch(SetAuthState(payload: AuthState(accessToken: s1AccessToken)))
-                store.dispatch(SetUserState(payload: UserState(data: [
-                    "email": AnyCodable("verified-s1@example.com")
-                ])))
-            }
-            EmailVerificationResponseURLProtocol.responseBody = #"{"status":"OK"}"#.data(using: .utf8)!
-            EmailVerificationResponseURLProtocol.replacementAccessToken = s1AccessToken
-            let configuration = URLSessionConfiguration.ephemeral
-            configuration.protocolClasses = [EmailVerificationResponseURLProtocol.self]
-            let session = URLSession(configuration: configuration)
-
-            await #expect(throws: (any Error).self) {
-                try await HubWebViewController.performNativeEmailVerification(
-                    request: URLRequest(
-                        url: URL(string: "https://api.example.com/auth/user/email/verify")!
-                    ),
-                    session: session,
-                    syncReplacementState: { _, _ in
-                        Issue.record("A replay must not synchronize the current session again")
-                        return .profileSynchronized
-                    }
-                )
-            }
-
-            #expect(await SuperTokensSessionBridge.getAccessToken() == s1AccessToken)
-            await MainActor.run {
-                #expect(store.state.auth.accessToken == s1AccessToken)
-                #expect(
-                    store.state.user.data["email"]?.value as? String
-                        == "verified-s1@example.com"
-                )
-            }
-        }
-    }
-
-    @Test func verificationAcceptsCurrentTokenRotationFromResponseSession() async throws {
-        let request = URLRequest(url: URL(string: "https://api.example.com/auth/user/email/verify")!)
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.protocolClasses = [EmailVerificationResponseURLProtocol.self]
-        let session = URLSession(configuration: configuration)
-        let oldAccessToken = generateJwt(
-            expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
-            sessionHandle: "old-session"
-        )
-        let responseAccessToken = generateJwt(
-            expires: Date(timeIntervalSinceNow: 1800).timeIntervalSince1970,
-            sessionHandle: "replacement-session"
-        )
-        let rotatedAccessToken = generateJwt(
-            expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
-            sessionHandle: "replacement-session"
-        )
-        EmailVerificationResponseURLProtocol.responseBody = #"{"status":"OK"}"#.data(using: .utf8)!
-        EmailVerificationResponseURLProtocol.replacementAccessToken = responseAccessToken
-
-        _ = try await HubWebViewController.performNativeEmailVerification(
-            request: request,
-            session: session,
-            getAccessToken: accessTokenSequence(oldAccessToken, rotatedAccessToken),
-            getRefreshToken: { "refresh-token" },
-            getFrontToken: { "front-token" },
-            syncReplacementState: { expectedAccessToken, previousAccessToken in
-                #expect(expectedAccessToken == responseAccessToken)
-                #expect(previousAccessToken == oldAccessToken)
-                return .profileSynchronized
-            }
-        )
-    }
-
-    @Test func verificationResponseCannotSynchronizeAConcurrentNewerSession() async throws {
-        let request = URLRequest(url: URL(string: "https://api.example.com/auth/user/email/verify")!)
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.protocolClasses = [EmailVerificationResponseURLProtocol.self]
-        let session = URLSession(configuration: configuration)
-        let oldAccessToken = generateJwt(
-            expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
-            sessionHandle: "old-session"
-        )
-        let verificationAccessToken = generateJwt(
-            expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
-            sessionHandle: "verification-session"
-        )
-        let newerAccessToken = generateJwt(
-            expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
-            sessionHandle: "newer-session"
-        )
-        EmailVerificationResponseURLProtocol.responseBody = #"{"status":"OK"}"#.data(using: .utf8)!
-        EmailVerificationResponseURLProtocol.replacementAccessToken = verificationAccessToken
-
-        await #expect(throws: (any Error).self) {
-            try await HubWebViewController.performNativeEmailVerification(
-                request: request,
-                session: session,
-                getAccessToken: accessTokenSequence(oldAccessToken, newerAccessToken),
-                getRefreshToken: { "newer-refresh-token" },
-                getFrontToken: { "newer-front-token" },
-                syncReplacementState: { _, _ in
-                    Issue.record("A stale verification response must not synchronize newer auth")
-                    return .profileSynchronized
-                }
-            )
-        }
-    }
-
     @Test func nativeResponseDeliveryRejectsChangedGenerationURLOrTargetPage() throws {
         let url = try #require(URL(string: "https://hub.example.com/account/verify-email?token=secret"))
 
@@ -1275,12 +823,9 @@ import Testing
         let started = NativeVerificationGate()
         let release = NativeVerificationGate()
         let finished = NativeVerificationGate()
-        let parameters = HubWebViewController.NativeEmailVerificationParameters(
-            token: "email-token",
-            pendingVerificationId: "pending-123"
-        )
+        let key = verificationKey()
         let requester = Task {
-            await coordinator.verify(parameters) {
+            await coordinator.verify(key) {
                 await started.open()
                 await release.wait()
                 #expect(!Task.isCancelled)
@@ -1305,233 +850,44 @@ import Testing
         let coordinator = NativeEmailVerificationCoordinator(beginBackgroundExecution: { {} })
         let attempts = NativeVerificationAttemptRecorder()
         let release = NativeVerificationGate()
-        let parameters = HubWebViewController.NativeEmailVerificationParameters(
-            token: "email-token",
-            pendingVerificationId: "pending-123"
-        )
+        let key = verificationKey()
         let operation: @Sendable () async -> NativeEmailVerificationCoordinator.Outcome = {
             await attempts.record()
             await release.wait()
             return .failed(.signedOut)
         }
 
-        let first = Task { await coordinator.verify(parameters, operation: operation) }
+        let first = Task { await coordinator.verify(key, operation: operation) }
         guard await waitForCondition(condition: { await attempts.count == 1 }) else {
             Issue.record("Verification did not start")
             await release.open()
             return
         }
-        let second = Task { await coordinator.verify(parameters, operation: operation) }
-        try? await Task.sleep(nanoseconds: 50_000_000)
+        let second = Task { await coordinator.verify(key, operation: operation) }
+        let otherFlights = NativeVerificationAttemptRecorder()
+        let otherOwner = Task {
+            await coordinator.verify(verificationKey(owner: "other-session")) {
+                await otherFlights.record()
+                return .verified
+            }
+        }
+        let otherEndpoint = Task {
+            await coordinator.verify(verificationKey(domain: "http://127.0.0.1:1234")) {
+                await otherFlights.record()
+                return .verified
+            }
+        }
+        #expect(await waitForCondition(condition: { await otherFlights.count == 2 }))
         await release.open()
 
+        #expect(await otherOwner.value == .verified)
+        #expect(await otherEndpoint.value == .verified)
         #expect(await first.value == .failed(.signedOut))
         #expect(await second.value == .failed(.signedOut))
         #expect(await attempts.count == 1)
 
-        _ = await coordinator.verify(parameters, operation: operation)
+        _ = await coordinator.verify(key, operation: operation)
         #expect(await attempts.count == 2)
-    }
-
-    @Test func failedVerificationRecoversFromTheSessionThatStartedIt() async {
-        let s0AccessToken = generateJwt(
-            expires: Date(timeIntervalSinceNow: 1800).timeIntervalSince1970,
-            sessionHandle: "run-s0"
-        )
-        var recoveredFrom: String?
-        let failed = await HubWebViewController.runNativeEmailVerification(
-            request: URLRequest(url: URL(string: "https://api.example.com/auth/user/email/verify")!),
-            getAccessToken: { s0AccessToken },
-            perform: { _, _ in throw URLError(.timedOut) },
-            recover: {
-                recoveredFrom = $0.previousAccessToken
-                return .signedOut
-            }
-        )
-        #expect(failed == .failed(.signedOut))
-        #expect(recoveredFrom == s0AccessToken)
-
-        let verified = await HubWebViewController.runNativeEmailVerification(
-            request: URLRequest(url: URL(string: "https://api.example.com/auth/user/email/verify")!),
-            getAccessToken: { s0AccessToken },
-            perform: { _, _ in },
-            recover: { _ in
-                Issue.record("A successful verification must not run failure recovery")
-                return .unresolved
-            }
-        )
-        #expect(verified == .verified)
-    }
-
-    @Test func failureRecoveryKeepsTheSessionWhenTheServerIsUnreachable() async {
-        let s0AccessToken = generateJwt(
-            expires: Date(timeIntervalSinceNow: 1800).timeIntervalSince1970,
-            sessionHandle: "unreachable-s0"
-        )
-        let recovery = await HubWebViewController.recoverFromFailedNativeEmailVerification(
-            start: verificationStart(previous: s0AccessToken),
-            validateSession: { .indeterminate },
-            getAccessToken: { s0AccessToken },
-            rowndAccessToken: { s0AccessToken },
-            adoptReplacement: { _, _ in
-                Issue.record("An unreachable server must not trigger adoption")
-                return .profileSynchronized
-            },
-            clearRevokedSession: { _, _ in
-                Issue.record("An unreachable server must not sign out")
-                return true
-            }
-        )
-        #expect(recovery == .unresolved)
-    }
-
-    @Test func failureRecoverySignsOutWhenTheServerRevokedTheSession() async {
-        let s0AccessToken = generateJwt(
-            expires: Date(timeIntervalSinceNow: 1800).timeIntervalSince1970,
-            sessionHandle: "revoked-s0"
-        )
-        var clearedSession: String?
-        let recovery = await HubWebViewController.recoverFromFailedNativeEmailVerification(
-            start: verificationStart(previous: s0AccessToken),
-            validateSession: { .revoked },
-            getAccessToken: { nil },
-            rowndAccessToken: { s0AccessToken },
-            clearRevokedSession: { revoked, _ in
-                clearedSession = revoked
-                return true
-            }
-        )
-        #expect(recovery == .signedOut)
-        #expect(clearedSession == s0AccessToken)
-    }
-
-    @Test func failureRecoveryRetainsAStillValidSession() async {
-        let s0AccessToken = generateJwt(
-            expires: Date(timeIntervalSinceNow: 1800).timeIntervalSince1970,
-            sessionHandle: "valid-s0"
-        )
-        let rotatedS0AccessToken = generateJwt(
-            expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
-            sessionHandle: "valid-s0"
-        )
-        let recovery = await HubWebViewController.recoverFromFailedNativeEmailVerification(
-            start: verificationStart(previous: s0AccessToken),
-            validateSession: { .valid },
-            getAccessToken: { rotatedS0AccessToken },
-            rowndAccessToken: { s0AccessToken },
-            adoptReplacement: { _, _ in
-                Issue.record("An unchanged session must not be adopted as a replacement")
-                return .profileSynchronized
-            }
-        )
-        #expect(recovery == .sessionRetained)
-    }
-
-    @Test func failureRecoveryAdoptsAReplacementTheTransportAlreadyStored() async {
-        let s0AccessToken = generateJwt(
-            expires: Date(timeIntervalSinceNow: 1800).timeIntervalSince1970,
-            sessionHandle: "stored-s0"
-        )
-        let s1AccessToken = generateJwt(
-            expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
-            sessionHandle: "stored-s1"
-        )
-        var adopted: (String, String?)?
-        var scheduledIdentity: SuperTokensSessionBridge.StableSessionIdentity?
-        let recovery = await HubWebViewController.recoverFromFailedNativeEmailVerification(
-            start: verificationStart(previous: s0AccessToken),
-            validateSession: { .valid },
-            getAccessToken: { s1AccessToken },
-            rowndAccessToken: { s0AccessToken },
-            adoptReplacement: {
-                adopted = ($0, $1.previousAccessToken)
-                return .profileUnavailable
-            },
-            scheduleProfileRetry: { scheduledIdentity = $0 }
-        )
-        #expect(recovery == .replacementAdopted)
-        #expect(adopted?.0 == s1AccessToken)
-        #expect(adopted?.1 == s0AccessToken)
-        #expect(scheduledIdentity == SuperTokensSessionBridge.stableSessionIdentity(from: s1AccessToken))
-    }
-
-    @Test func failureRecoveryIgnoresAnUnrelatedSignIn() async {
-        let s0AccessToken = generateJwt(
-            expires: Date(timeIntervalSinceNow: 1800).timeIntervalSince1970,
-            sessionHandle: "unrelated-s0"
-        )
-        let otherUserAccessToken = generateJwt(
-            expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
-            sessionHandle: "unrelated-other",
-            userId: "another-user"
-        )
-        let recovery = await HubWebViewController.recoverFromFailedNativeEmailVerification(
-            start: verificationStart(previous: s0AccessToken),
-            validateSession: { .valid },
-            getAccessToken: { otherUserAccessToken },
-            rowndAccessToken: { s0AccessToken },
-            adoptReplacement: { _, _ in
-                Issue.record("Another user's session must not be adopted")
-                return .profileSynchronized
-            }
-        )
-        #expect(recovery == .superseded)
-    }
-
-    @Test func serverValidationDistinguishesRevocationFromNetworkFailure() async throws {
-        try await withNativeSessionHarness {
-            let originalContext = Context.currentContext
-            let store = createStore()
-            _ = Context(store)
-            defer { Context.currentContext = originalContext }
-            let s0AccessToken = generateJwt(
-                expires: Date(timeIntervalSinceNow: 1800).timeIntervalSince1970,
-                sessionHandle: "validation-s0"
-            )
-            _ = try #require(await SuperTokensSessionBridge.adoptResponseSession(
-                SuperTokensSessionTokens(
-                    accessToken: s0AccessToken,
-                    refreshToken: "s0-refresh-token",
-                    frontToken: SuperTokensSessionBridge.buildFrontToken(from: s0AccessToken),
-                    antiCSRF: nil
-                ),
-                permit: SuperTokensSessionBridge.captureAuthOperationPermit()
-            ))
-            await MainActor.run {
-                store.dispatch(SetAuthState(payload: AuthState(accessToken: s0AccessToken)))
-            }
-
-            #expect(await SuperTokensSessionBridge.validateSessionWithServer(
-                refreshSession: { throw URLError(.notConnectedToInternet) }
-            ) == .indeterminate)
-            #expect(await SuperTokensSessionBridge.getAccessToken() == s0AccessToken)
-            #expect(await !SuperTokensSessionBridge.clearRowndSessionRevokedOnServer(
-                revokedAccessToken: s0AccessToken,
-                persistState: { _ in true }
-            ))
-
-            #expect(await SuperTokensSessionBridge.validateSessionWithServer(
-                refreshSession: { true }
-            ) == .valid)
-
-            // SuperTokens drops the local session when the server rejects its refresh.
-            #expect(await SuperTokensSessionBridge.validateSessionWithServer(
-                refreshSession: {
-                    _ = SuperTokens.clearSessionLocally()
-                    return false
-                }
-            ) == .revoked)
-            #expect(await !SuperTokensSessionBridge.doesSessionExist())
-
-            #expect(await SuperTokensSessionBridge.clearRowndSessionRevokedOnServer(
-                revokedAccessToken: s0AccessToken,
-                persistState: { _ in true }
-            ))
-            await MainActor.run {
-                #expect(store.state.auth.accessToken == nil)
-                #expect(!store.state.auth.isAuthenticated)
-            }
-        }
     }
 
     @Test func verificationKeepsTheAppRunningUntilItFinishes() async {
@@ -1540,11 +896,7 @@ import Testing
             return { BackgroundExecutionRecorder.shared.end() }
         })
         BackgroundExecutionRecorder.shared.reset()
-        let parameters = HubWebViewController.NativeEmailVerificationParameters(
-            token: "email-token",
-            pendingVerificationId: "pending-background"
-        )
-        let outcome = await coordinator.verify(parameters) {
+        let outcome = await coordinator.verify(verificationKey()) {
             #expect(BackgroundExecutionRecorder.shared.snapshot == (begun: 1, ended: 0))
             return .verified
         }
@@ -1557,313 +909,345 @@ import Testing
             HubWebViewController.nativeEmailVerificationSession()
                 === HubWebViewController.nativeEmailVerificationSession()
         )
+        #expect(HubWebViewController.nativeEmailVerificationSession().configuration.protocolClasses?
+            .contains(where: { $0 == SuperTokensURLProtocol.self }) == false)
     }
 
-    @Test func issuedSessionRevocationAuthenticatesWithTheIssuedSession() throws {
-        let request = try HubWebViewController.issuedSessionRevocationRequest(
-            issuedAccessToken: "issued-access-token",
-            apiDomain: "https://api.example.com",
-            apiBasePath: "/auth"
-        )
-        #expect(request.url?.absoluteString == "https://api.example.com/auth/signout")
-        #expect(request.httpMethod == "POST")
-        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer issued-access-token")
-        #expect(request.value(forHTTPHeaderField: "st-auth-mode") == "header")
+    private static let verificationParameters = HubWebViewController.NativeEmailVerificationParameters(
+        token: "email-token", pendingVerificationId: "pending-123"
+    )
+
+    private enum Interruption: CaseIterable {
+        case refresh401, signOut, signIn, signInThenSDKEmpty, hydrate, staleStore
     }
 
-    @Test func signOutDuringVerificationDiscardsAndRevokesTheIssuedSession() async throws {
-        let scenario = try await runVerificationInterruptedBy { s1, _ in
-            // Sign-out completes, then the transport stores the session the server issued.
-            SuperTokensSessionBridge.invalidateAuthOperationPermits()
-            SuperTokensSessionBridge.clearLocalSessionArtifacts()
-            Self.installSession(s1)
-        } rowndAfterInterruption: { _ in nil }
-
-        #expect(scenario.outcome == .failed(.superseded))
-        #expect(scenario.revoked == [scenario.s1])
-        #expect(!scenario.sdkHasSession)
-        #expect(scenario.rowndAccessToken == nil)
-    }
-
-    @Test func signInAsAnotherUserDuringVerificationKeepsTheirSession() async throws {
-        let scenario = try await runVerificationInterruptedBy { s1, otherUser in
-            // The issued session is stored first; the other user's sign-in then replaces it.
-            Self.installSession(s1)
-            Self.installSession(otherUser)
-        } rowndAfterInterruption: { otherUser in otherUser }
-
-        #expect(scenario.outcome == .failed(.superseded))
-        #expect(scenario.revoked == [scenario.s1])
-        #expect(scenario.sdkAccessToken == scenario.otherUser)
-        #expect(scenario.rowndAccessToken == scenario.otherUser)
-    }
-
-    @Test func issuedSessionOverwritingAnotherUsersSignInIsDiscarded() async throws {
-        let scenario = try await runVerificationInterruptedBy { s1, otherUser in
-            // The other user signs in first, then the late transport write overwrites them.
-            Self.installSession(otherUser)
-            Self.installSession(s1)
-        } rowndAfterInterruption: { otherUser in otherUser }
-
-        #expect(scenario.outcome == .failed(.superseded))
-        #expect(scenario.revoked == [scenario.s1])
-        #expect(!scenario.sdkHasSession)
-        // The other user's tokens were overwritten, so Rownd must not claim they are signed in.
-        #expect(scenario.rowndAccessToken == nil)
-    }
-
-    @Test func unhydratedStoreAtStartAdoptsTheIssuedSession() async throws {
-        let scenario = try await runVerificationInterruptedBy({ s1, _ in
-            // The transport stores S1; the store, empty since before the request, never moves.
-            Self.installSession(s1)
-        }, rowndAtStart: { _ in nil }, expectAdoption: true)
-
-        #expect(scenario.outcome == .verified)
-        #expect(scenario.revoked.isEmpty)
-        #expect(scenario.sdkAccessToken == scenario.s1)
-        #expect(scenario.rowndAccessToken == scenario.s1)
-    }
-
-    @Test func staleStoreAtStartAdoptsTheIssuedSession() async throws {
-        let stale = generateJwt(
-            expires: Date(timeIntervalSinceNow: -60).timeIntervalSince1970,
-            sessionHandle: "stale-store-session"
-        )
-        let scenario = try await runVerificationInterruptedBy({ s1, _ in
-            Self.installSession(s1)
-        }, rowndAtStart: { _ in stale }, expectAdoption: true)
-
-        #expect(scenario.outcome == .verified)
-        #expect(scenario.revoked.isEmpty)
-        #expect(scenario.sdkAccessToken == scenario.s1)
-        #expect(scenario.rowndAccessToken == scenario.s1)
-    }
-
-    @Test func signOutDuringVerificationWithAnUnhydratedStoreStillDiscards() async throws {
-        let scenario = try await runVerificationInterruptedBy({ s1, _ in
-            SuperTokensSessionBridge.invalidateAuthOperationPermits()
-            SuperTokensSessionBridge.clearLocalSessionArtifacts()
-            Self.installSession(s1)
-        }, rowndAtStart: { _ in nil })
-
-        #expect(scenario.outcome == .failed(.superseded))
-        #expect(scenario.revoked == [scenario.s1])
-        #expect(!scenario.sdkHasSession)
-        #expect(scenario.rowndAccessToken == nil)
-    }
-
-    @Test func supersessionOnlyCountsChangesDuringTheRequest() {
-        let s0 = generateJwt(expires: Date(timeIntervalSinceNow: 1800).timeIntervalSince1970, sessionHandle: "rule-s0")
-        let s1 = generateJwt(expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970, sessionHandle: "rule-s1")
-        let other = generateJwt(expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970, sessionHandle: "rule-other")
-        let stale = generateJwt(expires: Date(timeIntervalSinceNow: -60).timeIntervalSince1970, sessionHandle: "rule-stale")
-        func superseded(storeAtStart: String?, storeNow: String?, sdk: String?, permitValid: Bool = true) -> Bool {
-            HubWebViewController.isSupersededDuringRequest(
-                NativeEmailVerificationStart(
-                    permit: SuperTokensSessionBridge.captureAuthOperationPermit(),
-                    previousAccessToken: s0,
-                    rowndAccessToken: storeAtStart
-                ),
-                issuedAccessToken: s1,
-                isPermitValid: permitValid,
-                sdkAccessToken: sdk,
-                rowndAccessToken: storeNow
-            )
-        }
-
-        #expect(!superseded(storeAtStart: nil, storeNow: nil, sdk: s1))
-        #expect(!superseded(storeAtStart: stale, storeNow: stale, sdk: s1))
-        #expect(!superseded(storeAtStart: s0, storeNow: s1, sdk: s1))
-        #expect(superseded(storeAtStart: nil, storeNow: nil, sdk: s1, permitValid: false))
-        #expect(superseded(storeAtStart: nil, storeNow: nil, sdk: other))
-        #expect(superseded(storeAtStart: s0, storeNow: other, sdk: s1))
-        #expect(superseded(storeAtStart: s0, storeNow: nil, sdk: s1))
-        #expect(superseded(storeAtStart: nil, storeNow: other, sdk: s1))
-    }
-
-    @Test func failureRecoveryAdoptsForAStoreThatNeverHydrated() async {
-        let s0AccessToken = generateJwt(
-            expires: Date(timeIntervalSinceNow: 1800).timeIntervalSince1970,
-            sessionHandle: "recovery-unhydrated-s0"
-        )
-        let s1AccessToken = generateJwt(
-            expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
-            sessionHandle: "recovery-unhydrated-s1"
-        )
-        var adopted: String?
-        let recovery = await HubWebViewController.recoverFromFailedNativeEmailVerification(
-            start: NativeEmailVerificationStart(
-                permit: SuperTokensSessionBridge.captureAuthOperationPermit(),
-                previousAccessToken: s0AccessToken,
-                rowndAccessToken: nil
-            ),
-            validateSession: { .valid },
-            getAccessToken: { s1AccessToken },
-            rowndAccessToken: { nil },
-            adoptReplacement: { token, _ in
-                adopted = token
-                return .profileSynchronized
-            }
-        )
-        #expect(recovery == .replacementAdopted)
-        #expect(adopted == s1AccessToken)
-    }
-
-    @Test func revocationCleanupLeavesANewerRowndSessionAlone() async throws {
-        try await withNativeSessionHarness {
-            let originalContext = Context.currentContext
-            let store = createStore()
-            _ = Context(store)
-            defer { Context.currentContext = originalContext }
-            let s0AccessToken = generateJwt(
-                expires: Date(timeIntervalSinceNow: 1800).timeIntervalSince1970,
-                sessionHandle: "cleanup-s0"
-            )
-            let s1AccessToken = generateJwt(
-                expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
-                sessionHandle: "cleanup-s1"
-            )
-            await MainActor.run {
-                store.dispatch(SetAuthState(payload: AuthState(accessToken: s1AccessToken)))
-            }
-
-            #expect(await !SuperTokensSessionBridge.clearRowndSessionRevokedOnServer(
-                revokedAccessToken: s0AccessToken,
-                persistState: { _ in true }
-            ))
-            await MainActor.run {
-                #expect(store.state.auth.accessToken == s1AccessToken)
+    @Test(arguments: Interruption.allCases)
+    private func verificationUsesCapturedCredentialsAndAdoptsOrRevokesS1(_ interruption: Interruption) async throws {
+        let s0 = Self.token("s0")
+        let s1 = Self.token("s1")
+        let b = Self.token("b", userID: "other-user")
+        let verificationResponse = Self.verificationResponse(replacement: s1)
+        let releaseVerification = NativeVerificationGate()
+        let server = try await LocalHTTPServer.start { request in
+            switch request.path {
+            case "/auth/protected", "/auth/session/refresh": return .init(statusCode: 401, headers: [:])
+            case "/auth/signout": return .init()
+            default:
+                await releaseVerification.wait()
+                return verificationResponse
             }
         }
-    }
-
-    private struct InterruptedVerification {
-        let s1: String
-        let otherUser: String
-        let outcome: NativeEmailVerificationCoordinator.Outcome
-        let revoked: [String]
-        let sdkHasSession: Bool
-        let sdkAccessToken: String?
-        let rowndAccessToken: String?
-    }
-
-    private static func installSession(_ accessToken: String) {
-        _ = SuperTokens.installSession(
-            accessToken: accessToken,
-            refreshToken: "refresh-\(accessToken.suffix(8))",
-            frontToken: SuperTokensSessionBridge.buildFrontToken(from: accessToken)
-        )
-    }
-
-    /// Runs a verification for S0 whose server response issues S1, with `interruption`
-    /// applied to the SDK while the request is in flight.
-    /// `rowndAtStart` models a store that may lag the SDK; a nil `rowndAfterInterruption`
-    /// leaves the store untouched.
-    private func runVerificationInterruptedBy(
-        _ interruption: @escaping (_ s1: String, _ otherUser: String) -> Void,
-        rowndAtStart: @escaping (_ s0: String) -> String? = { $0 },
-        rowndAfterInterruption: ((_ otherUser: String) -> String?)? = nil,
-        expectAdoption: Bool = false
-    ) async throws -> InterruptedVerification {
-        var scenario: InterruptedVerification?
-        try await withNativeSessionHarness {
-            let originalContext = Context.currentContext
-            let store = createStore()
-            _ = Context(store)
-            defer {
-                InterruptingEmailVerificationURLProtocol.interruption = nil
-                Context.currentContext = originalContext
+        defer { server.stop() }
+        try await withNativeSessionHarness(apiDomain: server.baseURL.absoluteString) {
+            let (start, store) = try await self.captureVerification(
+                s0,
+                storeToken: interruption == .hydrate ? nil : interruption == .staleStore ? Self.token("stale") : s0
+            )
+            let operation = Task {
+                await HubWebViewController.runNativeEmailVerification(
+                    parameters: Self.verificationParameters,
+                    start: start,
+                    syncReplacementState: { identity, start in
+                        try await SuperTokensSessionBridge.syncReplacementRowndStateFromSuperTokens(
+                            expectedAccessToken: identity.accessToken,
+                            expectedPreviousRowndAccessToken: s0,
+                            fetchUserData: { _ in UserStateResponse(data: ["email": AnyCodable("verified@example.com")]) },
+                            persistState: { _ in true },
+                            start: start,
+                            installedIdentity: identity
+                        )
+                    }
+                )
             }
-            let s0 = generateJwt(
-                expires: Date(timeIntervalSinceNow: 1800).timeIntervalSince1970,
-                sessionHandle: "interrupted-s0"
-            )
-            let s1 = generateJwt(
-                expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
-                sessionHandle: "interrupted-s1"
-            )
-            let otherUser = generateJwt(
-                expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970,
-                sessionHandle: "interrupted-other",
-                userId: "another-user"
-            )
-            Self.installSession(s0)
-            let rowndStart = rowndAtStart(s0)
-            await MainActor.run {
-                store.dispatch(SetAuthState(payload: AuthState(accessToken: rowndStart)))
-            }
-            let rowndAfter = rowndAfterInterruption.map { $0(otherUser) }
-            InterruptingEmailVerificationURLProtocol.issuedAccessToken = s1
-            InterruptingEmailVerificationURLProtocol.interruption = {
-                interruption(s1, otherUser)
-                if let rowndAfter {
-                    DispatchQueue.main.sync {
-                        store.dispatch(SetAuthState(payload: AuthState(accessToken: rowndAfter)))
+            let adopt = [.refresh401, .hydrate, .staleStore].contains(interruption)
+            do {
+                let request = try await server.nextRequest()
+                #expect(request.path == "/auth/user/email/verify?rowndPendingVerificationId=pending-123")
+                #expect(request.headers["authorization"] == "Bearer \(s0)")
+                #expect(request.headers["anti-csrf"] == "csrf-s0")
+                #expect(request.headers["st-auth-mode"] == "header")
+                #expect(request.headers["fdi-version"] == nil)
+
+                switch interruption {
+                case .refresh401:
+                    // The globally registered interceptor's real refresh 401 advances
+                    // the SDK generation before verification responds.
+                    await #expect(throws: (any Error).self) {
+                        try await URLSession.shared.data(from: server.baseURL.appendingPathComponent("auth/protected"))
+                    }
+                    let protected = try await server.nextRequest()
+                    #expect(protected.path == "/auth/protected")
+                    #expect(protected.headers["authorization"] == "Bearer \(s0)")
+                    #expect(try await server.nextRequest().path == "/auth/session/refresh")
+                    #expect(SuperTokens.getRefreshToken() == nil)
+                    let reloadKey = await SuperTokensSessionBridge.emailVerificationJoinKey(
+                        parameters: Self.verificationParameters, endpoint: start.endpoint
+                    )
+                    #expect(reloadKey == .init(
+                        parameters: Self.verificationParameters, endpoint: start.endpoint,
+                        owner: start.owner, ownership: start.ownership, storeID: start.storeID
+                    ))
+                case .signOut:
+                    SuperTokensSessionBridge.invalidateForSignOut()
+                    _ = SuperTokensSessionBridge.clearLocalSessionArtifacts()
+                    await MainActor.run { store.dispatch(SetAuthState(payload: AuthState())) }
+                case .signIn:
+                    try await self.signIn(b)
+                    await MainActor.run {
+                        store.dispatch(SetAuthState(payload: AuthState(accessToken: b)))
+                        Rownd.config.supertokens.apiBasePath = "/wrong-api"
+                    }
+                case .signInThenSDKEmpty:
+                    try await self.signIn(b)
+                    _ = SuperTokensSessionBridge.clearLocalSessionArtifacts()
+                case .hydrate:
+                    await MainActor.run { store.dispatch(SetAuthState(payload: AuthState(accessToken: s0))) }
+                case .staleStore:
+                    break
+                }
+                await releaseVerification.open()
+                #expect(await operation.value == (adopt ? .verified : .failed(.superseded)))
+                if adopt {
+                    #expect(SuperTokens.getRefreshToken() == "issued-refresh")
+                    #expect(SuperTokens.getFrontToken() == verificationResponse.headers["Front-Token"])
+                    #expect(SuperTokens.getAntiCSRF() == "issued-csrf")
+                    #expect(await SuperTokensSessionBridge.getAccessToken() == s1)
+                    #expect(await MainActor.run { store.state.auth.accessToken } == s1)
+                    #expect(await MainActor.run { store.state.user.data["email"]?.value as? String } == "verified@example.com")
+                } else {
+                    let revoke = try await server.nextRequest()
+                    #expect(revoke.path == "/auth/signout")
+                    #expect(revoke.headers["authorization"] == "Bearer \(s1)")
+                    #expect(revoke.headers["anti-csrf"] == "issued-csrf")
+                    #expect(await SuperTokensSessionBridge.getAccessToken() == (interruption == .signIn ? b : nil))
+                    if interruption == .signIn {
+                        #expect(await MainActor.run { store.state.auth.accessToken } == b)
                     }
                 }
+            } catch {
+                await releaseVerification.open()
+                _ = await operation.value
+                throw error
             }
-            let configuration = URLSessionConfiguration.ephemeral
-            configuration.protocolClasses = [InterruptingEmailVerificationURLProtocol.self]
-            let session = URLSession(configuration: configuration)
+        }
+    }
 
-            var revoked: [String] = []
-            let outcome = await HubWebViewController.runNativeEmailVerification(
-                request: URLRequest(url: URL(string: "https://api.example.com/auth/user/email/verify")!),
-                perform: { request, start in
-                    _ = try await HubWebViewController.performNativeEmailVerification(
-                        request: request,
-                        session: session,
-                        syncReplacementState: { expected, previous in
-                            try await SuperTokensSessionBridge.syncReplacementRowndStateFromSuperTokens(
-                                expectedAccessToken: expected,
-                                expectedPreviousRowndAccessToken: previous,
-                                fetchUserData: { _ in
-                                    if !expectAdoption {
-                                        Issue.record("A superseded verification must not fetch a profile")
-                                    }
-                                    return UserStateResponse(data: ["email": AnyCodable("new@example.com")])
-                                },
-                                persistState: { _ in true },
-                                start: start
-                            )
-                        },
-                        scheduleProfileRetry: { _ in }
-                    )
+    @Test func queuedVerificationCannotSendWithAnotherOwnersSession() async throws {
+        let server = try await LocalHTTPServer.start()
+        defer { server.stop() }
+        try await withNativeSessionHarness(apiDomain: server.baseURL.absoluteString) {
+            let (start, _) = try await self.captureVerification(Self.token("a"))
+            try await self.signIn(Self.token("b"))
+            let result = await HubWebViewController.runNativeEmailVerification(
+                parameters: Self.verificationParameters, start: start
+            )
+            #expect(result == .failed(.superseded))
+            #expect(try await server.nextRequestIfAvailable() == nil)
+        }
+    }
+
+    @Test(arguments: [200, 307, 503])
+    func revocationTransportRequires2xxAndNeverFollowsRedirects(_ status: Int) async throws {
+        let server = try await LocalHTTPServer.start { _ in
+            .init(statusCode: status, headers: ["Location": "/must-not-follow", "front-token": "remove"])
+        }
+        defer { server.stop() }
+        try await withNativeSessionHarness(apiDomain: server.baseURL.absoluteString) {
+            let active = Self.token("active")
+            let issued = Self.token("issued")
+            let (start, _) = try await self.captureVerification(active)
+            #expect(await HubWebViewController.revokeIssuedSession(
+                issuedAccessToken: issued, antiCSRF: nil, endpoint: start.endpoint
+            ) == (status == 200))
+            let request = try await server.nextRequest()
+            #expect(request.path == "/auth/signout")
+            #expect(request.headers["authorization"] == "Bearer \(issued)")
+            #expect(request.headers["anti-csrf"] == nil)
+            #expect(try await server.nextRequestIfAvailable() == nil)
+            #expect(await SuperTokensSessionBridge.getAccessToken() == active)
+        }
+    }
+
+    @Test(arguments: [401, 503, nil] as [Int?])
+    func recoveryDistinguishesReal401FromTemporaryFailuresWithExpiredAccess(_ status: Int?) async throws {
+        let server = try await LocalHTTPServer.start { _ in .init(statusCode: status ?? 503, headers: [:]) }
+        defer { server.stop() }
+        try await withNativeSessionHarness(apiDomain: server.baseURL.absoluteString) {
+            let s0 = Self.token("expired", expiry: -60)
+            let (start, store) = try await self.captureVerification(s0, storeToken: s0)
+            #expect(start.previousAccessToken == s0)
+            if status == nil { server.stop() }
+            let outcome = await HubWebViewController.recoverFromFailedNativeEmailVerification(start: start)
+            #expect(outcome == (status == 401 ? .signedOut : .unresolved))
+            #expect(SuperTokens.getRefreshToken() == (status == 401 ? nil : "refresh-expired"))
+            #expect(await MainActor.run { store.state.auth.accessToken } == (status == 401 ? nil : s0))
+            if status != nil {
+                let request = try await server.nextRequest()
+                #expect(request.path == "/auth/session/refresh")
+                #expect(request.headers["authorization"] == "Bearer refresh-expired")
+                #expect(try await server.nextRequestIfAvailable() == nil)
+            }
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func revocationCleanupDoesNotClearSignInDuringMainActorHandoff(_ sdkCleared: Bool) async throws {
+        try await withNativeSessionHarness {
+            let a = Self.token("a")
+            let (start, store) = try await self.captureVerification(a, storeToken: a)
+            _ = SuperTokensSessionBridge.clearLocalSessionArtifacts()
+            let b = Self.token("b")
+            var didSignIn = false
+            let cleared = await SuperTokensSessionBridge.clearRowndSessionRevokedOnServer(
+                start,
+                beforeCommit: {
+                    do {
+                        try await self.signIn(b)
+                        didSignIn = true
+                    } catch {
+                        Issue.record("Could not install B's session: \(error)")
+                    }
+                    await MainActor.run { store.dispatch(SetAuthState(payload: AuthState(accessToken: b))) }
+                    if sdkCleared { _ = SuperTokensSessionBridge.clearLocalSessionArtifacts() }
                 },
-                recover: { _ in
-                    Issue.record("This verification must not reach failure recovery")
-                    return .unresolved
-                },
-                discardIssuedSession: {
-                    await HubWebViewController.discardUnadoptedIssuedSession(
-                        issuedAccessToken: $0,
-                        clearUnbackedRowndSession: {
-                            await SuperTokensSessionBridge.clearRowndSessionWithoutSuperTokensSession(
-                                persistState: { _ in true }
-                            )
-                        },
-                        revoke: { revoked.append($0) }
-                    )
+                persistState: { _ in
+                    Issue.record("Revocation cleanup persisted over the newly signed-in user")
+                    return false
                 }
             )
-            scenario = InterruptedVerification(
-                s1: s1,
-                otherUser: otherUser,
-                outcome: outcome,
-                revoked: revoked,
-                sdkHasSession: await SuperTokensSessionBridge.doesSessionExist(),
-                sdkAccessToken: await SuperTokensSessionBridge.getAccessToken(),
-                rowndAccessToken: await MainActor.run { store.state.auth.accessToken }
-            )
+            #expect(!cleared)
+            #expect(didSignIn)
+            #expect(await MainActor.run { store.state.auth.accessToken } == b)
+            #expect(await SuperTokensSessionBridge.getAccessToken() == (sdkCleared ? nil : b))
         }
-        return try #require(scenario)
+    }
+
+    @Test func replacementTokenRotationCannotWriteAfterSignOutStarts() async throws {
+        try await withNativeSessionHarness {
+            let s0 = Self.token("s0")
+            let s1 = Self.token("s1")
+            let rotated = Self.token("s1", expiry: 1800)
+            let (start, store) = try await self.captureVerification(s0, storeToken: s0)
+            let installed = try #require(await SuperTokensSessionBridge.installVerificationReplacement(
+                .init(accessToken: s1, refreshToken: "issued-refresh",
+                      frontToken: SuperTokensSessionBridge.buildFrontToken(from: s1), antiCSRF: nil),
+                replacing: start
+            ))
+            await #expect(throws: RowndError.self) {
+                try await SuperTokensSessionBridge.syncReplacementRowndStateFromSuperTokens(
+                    expectedAccessToken: s1,
+                    expectedPreviousRowndAccessToken: s0,
+                    fetchUserData: { _ in
+                        SuperTokensSessionBridge.invalidateForSignOut()
+                        #expect(SuperTokens.installSession(
+                            accessToken: rotated,
+                            refreshToken: "rotated-refresh",
+                            frontToken: SuperTokensSessionBridge.buildFrontToken(from: rotated)
+                        ))
+                        return nil
+                    },
+                    persistState: { candidate in
+                        #expect(candidate.auth.accessToken == s1)
+                        return true
+                    },
+                    start: start,
+                    installedIdentity: installed
+                )
+            }
+            #expect(await MainActor.run { store.state.auth.accessToken } == s1)
+        }
+    }
+
+    @Test(arguments: [200, 307, 503])
+    func failedOrReplayedVerificationNeverInstallsOrFollowsRedirects(_ status: Int) async throws {
+        let s0 = Self.token("s0")
+        let server = try await LocalHTTPServer.start { request in
+            if request.path == "/auth/session/refresh" { return .init(headers: [:]) }
+            return .init(statusCode: status, headers: [
+                "Location": "/must-not-follow",
+                "St-Access-Token": s0,
+                "St-Refresh-Token": "must-not-install",
+                "Front-Token": SuperTokensSessionBridge.buildFrontToken(from: s0)
+            ])
+        }
+        defer { server.stop() }
+        try await withNativeSessionHarness(apiDomain: server.baseURL.absoluteString) {
+            let (start, store) = try await self.captureVerification(s0, storeToken: s0)
+            #expect(await HubWebViewController.runNativeEmailVerification(
+                parameters: Self.verificationParameters, start: start,
+                syncReplacementState: { _, _ in
+                    Issue.record("A failed or replayed verification must not synchronize auth")
+                    return .profileSynchronized
+                }
+            ) == .failed(.sessionRetained))
+            #expect(try await server.nextRequest().path.hasPrefix("/auth/user/email/verify?"))
+            #expect(try await server.nextRequest().path == "/auth/session/refresh")
+            #expect(try await server.nextRequestIfAvailable() == nil)
+            #expect(SuperTokens.getRefreshToken() == "refresh-s0")
+            #expect(await MainActor.run { store.state.auth.accessToken } == s0)
+        }
+    }
+
+    private static func token(_ handle: String, expiry: TimeInterval = 3600, userID: String = "user") -> String {
+        generateJwt(expires: Date(timeIntervalSinceNow: expiry).timeIntervalSince1970, sessionHandle: handle, userId: userID)
+    }
+
+    private static func verificationResponse(replacement: String) -> LocalHTTPServer.Response {
+        .init(headers: [
+            "St-Access-Token": replacement,
+            "St-Refresh-Token": "issued-refresh",
+            "Front-Token": SuperTokensSessionBridge.buildFrontToken(from: replacement),
+            "Anti-Csrf": "issued-csrf"
+        ])
+    }
+
+    private func signIn(_ accessToken: String) async throws {
+        _ = try #require(await SuperTokensSessionBridge.adoptResponseSession(
+            .init(accessToken: accessToken, refreshToken: "sign-in-refresh",
+                  frontToken: SuperTokensSessionBridge.buildFrontToken(from: accessToken), antiCSRF: nil),
+            permit: SuperTokensSessionBridge.captureAuthOperationPermit()
+        ))
+    }
+
+    @MainActor private func captureVerification(
+        _ accessToken: String,
+        storeToken: String? = nil
+    ) throws -> (NativeEmailVerificationStart, Store<RowndState>) {
+        let owner = try #require(SuperTokensSessionBridge.stableSessionIdentity(from: accessToken))
+        #expect(SuperTokens.installSession(
+            accessToken: accessToken,
+            refreshToken: "refresh-\(owner.sessionHandle)",
+            frontToken: SuperTokensSessionBridge.buildFrontToken(from: accessToken),
+            antiCSRFToken: "csrf-\(owner.sessionHandle)"
+        ))
+        let store = Context.currentContext.store
+        store.dispatch(SetAuthState(payload: AuthState(accessToken: storeToken)))
+        return (try #require(SuperTokensSessionBridge.captureEmailVerification(
+            endpoint: .init(Rownd.config.supertokens)
+        )), store)
+    }
+
+    private func verificationKey(
+        owner: String = "initial-session",
+        domain: String = "http://127.0.0.1"
+    ) -> NativeEmailVerificationCoordinator.Key {
+        .init(
+            parameters: Self.verificationParameters,
+            endpoint: .init(.init(appName: "test", apiDomain: domain, apiBasePath: "/auth")),
+            owner: .init(sessionHandle: owner, userId: "user", tenantId: nil),
+            ownership: SuperTokensSessionBridge.captureVerificationOwnership(),
+            storeID: ObjectIdentifier(Self.self)
+        )
     }
 
     private func withNativeSessionHarness(
+        apiDomain: String = "https://api.example.com",
         _ operation: @escaping () async throws -> Void
     ) async throws {
         try await withGlobalTestLock {
             let originalConfig = Rownd.config
+            let originalContext = Context.currentContext
+            _ = Context(createStore())
             let originalInitialized = Rownd.isSuperTokensInitialized
             await UserData.profileHydrationRetryCoordinator.cancel()
             UserData.fetchCoordinator.cancelCurrent()
@@ -1872,7 +1256,7 @@ import Testing
             Rownd.isSuperTokensInitialized = false
             Rownd.config.supertokens = RowndSuperTokensConfig(
                 appName: "Native verification tests",
-                apiDomain: "https://api.example.com",
+                apiDomain: apiDomain,
                 apiBasePath: "/auth"
             )
             _ = try Rownd.initializeSuperTokensIfNeeded()
@@ -1887,6 +1271,7 @@ import Testing
                 SuperTokensSessionBridge.storageOverride = nil
                 SuperTokens.resetForTests()
                 Rownd.config = originalConfig
+                Context.currentContext = originalContext
                 Rownd.isSuperTokensInitialized = originalInitialized
             }
             do {
@@ -1919,18 +1304,6 @@ import Testing
         }
     }
 
-    private func waitForSignal(
-        _ semaphore: DispatchSemaphore,
-        timeout: TimeInterval
-    ) async -> Bool {
-        await withCheckedContinuation { continuation in
-            DispatchQueue.global().asyncAfter(deadline: .now()) {
-                continuation.resume(
-                    returning: semaphore.wait(timeout: .now() + timeout) == .success
-                )
-            }
-        }
-    }
 }
 
 private actor ReplacementProfileResponseSequence {
@@ -2045,67 +1418,6 @@ enum NativeVerificationFailure: CaseIterable {
     }
 }
 
-private func verificationStart(
-    previous: String?,
-    rownd: String? = nil
-) -> NativeEmailVerificationStart {
-    NativeEmailVerificationStart(
-        permit: SuperTokensSessionBridge.captureAuthOperationPermit(),
-        previousAccessToken: previous,
-        rowndAccessToken: rownd ?? previous
-    )
-}
-
-private func accessTokenSequence(_ values: String?...) -> () async -> String? {
-    var values = values
-    return { values.removeFirst() }
-}
-
-private final class EmailVerificationResponseURLProtocol: URLProtocol {
-    static var responseBody = Data()
-    static var replacementAccessToken: String?
-
-    override class func canInit(with request: URLRequest) -> Bool { true }
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
-
-    override func startLoading() {
-        var headerFields = ["Content-Type": "application/json"]
-        headerFields["st-access-token"] = Self.replacementAccessToken
-        let response = HTTPURLResponse(
-            url: request.url!,
-            statusCode: 200,
-            httpVersion: nil,
-            headerFields: headerFields
-        )!
-        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: Self.responseBody)
-        client?.urlProtocolDidFinishLoading(self)
-    }
-
-    override func stopLoading() {}
-}
-
-private final class CancellableEmailVerificationURLProtocol: URLProtocol {
-    static var started = DispatchSemaphore(value: 0)
-    static var stopped = DispatchSemaphore(value: 0)
-
-    static func reset() {
-        started = DispatchSemaphore(value: 0)
-        stopped = DispatchSemaphore(value: 0)
-    }
-
-    override class func canInit(with request: URLRequest) -> Bool { true }
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
-
-    override func startLoading() {
-        Self.started.signal()
-    }
-
-    override func stopLoading() {
-        Self.stopped.signal()
-    }
-}
-
 private final class NativeVerificationFailureURLProtocol: URLProtocol {
     static var failure: NativeVerificationFailure?
 
@@ -2129,33 +1441,6 @@ private final class NativeVerificationFailureURLProtocol: URLProtocol {
         )!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Data(#"{"status":"ERROR"}"#.utf8))
-        client?.urlProtocolDidFinishLoading(self)
-    }
-
-    override func stopLoading() {}
-}
-
-/// Responds with an issued session after running `interruption`, which stands in for
-/// app activity (sign-out, sign-in) that lands while the request is in flight.
-private final class InterruptingEmailVerificationURLProtocol: URLProtocol {
-    static var issuedAccessToken: String?
-    static var interruption: (() -> Void)?
-
-    override class func canInit(with request: URLRequest) -> Bool { true }
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
-
-    override func startLoading() {
-        Self.interruption?()
-        var headerFields = ["Content-Type": "application/json"]
-        headerFields["st-access-token"] = Self.issuedAccessToken
-        let response = HTTPURLResponse(
-            url: request.url!,
-            statusCode: 200,
-            httpVersion: nil,
-            headerFields: headerFields
-        )!
-        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: Data(#"{"status":"OK"}"#.utf8))
         client?.urlProtocolDidFinishLoading(self)
     }
 

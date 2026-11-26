@@ -108,7 +108,7 @@ struct LegacySessionMigrationDependencies {
         guard await attempt.isCurrent else { return false }
         guard await SuperTokensSessionBridge.adoptResponseSession(
             tokens, permit: attempt.permit, scope: attempt.adoptionScope,
-            allowReplacingExistingSession: false
+            allowReplacingExistingSession: false, isSignIn: false
         ) != nil else { return false }
         guard await attempt.isCurrent else {
             await attempt.discardAdoption()

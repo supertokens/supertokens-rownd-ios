@@ -3716,24 +3716,36 @@ final class LocalHTTPServer: @unchecked Sendable {
         var headers: [String: String]
     }
 
+    struct Response: Sendable {
+        var statusCode = 200
+        var headers: [String: String] = ["front-token": "remove"]
+        var body = #"{"status":"OK"}"#
+    }
+
     private(set) var baseURL: URL!
 
     private let listener: NWListener
     private let queue = DispatchQueue(label: "io.rownd.tests.local-http-server")
     private let requests: AsyncStream<CapturedRequest>
     private let requestContinuation: AsyncStream<CapturedRequest>.Continuation
+    private let respond: @Sendable (CapturedRequest) async -> Response
 
-    private init(listener: NWListener) {
+    private init(listener: NWListener, respond: @escaping @Sendable (CapturedRequest) async -> Response) {
         self.listener = listener
+        self.respond = respond
 
         var continuation: AsyncStream<CapturedRequest>.Continuation!
         self.requests = AsyncStream { continuation = $0 }
         self.requestContinuation = continuation
     }
 
-    static func start() async throws -> LocalHTTPServer {
-        let listener = try NWListener(using: .tcp, on: .any)
-        let server = LocalHTTPServer(listener: listener)
+    static func start(
+        respond: @escaping @Sendable (CapturedRequest) async -> Response = { _ in Response() }
+    ) async throws -> LocalHTTPServer {
+        let parameters = NWParameters.tcp
+        parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
+        let listener = try NWListener(using: parameters)
+        let server = LocalHTTPServer(listener: listener, respond: respond)
 
         return try await withCheckedThrowingContinuation { continuation in
             var hasResumed = false
@@ -3836,24 +3848,22 @@ final class LocalHTTPServer: @unchecked Sendable {
                 return
             }
 
-            self.requestContinuation.yield(Self.parseRequest(nextBuffer))
-            self.sendResponse(on: connection)
+            let request = Self.parseRequest(nextBuffer)
+            self.requestContinuation.yield(request)
+            Task {
+                let response = await self.respond(request)
+                self.sendResponse(response, on: connection)
+            }
         }
     }
 
-    private func sendResponse(on connection: NWConnection) {
-        let body = #"{"status":"OK"}"#
-        let response = """
-            HTTP/1.1 200 OK\r
-            Content-Type: application/json\r
-            Content-Length: \(body.utf8.count)\r
-            front-token: remove\r
-            Connection: close\r
-            \r
-            \(body)
-            """
+    private func sendResponse(_ response: Response, on connection: NWConnection) {
+        let headers = response.headers.map { "\($0.key): \($0.value)\r\n" }.joined()
+        let message = "HTTP/1.1 \(response.statusCode) Test\r\nContent-Type: application/json\r\n"
+            + "Content-Length: \(response.body.utf8.count)\r\nConnection: close\r\n"
+            + headers + "\r\n" + response.body
 
-        connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in
+        connection.send(content: Data(message.utf8), completion: .contentProcessed { _ in
             connection.cancel()
         })
     }

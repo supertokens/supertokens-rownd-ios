@@ -22,7 +22,7 @@ class GoogleSignInCoordinator: NSObject {
     var intent: RowndSignInIntent?
     var signInWithGoogle: (String, SuperTokensThirdPartySignInClient.ExchangeContext) async throws -> SuperTokensThirdPartySignInResponse
     var syncAuthState: () async -> Bool = {
-        await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens()
+        await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens(afterTokenRead: {}, isSignIn: true)
     }
     var currentAccessToken: () async -> String? = {
         await SuperTokensSessionBridge.getAccessToken()

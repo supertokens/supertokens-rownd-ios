@@ -472,7 +472,7 @@ public class Rownd: NSObject {
         signOutLock.lock()
         pendingSignOutCount += 1
         signOutLock.unlock()
-        SuperTokensSessionBridge.invalidateAuthOperationPermits()
+        SuperTokensSessionBridge.invalidateForSignOut()
     }
 
     private static func endSignOut() {
