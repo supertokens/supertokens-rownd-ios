@@ -565,8 +565,7 @@ import AnyCodable
         let verification = try await waitForVerificationEmail()
         #expect(verification["email"] as? String == editedEmail)
         let link = try #require(verification["link"] as? String)
-        let verificationResponse = try await verifyEmail(link: link)
-        #expect(verificationResponse.body["status"] as? String == "OK")
+        _ = try await verifyEmail(link: link)
 
         let profile = try await getJSON(path: "auth/plugin/rownd/user")
         try assertEmailProfile(
@@ -621,24 +620,14 @@ import AnyCodable
         let deliveredToken = try #require(verification["token"] as? String)
         let link = try #require(verification["link"] as? String)
         let verificationResponse = try await verifyEmail(link: link)
-        #expect(verificationResponse.body["status"] as? String == "OK")
         #expect(verificationResponse.token == deliveredToken)
 
-        let replacementAccessToken = try #require(
-            header(verificationResponse.response, named: "st-access-token")
-        )
-        let replacementRefreshToken = try #require(
-            header(verificationResponse.response, named: "st-refresh-token")
-        )
-        let replacementFrontToken = try #require(
-            header(verificationResponse.response, named: "front-token")
-        )
+        let replacementAccessToken = try #require(await SuperTokensSessionBridge.getAccessToken())
+        let replacementRefreshToken = try #require(SuperTokensSessionBridge.getRefreshToken())
+        let replacementFrontToken = try #require(SuperTokensSessionBridge.getFrontToken())
         #expect(replacementAccessToken != originalAccessToken)
         #expect(replacementRefreshToken != originalRefreshToken)
         #expect(replacementFrontToken != originalFrontToken)
-        #expect(await SuperTokensSessionBridge.getAccessToken() == replacementAccessToken)
-        #expect(SuperTokensSessionBridge.getRefreshToken() == replacementRefreshToken)
-        #expect(SuperTokensSessionBridge.getFrontToken() == replacementFrontToken)
         #expect(try await Rownd.getAccessToken(throwIfMissing: true) == replacementAccessToken)
 
         let capturedRequests = try await getJSON(path: "captured-requests")
@@ -658,6 +647,7 @@ import AnyCodable
         let updatedAccount = try await getJSON(path: "test/account")
         #expect(updatedAccount["userId"] as? String == userId)
         let replacementSessionHandle = try #require(updatedAccount["sessionHandle"] as? String)
+        #expect(try sessionHandle(fromAuthorization: "Bearer \(replacementAccessToken)") == replacementSessionHandle)
         let activeSessionHandles = try #require(updatedAccount["sessionHandles"] as? [String])
         #expect(replacementSessionHandle != originalSessionHandle)
         #expect(activeSessionHandles == [replacementSessionHandle])
@@ -866,8 +856,6 @@ import AnyCodable
     }
 
     private func verifyEmail(link: String) async throws -> (
-        body: [String: Any],
-        response: HTTPURLResponse,
         token: String,
         pendingVerificationId: String
     ) {
@@ -886,37 +874,14 @@ import AnyCodable
         let pendingVerificationId = try #require(pendingVerificationItems[0].value)
         try #require(!pendingVerificationId.isEmpty)
 
-        var endpoint = try #require(URLComponents(
-            url: TestInfrastructure.backendURL.appendingPathComponent("auth/user/email/verify"),
-            resolvingAgainstBaseURL: false
+        let start = try #require(await SuperTokensSessionBridge.captureEmailVerification(
+            endpoint: .init(TestInfrastructure.supertokensConfig)
         ))
-        endpoint.queryItems = [
-            URLQueryItem(
-                name: "rowndPendingVerificationId",
-                value: pendingVerificationId
-            )
-        ]
-        var request = URLRequest(url: try #require(endpoint.url))
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: [
-            "method": "token",
-            "token": token,
-        ])
-
-        let (data, response) = try await HubWebViewController.performNativeEmailVerification(
-            request: request,
-            session: HubWebViewController.nativeEmailVerificationSession()
-        )
-        let statusCode = response.statusCode
-        #expect(statusCode == 200)
-        let body = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
-        return (
-            body,
-            response,
-            token,
-            pendingVerificationId
-        )
+        try #require(await HubWebViewController.runNativeEmailVerification(
+            parameters: .init(token: token, pendingVerificationId: pendingVerificationId),
+            start: start
+        ) == .verified)
+        return (token, pendingVerificationId)
     }
 
     private func uniqueEmail(prefix: String) -> String {

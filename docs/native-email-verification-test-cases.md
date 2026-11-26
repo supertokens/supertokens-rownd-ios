@@ -87,13 +87,13 @@ Expected: relaunch reaches a defined recovery state and never resurrects S0.
 
 Close, swipe-dismiss, or programmatically hide the Hub while verification is running.
 
-Expected: cancellation is handled without publishing stale authentication or partially persisted state.
+Expected: the verification request and replacement-session adoption keep running, so the app converges on S1 (or signs out if S0 was revoked and S1 could not be obtained). Only the result event to the dismissed Hub is dropped and logged.
 
 ### 12. Hub navigation during verification
 
 Navigate to another Hub page while verification or replacement synchronization is running.
 
-Expected: stale completion cannot mutate session or UI state after navigation ownership changes.
+Expected: session adoption completes as in case 11, but the result event is delivered only to the current requesting Hub page. A reload with the same link, API endpoint, and initiating session joins the running request; a different owner does not.
 
 ## Competing User Actions
 
@@ -101,13 +101,13 @@ Expected: stale completion cannot mutate session or UI state after navigation ow
 
 Sign out after verification begins but before S1 synchronization completes.
 
-Expected: verification completion cannot resurrect either S0 or S1.
+Expected: verification completion cannot resurrect either S0 or S1. If a late response issues S1, the SDK revokes it at the original API without using the current session or following redirects.
 
 ### 14. Sign in as another user during verification
 
 Establish a newer session for a different user while the old verification request remains active.
 
-Expected: the stale verification response cannot replace or hydrate the newer user's session.
+Expected: a request queued under S0 never sends with the newer user's credentials. If S1 was already issued, the stale response cannot replace, hydrate, or sign out the newer session, even if their SDK credentials are subsequently cleared.
 
 ### 15. Replay the verification link
 
@@ -127,7 +127,7 @@ Expected: S1 remains installed. Retry behavior is bounded and identity-aware; st
 
 Delay response headers, disconnect during response delivery, and retry the link.
 
-Expected: no partial token set is installed and retries have a defined outcome.
+Expected: no partial token set is installed. If a concurrent SDK refresh returns 401 and clears S0 before the verify response arrives, the complete S1 can still be installed. If verification fails without S1, recovery clears Rownd only on confirmed revocation; offline and 5xx responses retain credentials even when S0's access token is expired.
 
 ### 18. Very slow asynchronous Hub work
 
